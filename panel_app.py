@@ -31,7 +31,8 @@ from metadata import DatasetMetadata
 from datasetPlot import DatasetPlot2
 from commandRunner import CommandRunner
 
-pn.extension(raw_css=[Path("static/styles.css").read_text()])
+#pn.extension(raw_css=[Path("static/styles.css").read_text()])
+pn.extension('modal')
 
 DATA_DIR = Path("/Users/vapor/Data/model_predict")
 DATASET_METADATA = {}
@@ -110,13 +111,32 @@ vis = pn.Row(
     styles={"height" : "100vh"}
 )
 
-commandRunner = CommandRunner()
+template = pn.template.BootstrapTemplate(title="My Panel App")
+
+#Prime the modal dialog >:|
+template.modal.append(pn.Column(sizing_mode="stretch_width"))
+
+print("     app TEMPLATE:", template)
+commandRunner = CommandRunner(template=template)
 inference = pn.Column(
     #pn.widgets.TextEditor(placeholder='Enter some text'),
     commandRunner.panel()
 )
 
+#template.modal.extend([commandRunner.outputDirPicker.myModal])
+
+#def _noop():
+#    pass
+
+#pn.state.onload(_noop)
+
 tabs = pn.Tabs(
     ("Visualization", vis),
     ("Inference", inference)
-).servable()
+)#.servable()
+#template.main.append(tabs)
+#template.main[:] = [tabs]
+template.main[:] = [
+    pn.Column(tabs, sizing_mode="stretch_both")
+]
+template.servable()

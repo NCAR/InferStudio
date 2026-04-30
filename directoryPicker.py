@@ -1,76 +1,111 @@
 import panel as pn
 import os
 
-pn.extension()
-
-class RemoteDirPicker:
-    def __init__(self, start_path="."):
-        self.current_path = pn.widgets.TextInput(
-            name="Current Path", value=os.path.abspath(start_path)
-        )
-
-        self.dir_list = pn.widgets.Select(size=12)
-        self.select_button = pn.widgets.Button(name="Select", button_type="primary")
-
+class DirectoryPicker:
+    def __init__(self, start_path=".", width=400):
+        self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
         self._callback = None
 
-        self.dir_list.param.watch(self._navigate, "value")
+        self.path_display = pn.widgets.TextInput(
+            value=self.current_path_val,
+            sizing_mode="stretch_width",
+        )
+
+        self._build_picker(width)
+
+        self.modal = pn.Modal(self.dialog, name="modalTest", margin=0)
+        self.testButton = self.modal.create_button("toggle", name="Toggle Modal")
+
+        self.panel = pn.Row(
+            self.testButton,
+            self.browse_btn,
+            self.path_display,
+            self.modal,
+            sizing_mode="stretch_width",
+        )
+
+    def _build_picker(self, width):
+        self.current_path_display = pn.widgets.TextInput(
+            value=self.current_path_val,
+            disabled=True,
+            sizing_mode="stretch_width"
+        )
+
+        self.list_container = pn.Column(
+            height=350,
+            scroll=True,
+            styles={"border": "1px solid #ccc", "background": "white"},
+        )
+
+        self.select_button = pn.widgets.Button(
+            name="Confirm Selection ✅",
+            button_type="success",
+            sizing_mode="stretch_width"
+        )
         self.select_button.on_click(self._select)
+
+        self.dialog = pn.Column(
+            "### 📁 Select Directory",
+            self.current_path_display,
+            self.list_container,
+            self.select_button,
+            width=width,
+        )
 
         self._refresh()
 
     def _refresh(self):
+        self.current_path_display.value = self.current_path_val
+
         try:
-            entries = os.listdir(self.current_path.value)
+            entries = os.listdir(self.current_path_val)
             dirs = sorted(
                 d for d in entries
-                if os.path.isdir(os.path.join(self.current_path.value, d))
+                if os.path.isdir(os.path.join(self.current_path_val, d))
             )
-            self.dir_list.options = [".."] + dirs
-        except Exception as e:
-            self.dir_list.options = [str(e)]
 
-    def _navigate(self, event):
-        if event.new == "..":
-            self.current_path.value = os.path.dirname(self.current_path.value)
+            options = [".."] + dirs
+            buttons = []
+
+            for folder in options:
+                btn = pn.widgets.Button(
+                    name=f"📁 {folder}",
+                    sizing_mode="stretch_width",
+                    styles={
+                        "justify-content": "flex-start",
+                        "text-align": "left",
+                        "display": "flex",
+                        "width": "100%",
+                    },
+                )
+                btn.on_click(lambda e, f=folder: self._navigate(f))
+                buttons.append(btn)
+
+            self.list_container.objects = buttons
+
+        except Exception as e:
+            self.list_container.objects = [
+                pn.pane.Markdown(f"**Error:** {e}")
+            ]
+
+    def _navigate(self, folder):
+        if folder == "..":
+            new_path = os.path.dirname(self.current_path_val)
         else:
-            new_path = os.path.join(self.current_path.value, event.new)
-            if os.path.isdir(new_path):
-                self.current_path.value = os.path.abspath(new_path)
-        self._refresh()
+            new_path = os.path.join(self.current_path_val, folder)
+
+        new_path = os.path.normpath(new_path)
+
+        if os.path.isdir(new_path):
+            self.current_path_val = new_path
+            self._refresh()
 
     def _select(self, _):
+        self.path_display.value = self.current_path_val
+
         if self._callback:
-            self._callback(self.current_path.value)
+            self._callback(self.current_path_val)
+        self.modal.hide()
 
-    def open(self, callback):
-        """Open picker and register callback"""
+    def on_select(self, callback):
         self._callback = callback
-        return pn.Column(
-            "### Select Directory",
-            self.current_path,
-            self.dir_list,
-            self.select_button
-        )
-
-
-# --- Main UI ---
-
-#selected_path = pn.widgets.TextInput(name="Selected Directory")
-#
-#button = pn.widgets.Button(name="Browse", button_type="primary")
-#
-#def open_picker(event):
-#    picker = RemoteDirPicker()
-#
-#    def on_select(path):
-#        selected_path.value = path
-#        pn.state.modal.close()
-#
-#    pn.state.modal.open(picker.open(on_select))
-#
-#button.on_click(open_picker)
-#
-#pn.Column(
-#    pn.Row(selected_path, button)
-#).servable()

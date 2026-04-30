@@ -3,9 +3,9 @@ import param
 import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
-from directorySelect import DirectorySelect
+#from directorySelect import DirectorySelect
 from tkinter import Tk, filedialog
-from directoryPicker import RemoteDirPicker
+from directoryPicker import DirectoryPicker
 
 class CommandRunner(param.Parameterized):
     command_input = param.String(default="")
@@ -13,16 +13,17 @@ class CommandRunner(param.Parameterized):
     startDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0))
     endDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72))
 
-    def __init__(self, **params):
+    def __init__(self, template=None, **params):
         super().__init__(**params)
+        #self.template = template
+        #pn.state.template = template
 
-        self.dirSelect = DirectorySelect(start_path=Path.home())
-        self.dirSelect.param.watch(self._on_change, "value")
+        #self.dirSelect = DirectorySelect(start_path=Path.home())
+        #self.dirSelect.param.watch(self._on_change, "value")
 
-        self.dirSelect2 = pn.widgets.Button(name="Output Directory")
-        self.dirSelect2.on_click(self._select_files)
-        self.dirSelect2.servable()
-        
+        #self.outputDirPicker = DirectoryPicker(start_path=Path.home(), template=pn.state.template)
+        self.outputDirPicker = DirectoryPicker(start_path=Path.home())
+ 
         # Link the selector's value to our param
         # Note: FileSelector.value is a list, even if one item is selected
         #self.dirSelector.link(self, value='outputDir', transform=lambda v: v[0] if v else "")
@@ -68,43 +69,6 @@ class CommandRunner(param.Parameterized):
             sizing_mode='stretch_width'
         )
 
-    def _select_files(*b):
-        picker = RemoteDirPicker()
-
-        def on_select(path):
-            selected_path.value = path
-            pn.state.modal.close()
-
-        pn.state.modal.open(picker.open(on_select))
-    #def _select_files(*b):
-    #    #def open_picker(event):
-    #    picker = RemoteDirPicker()
-    #    
-    #    def on_select(path):
-    #        selected_path.value = path
-    #        pn.state.modal.close()
-    #    
-    #    pn.state.modal.open(picker.open(on_select))
-    #    #picker = RemoteDirPicker(start_path=".")
-    #    #root = Tk()
-    #    #root.withdraw()                                        
-    #    #root.call('wm', 'attributes', '.', '-topmost', True)   
-    #    #root.update()
-    #    ##root.focus_force()
-    #    ##root.lift()
-    #    ##root.update()
-    #    ##root.wait_visibility()
-    #    ##root.grab_set()
-    #    #files = filedialog.askdirectory(parent=root, mustexist=True)    
-    #    #root.attributes('-topmost', False)
-    #    #root.destroy()
-    #    ##root.lift()
-    #    ##root.update()
-    #    ##root.destroy()
-    #    #print(files)
-    #    #return files  
-    #    return
-
     def _on_change(self, event):
         print("Selected:", event.new)
     
@@ -125,9 +89,11 @@ class CommandRunner(param.Parameterized):
 
     def panel(self):
         return pn.Column(
-            self.dirSelect,
-            self.dirSelect2,
+            #self.dirSelect,
+            #self.dirSelect2,
+            self.test_btn,
             pn.Row(self.startDatePicker, self.endDatePicker),
+            self.outputDirPicker.panel,
             "### CommandRunner",
             self.editor,
             self.run_btn, # Explicitly included in the column
