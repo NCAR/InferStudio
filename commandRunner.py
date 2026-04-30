@@ -89,11 +89,8 @@ class CommandRunner(param.Parameterized):
 
     def panel(self):
         return pn.Column(
-            #self.dirSelect,
-            #self.dirSelect2,
-            self.test_btn,
-            pn.Row(self.startDatePicker, self.endDatePicker),
             self.outputDirPicker.panel,
+            pn.Row(self.startDatePicker, self.endDatePicker),
             "### CommandRunner",
             self.editor,
             self.run_btn, # Explicitly included in the column
