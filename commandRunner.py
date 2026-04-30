@@ -13,22 +13,11 @@ class CommandRunner(param.Parameterized):
     startDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0))
     endDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72))
 
-    def __init__(self, template=None, **params):
+    def __init__(self, **params):
         super().__init__(**params)
-        #self.template = template
-        #pn.state.template = template
 
-        #self.dirSelect = DirectorySelect(start_path=Path.home())
-        #self.dirSelect.param.watch(self._on_change, "value")
-
-        #self.outputDirPicker = DirectoryPicker(start_path=Path.home(), template=pn.state.template)
         self.outputDirPicker = DirectoryPicker(start_path=Path.home())
  
-        # Link the selector's value to our param
-        # Note: FileSelector.value is a list, even if one item is selected
-        #self.dirSelector.link(self, value='outputDir', transform=lambda v: v[0] if v else "")
-        #self.dirSelector.link(self, value='outputDir')
-
         self.startDatePicker = pn.widgets.DatetimePicker(
             name="Start Date",
             value=self.startDate

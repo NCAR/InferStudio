@@ -113,29 +113,15 @@ vis = pn.Row(
 
 template = pn.template.BootstrapTemplate(title="My Panel App")
 
-#Prime the modal dialog >:|
-template.modal.append(pn.Column(sizing_mode="stretch_width"))
-
-print("     app TEMPLATE:", template)
-commandRunner = CommandRunner(template=template)
+commandRunner = CommandRunner()
 inference = pn.Column(
-    #pn.widgets.TextEditor(placeholder='Enter some text'),
     commandRunner.panel()
 )
-
-#template.modal.extend([commandRunner.outputDirPicker.myModal])
-
-#def _noop():
-#    pass
-
-#pn.state.onload(_noop)
 
 tabs = pn.Tabs(
     ("Visualization", vis),
     ("Inference", inference)
-)#.servable()
-#template.main.append(tabs)
-#template.main[:] = [tabs]
+)
 template.main[:] = [
     pn.Column(tabs, sizing_mode="stretch_both")
 ]
