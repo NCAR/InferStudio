@@ -14,7 +14,7 @@ class DirectoryPicker:
         self._build_picker(width)
 
         self.modal = pn.Modal(self.dialog, name="Select output directory", margin=0)
-        self.browse_button = self.modal.create_button("toggle", name="Output Directory")
+        self.browse_button = self.modal.create_button("toggle", name="Output Directory", button_type="primary")
 
         self.panel = pn.Row(
             self.browse_button,

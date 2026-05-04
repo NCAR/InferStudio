@@ -62,6 +62,7 @@ class CommandRunner(param.Parameterized):
         print("Selected:", event.new)
     
     def _execute(self, event):
+        print("foo")
         cmd = self.editor.value.strip()
         if not cmd: return
 
@@ -70,7 +71,7 @@ class CommandRunner(param.Parameterized):
             endDateStr = self.endDate.strftime('%Y-%m-%d')
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             response = result.stdout if result.returncode == 0 else result.stderr
-            self.output_log = response + " " + startDate + " " + endDate if response else "Done."
+            self.output_log = response + " " + startDateStr + " " + endDateStr if response else "Done."
         except Exception as e:
             self.output_log = str(e)
             
