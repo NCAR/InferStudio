@@ -33,7 +33,7 @@ class CommandRunner(param.Parameterized):
         # 1. Text Input
         self.editor = pn.widgets.TextInput(
             name="Command input",
-            placeholder="Type and press Enter...",
+            placeholder="credit_rollout_realtime -c model_predict_casper.yml",
             sizing_mode='stretch_width',
             value=self.command_input
         )
@@ -49,7 +49,20 @@ class CommandRunner(param.Parameterized):
             visible=True,
             sizing_mode='fixed'
         )
-        self.run_btn.on_click(self._execute)
+        #self.run_btn.on_click(self._execute)
+        self.run_btn.on_click(self._on_run_click)
+
+        self.clear_btn = pn.widgets.Button(
+            name="Clear Output", 
+            button_type="default",
+            height=40,
+            width=120
+        )
+        self.clear_btn.on_click(self._clear_output)
+
+        self.spinner = pn.indicators.LoadingSpinner(
+            width=30, height=30, value=False, color="primary", visible=False
+        )
         
         # 3. Output area
         self.console = pn.widgets.StaticText(
@@ -60,22 +73,67 @@ class CommandRunner(param.Parameterized):
 
     def _on_change(self, event):
         print("Selected:", event.new)
-    
-    def _execute(self, event):
-        print("foo")
+
+    def _clear_output(self, event):
+        self.console.value = "<pre style='background:#f4f4f4; padding:5px;'>Terminal cleared...</pre>"
+
+    def _on_run_click(self, event):
+        """Wrapper to launch the execution in a thread."""
         cmd = self.editor.value.strip()
         if not cmd: return
 
+        # UI updates happen immediately here
+        self.spinner.value = True
+        self.spinner.visible = True
+        self.run_btn.disabled = True
+        self.console.value = "<pre style='color: blue;'>Running command...</pre>"
+
+        # Launch the actual subprocess in the background
+        thread = threading.Thread(target=self._execute, args=(cmd,))
+        thread.start()
+
+    def _execute(self, cmd):
+        """The actual heavy lifting, now running in a background thread."""
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
         try:
-            startDateStr = self.startDate.strftime('%Y-%m-%d')
-            endDateStr = self.endDate.strftime('%Y-%m-%d')
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            response = result.stdout if result.returncode == 0 else result.stderr
-            self.output_log = response + " " + startDateStr + " " + endDateStr if response else "Done."
+            result = subprocess.run(
+                cmd, 
+                shell=True, 
+                capture_output=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True,
+                env=env
+            )
+            response = result.stdout
         except Exception as e:
-            self.output_log = str(e)
-            
-        self.console.value = f"<pre style='background:#f4f4f4; padding:5px;'>{self.output_log}</pre>"
+            response = f"Error: {str(e)}"
+        
+        # Use pn.state.execute_to_update_ui if needed, 
+        # but direct assignment usually works in Panel threads
+        self.output_log = response if response else "Done (no output)."
+        self.spinner.value = False
+        self.spinner.visible = False
+        self.run_btn.disabled = False
+        self.console.value = f"<pre style='background:#f4f4f4; padding:5px; white-space: pre-wrap;'>{self.output_log}</pre>"
+
+    #def _execute(self, event):
+    #    print("foo")
+    #    cmd = self.editor.value.strip()
+    #    if not cmd: return
+
+    #    try:
+    #        startDateStr = self.startDate.strftime('%Y-%m-%d')
+    #        endDateStr = self.endDate.strftime('%Y-%m-%d')
+    #        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    #        response = result.stdout if result.returncode == 0 else result.stderr
+    #        self.output_log = response + " " + startDateStr + " " + endDateStr if response else "Done."
+    #    except Exception as e:
+    #        self.output_log = str(e)
+    #        
+    #    self.console.value = f"<pre style='background:#f4f4f4; padding:5px;'>{self.output_log}</pre>"
 
     def panel(self):
         return pn.Column(
@@ -83,7 +141,7 @@ class CommandRunner(param.Parameterized):
             pn.Row(self.startDatePicker, self.endDatePicker),
             "### CommandRunner",
             self.editor,
-            self.run_btn, # Explicitly included in the column
+            pn.Row(self.run_btn, self.clear_btn, self.spinner, align='start'),
             self.console,
             sizing_mode='stretch_width',
             min_height=300 # Forces the container to expand

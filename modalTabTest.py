@@ -1,4 +1,10 @@
+# +
 import panel as pn
+
+pn.extension()
+
+
+# -
 
 def test_modal(event):
     print("     cmdRunner TEMPLATE:", template)
@@ -30,19 +36,21 @@ button.on_click(test_modal)
 w1 = pn.widgets.TextInput(name='Text:')
 w2 = pn.widgets.FloatSlider(name='Slider')
 
-modal = pn.Modal(w1, w2, name='Basic FloatPanel', margin=20)
-#modal.servable()
-toggle_button = modal.create_button("toggle", name="Toggle modal")
+# +
+#modal = pn.Modal(w1, w2, name='Basic FloatPanel', margin=20)
+##modal.servable()
+#toggle_button = modal.create_button("toggle", name="Toggle modal")
+# -
 
-#pn.Column('**Example: Basic `Modal`**', toggle_button, modal)
+# pn.Column('**Example: Basic `Modal`**', toggle_button, modal)
 
 tabs = pn.Tabs(
         ("Tab with modal button", button),
         (pn.pane.Markdown("## THIS SHOULD SHOW1", height=200)),
-        #pn.Column(toggle_button, modal)
-        #pn.Row(modal, toggle_button)
-        pn.Row(toggle_button)
-        #("T1", pn.pane.Markdown("## Tab 1", height=200)),
+        ##pn.Column(toggle_button, modal)
+        ##pn.Row(modal, toggle_button)
+        #pn.Row(toggle_button)
+        ##("T1", pn.pane.Markdown("## Tab 1", height=200)),
     )
 
 template = pn.template.BootstrapTemplate(title="test modal")
