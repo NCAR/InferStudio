@@ -34,8 +34,8 @@ from commandRunner import CommandRunner
 #pn.extension(raw_css=[Path("static/styles.css").read_text()])
 pn.extension('modal')
 
-#DATA_DIR = Path("/Users/vapor/Data/model_predict")
-DATA_DIR = Path("/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/panelTest/")
+DATA_DIR = Path("/Users/vapor/Data/model_predict")
+#DATA_DIR = Path("/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/panelTest/")
 DATASET_METADATA = {}
 
 def scan_datasets():

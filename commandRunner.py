@@ -1,6 +1,8 @@
 import panel as pn
 import param
 import subprocess
+import threading
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 #from directorySelect import DirectorySelect
@@ -101,7 +103,7 @@ class CommandRunner(param.Parameterized):
             result = subprocess.run(
                 cmd, 
                 shell=True, 
-                capture_output=True, 
+                capture_output=False, 
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.STDOUT, 
                 text=True,
