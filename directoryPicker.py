@@ -14,14 +14,7 @@ class DirectoryPicker:
         self._build_picker(width)
 
         self.modal = pn.Modal(self.dialog, name="Select output directory", margin=0)
-        self.browse_button = self.modal.create_button("toggle", name="Output Directory", button_type="primary")
-
-        self.panel = pn.Row(
-            self.browse_button,
-            self.path_display,
-            self.modal,
-            sizing_mode="stretch_width",
-        )
+        self.browse_button = self.modal.create_button("toggle", name="Select", button_type="primary")
 
     def _build_picker(self, width):
         self.current_path_display = pn.widgets.TextInput(
@@ -108,3 +101,16 @@ class DirectoryPicker:
 
     def on_select(self, callback):
         self._callback = callback
+
+    def panel(self):
+        return pn.WidgetBox(
+            "# Data Output Location",
+            pn.Row(
+                self.browse_button,
+                self.path_display,
+                self.modal,
+                sizing_mode="stretch_width",
+            ),
+            sizing_mode="stretch_width"
+        )
+

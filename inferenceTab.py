@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from directoryPicker import DirectoryPicker
+from timePicker import TimePicker
 from commandRunner import CommandRunner
 
 class InferenceTab(param.Parameterized):
@@ -14,8 +15,10 @@ class InferenceTab(param.Parameterized):
     def __init__(self, **params):
         super().__init__(**params)
 
-        self.commandRunner = CommandRunner()
         self.outputDirPicker = DirectoryPicker(start_path=Path.home())
+
+        self.timePicker = TimePicker()
+
         self.startDatePicker = pn.widgets.DatetimePicker(
             name="Start Date",
             value=self.startDate
@@ -28,13 +31,69 @@ class InferenceTab(param.Parameterized):
         )
         self.endDatePicker.link(self, value='endDate')
 
+        self.inferenceButton = pn.widgets.Button(
+            name="Run Inference",
+            button_type="primary",
+        )
+        self.inferenceButton.on_click(self._on_run_click)
+        self.spinner = pn.indicators.LoadingSpinner(
+            width=30, height=30, value=False, color="primary", visible=False
+        )
+
+        self.commandRunner = CommandRunner()
+
+    def _on_run_click(self, event):
+        """Wrapper to launch the execution in a thread."""
+        #cmd = self.editor.value.strip()
+        #cmd = "credit_rollout_realtime -c model_predict_casper.yml"
+        cmd = "echo foo >> foo.txt"
+        if not cmd: return
+
+        # UI updates happen immediately here
+        self.spinner.value = True
+        self.spinner.visible = True
+        self.run_btn.disabled = True
+        self.console.value = "<pre style='color: blue;'>Running command...</pre>"
+
+        # Launch the actual subprocess in the background
+        thread = threading.Thread(target=self._execute, args=(cmd,))
+        thread.start()
+
+    def _execute(self, cmd):
+        """The actual heavy lifting, now running in a background thread."""
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env
+            )
+            response = result.stdout
+        except Exception as e:
+            response = f"Error: {str(e)}"
+
+        self.output_log = response if response else "Done (no output)."
+        self.spinner.value = False
+        self.spinner.visible = False
+        self.run_btn.disabled = False
+        self.console.value = f"<pre style='background:#f4f4f4; padding:5px; white-space: pre-wrap;'>{self.output_log}</pre>"
 
     def panel(self):
         return pn.Column(
-            self.outputDirPicker.panel,
-            pn.Row(self.startDatePicker, self.endDatePicker),
+            self.outputDirPicker.panel(),
+            self.timePicker.panel,
+            pn.WidgetBox(
+                "# Launcher",
+                pn.Row(self.inferenceButton, self.spinner),
+                sizing_mode='stretch_width',
+            ),
             self.commandRunner.panel(),
-            #pn.Param(self.commandRunner, name="Command Runner"),
             sizing_mode='stretch_width',
             min_height=300 # Forces the container to expand
         )
