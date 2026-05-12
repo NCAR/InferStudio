@@ -1,5 +1,8 @@
 import panel as pn
 import param
+import subprocess
+import threading
+import os
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -36,6 +39,7 @@ class InferenceTab(param.Parameterized):
             button_type="primary",
         )
         self.inferenceButton.on_click(self._on_run_click)
+
         self.spinner = pn.indicators.LoadingSpinner(
             width=30, height=30, value=False, color="primary", visible=False
         )
@@ -45,15 +49,14 @@ class InferenceTab(param.Parameterized):
     def _on_run_click(self, event):
         """Wrapper to launch the execution in a thread."""
         #cmd = self.editor.value.strip()
-        #cmd = "credit_rollout_realtime -c model_predict_casper.yml"
-        cmd = "echo foo >> foo.txt"
+        cmd = "credit_rollout_realtime -c model_predict_casper.yml"
+        #cmd = "echo foo >> foo.txt"
         if not cmd: return
 
         # UI updates happen immediately here
         self.spinner.value = True
         self.spinner.visible = True
-        self.run_btn.disabled = True
-        self.console.value = "<pre style='color: blue;'>Running command...</pre>"
+        self.inferenceButton.disabled = True
 
         # Launch the actual subprocess in the background
         thread = threading.Thread(target=self._execute, args=(cmd,))
@@ -81,8 +84,7 @@ class InferenceTab(param.Parameterized):
         self.output_log = response if response else "Done (no output)."
         self.spinner.value = False
         self.spinner.visible = False
-        self.run_btn.disabled = False
-        self.console.value = f"<pre style='background:#f4f4f4; padding:5px; white-space: pre-wrap;'>{self.output_log}</pre>"
+        self.inferenceButton.disabled = False
 
     def panel(self):
         return pn.Column(
