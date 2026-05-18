@@ -48,11 +48,22 @@ class InferenceTab(param.Parameterized):
 
         self.commandRunner = CommandRunner()
 
+    def _replaceParams(self):
+        start = self.timePicker.startDate
+        end = self.timePicker.endDate
+        inc = self.timePicker.increment
+        
+        print(start, end, inc)
+
     def _on_run_click(self, event):
         """Wrapper to launch the execution in a thread."""
         #cmd = self.editor.value.strip()
-        cmd = "credit_rollout_realtime -c model_predict_casper.yml"
+        #cmd = "credit_rollout_realtime -c model_predict_casper.yml"
         #cmd = "echo foo >> foo.txt"
+        print("hmmm should do it ...")
+        self._replaceParams()
+        cmd = "cat model_predict_casper.yml > new.yml"
+
         if not cmd: return
 
         # UI updates happen immediately here
