@@ -18,21 +18,23 @@ class InferenceTab(param.Parameterized):
     def __init__(self, **params):
         super().__init__(**params)
 
+            #options={'1 hour':1, '6 hour':6, '12 hour':12, '24 hour':24},
+        self.modelPicker = pn.widgets.RadioButtonGroup(
+            name="Select Model",
+            options=['miles-credit', 'AIFS', 'AIFS Ensemble', 'Atlas', 'Aurora', 'DLWP', 'DLESyM', 'FourCastNet',
+                    'FourCastNet 3', 'FengWu', 'FuXi', 'GraphCast', 'Pangu', 'SFNO', 'StormCast', 'StormScope',
+                    'InterpModAFNO' 
+            ],
+            button_type='primary',
+            button_style='outline',
+            margin=(0,5,5,0)
+        )
+
+        #self.simulationNamePicker = pn.widgets.TextInput(name='Simulation Name', placeholder='Enter a name for your simulation')
+
         self.outputDirPicker = DirectoryPicker(start_path=Path.home())
 
         self.timePicker = TimePicker()
-
-        self.startDatePicker = pn.widgets.DatetimePicker(
-            name="Start Date",
-            value=self.startDate
-        )
-        self.startDatePicker.link(self, value='startDate')
-
-        self.endDatePicker = pn.widgets.DatetimePicker(
-            name="End Date",
-            value=self.endDate
-        )
-        self.endDatePicker.link(self, value='endDate')
 
         self.inferenceButton = pn.widgets.Button(
             name="Run Inference",
@@ -88,6 +90,11 @@ class InferenceTab(param.Parameterized):
 
     def panel(self):
         return pn.Column(
+            pn.WidgetBox(
+                '# Select Model',
+                self.modelPicker,
+                sizing_mode='stretch_width',
+            ),
             self.outputDirPicker.panel(),
             self.timePicker.panel,
             pn.WidgetBox(
@@ -95,7 +102,7 @@ class InferenceTab(param.Parameterized):
                 pn.Row(self.inferenceButton, self.spinner),
                 sizing_mode='stretch_width',
             ),
-            self.commandRunner.panel(),
+            #self.commandRunner.panel(),
             sizing_mode='stretch_width',
             min_height=300 # Forces the container to expand
         )

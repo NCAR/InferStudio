@@ -6,6 +6,8 @@ class DirectoryPicker:
         self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
         self._callback = None
 
+        self.simulationNamePicker = pn.widgets.TextInput(name='', placeholder='Enter a name for your simulation')
+
         self.path_display = pn.widgets.TextInput(
             value=self.current_path_val,
             sizing_mode="stretch_width",
@@ -14,7 +16,7 @@ class DirectoryPicker:
         self._build_picker(width)
 
         self.modal = pn.Modal(self.dialog, name="Select output directory", margin=0)
-        self.browse_button = self.modal.create_button("toggle", name="Select", button_type="primary")
+        self.browse_button = self.modal.create_button("toggle", name="Output Directory", button_type="primary")
 
     def _build_picker(self, width):
         self.current_path_display = pn.widgets.TextInput(
@@ -104,7 +106,8 @@ class DirectoryPicker:
 
     def panel(self):
         return pn.WidgetBox(
-            "# Data Output Location",
+            "# Simulation Output Parameters",
+            self.simulationNamePicker,
             pn.Row(
                 self.browse_button,
                 self.path_display,

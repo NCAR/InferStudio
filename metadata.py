@@ -72,4 +72,5 @@ class DatasetMetadata(param.Parameterized):
         """
         # Ensure the pane itself doesn't force a horizontal scroll
         data = pn.pane.HTML(html_content, sizing_mode='stretch_width')
-        return pn.Column("## Metadata", data)
+        #return pn.Column("### Metadata", data)
+        return pn.Column(data)
