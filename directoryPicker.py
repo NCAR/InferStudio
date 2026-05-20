@@ -1,7 +1,14 @@
 import panel as pn
 import os
+import param
 
 class DirectoryPicker:
+    #startDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0))
+    #endDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72))
+    #increment = param.Integer(default=1)
+    #simName = param.String('New_Inference')
+    #dirName = param.String(
+
     def __init__(self, start_path=".", width=400):
         self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
         self._callback = None

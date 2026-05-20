@@ -1,24 +1,30 @@
+#!/usr/bin/env python
+# coding: utf-8
+
 # Panel App – How to Run on NCAR JupyterHub (HPC)
-#
+# 
 # 1) Log into JupyterHub:
 #    https://jupyterhub.hpc.ucar.edu/
-#
+# 
 # 2) Open a Terminal in JupyterLab
-#
+# 
 # 3) Activate the conda environment (if needed):
 #    conda activate <YOUR_CONDA_ENV>
-#
+# 
 # 4) Navigate to this file’s directory
-#
+# 
 # 5) Start the Panel server (keep this terminal running):
 #    panel serve panel_app.py --address 127.0.0.1 --port 5006 \
 #        --allow-websocket-origin="jupyterhub.hpc.ucar.edu"
-#
+# 
 # 6) Open the app in your browser (same JupyterHub session):
 #    https://jupyterhub.hpc.ucar.edu/stable/user/<USER_NAME>/proxy/5006/panel_app
-#
+# 
 # 7) Stop the app:
 #    Go back to the terminal and press Ctrl+C
+
+# In[1]:
+
 
 import xarray as xr
 from pathlib import Path
@@ -26,17 +32,38 @@ from era5_plot import plot_png, NETCDF_FILE, VAR_NAME, TIME_NAME, LEV_NAME, PRES
 import panel as pn
 import param
 
+
+# In[2]:
+
+
 from datasetSelector2 import DatasetBrowser
 from metadata import DatasetMetadata
 from datasetPlot import DatasetPlot2
 from commandRunner import CommandRunner
+from inferenceTab import InferenceTab
+
+
+# In[3]:
+
 
 #pn.extension(raw_css=[Path("static/styles.css").read_text()])
-pn.extension('modal')
+pn.extension('modal', 
+             raw_css=[".bk-btn-group { flex-wrap: wrap !important; max-width: 600px; }",
+                      ".bk-btn-group button { border-radius: 4px !important; margin: 2px;}"
+                     ]
+            )
+
+
+# In[4]:
+
 
 DATA_DIR = Path("/Users/vapor/Data/model_predict")
 #DATA_DIR = Path("/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/panelTest/")
 DATASET_METADATA = {}
+
+
+# In[5]:
+
 
 def scan_datasets():
     for d in DATA_DIR.iterdir():
@@ -55,7 +82,15 @@ def scan_datasets():
                     "vars3d": [v for v in ds.data_vars if len(ds[v].dims) > 3]
                 }
 
+
+# In[6]:
+
+
 scan_datasets()
+
+
+# In[7]:
+
 
 def available_datasets():
     return sorted(
@@ -63,7 +98,15 @@ def available_datasets():
         if d.is_dir()
     )
 
+
+# In[8]:
+
+
 browser = DatasetBrowser(datasets=available_datasets())
+
+
+# In[9]:
+
 
 @pn.depends(browser.param.checked_items)
 def plot_grid(datasets):
@@ -87,23 +130,41 @@ def plot_grid(datasets):
         },
     )
 
+
+# In[10]:
+
+
 metadata = DatasetMetadata(metadata=DATASET_METADATA)
 def sync_active_dataset(event):
     metadata.active_key = event.new
 browser.param.watch(sync_active_dataset, 'active_dataset')
 
+
+# In[11]:
+
+
 sidebar = pn.Column(
-    "## Datasets",
+    #"## Datasets",
+    pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
     browser.panel,
+    pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
     metadata.panel,
     width=250
 )
+
+
+# In[12]:
+
 
 main = pn.Column(
     plot_grid,
     sizing_mode="stretch_width",
     css_classes=["main-content"]    
 )
+
+
+# In[13]:
+
 
 vis = pn.Row(
     sidebar,
@@ -112,18 +173,54 @@ vis = pn.Row(
     styles={"height" : "100vh"}
 )
 
-template = pn.template.BootstrapTemplate(title="My Panel App")
+
+# In[14]:
+
+
+template = pn.template.BootstrapTemplate(title="Forecast Studio")
+
+
+# In[15]:
+
 
 commandRunner = CommandRunner()
 inference = pn.Column(
     commandRunner.panel()
 )
 
+
+# In[16]:
+
+
+inferenceTab = InferenceTab()
+
 tabs = pn.Tabs(
     ("Visualization", vis),
-    ("Inference", inference)
+    #("Inference", inference),
+    ("Inference", inferenceTab.panel()),
+    stylesheets=["""
+    .bk-tab { 
+        background: #f0f0f0;
+        border-radius: 4px 4px 0 0;
+        font-size: 14px;
+        padding: 8px 16px;
+    }
+    .bk-tab.bk-active {
+        background: white;
+        border-top: 2px solid #007bff;
+        font-weight: bold;
+    }
+    .bk-tabs-header {
+        background: #e8e8e8;
+    }
+    .bk-tabs-content {
+        border: 1px solid #ccc;
+        padding: 10px;
+    }
+    """]
 )
 template.main[:] = [
     pn.Column(tabs, sizing_mode="stretch_both")
 ]
 template.servable()
+

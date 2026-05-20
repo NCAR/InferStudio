@@ -3,6 +3,7 @@ import param
 import subprocess
 import threading
 import os
+import shutil
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,7 +53,35 @@ class InferenceTab(param.Parameterized):
         start = self.timePicker.startDate
         end = self.timePicker.endDate
         inc = self.timePicker.increment
+
+        print("CPV " + self.outputDirPicker.current_path_val)
+
+        configFile = self.outputDirPicker.current_path_val + '/' + self.outputDirPicker.simulationNamePicker.value + '.yml'
+        with open('model_predict_CI.yml', 'r') as f:
+            content = f.read()
+
+        forecast_start = start
+        forecast_end   = end
+
+        content = content.replace(
+            'forecast_start_time: "2025-12-03 12:00:00"',
+            f'forecast_start_time: "{forecast_start}"'
+        )
+        content = content.replace(
+            'forecast_end_time: "2025-12-03 18:00:00"',
+            f'forecast_end_time: "{forecast_end}"'
+        )
+        content = content.replace(
+            'forecast_timestep: "1h"',
+            #f'forecast_timestep: "{inc}"'
+            #f'forecast_timestep: "{self.timePicker.increment}"'
+            f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
+        )
+
         
+        with open(configFile, 'w') as f:
+            f.write(content)
+ 
         print(start, end, inc)
 
     def _on_run_click(self, event):

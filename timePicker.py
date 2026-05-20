@@ -26,7 +26,7 @@ class TimePicker(param.Parameterized):
         self.incrementLabel = pn.pane.Markdown("Time Step Increment", margin=(0,0,-5,0))
         self.incrementButtons = pn.widgets.RadioButtonGroup(
             name="Timestep Increment",
-            options={'1 hour':1, '6 hour':6, '12 hour':12, '24 hour':24},
+            options={'1 hour':'1h', '6 hour':'6h', '12 hour':'12h', '24 hour':'24h'},
             button_type='default',
             margin=(0,5,5,0)
         )
