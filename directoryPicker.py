@@ -13,9 +13,9 @@ class DirectoryPicker:
         self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
         self._callback = None
 
-        self.simulationNamePicker = pn.widgets.TextInput(name='', placeholder='Enter a name for your simulation')
+        self.simulationNamePicker = pn.widgets.TextInput(name='Simulation Name:', placeholder='Enter a name for your simulation')
 
-        self.path_display = pn.widgets.TextInput(
+        self.pathDisplay = pn.widgets.TextInput(
             value=self.current_path_val,
             sizing_mode="stretch_width",
         )
@@ -25,8 +25,32 @@ class DirectoryPicker:
         self.modal = pn.Modal(self.dialog, name="Select output directory", margin=0)
         self.browse_button = self.modal.create_button("toggle", name="Output Directory", button_type="primary")
 
+        self.surfaceVars = pn.widgets.CheckButtonGroup(
+            name="Surface Variables",
+            value=['SP'],
+            options=['SP','t2m','V500','U500','T500','Z500','Q500'],
+            button_type='primary',
+            button_style='outline'
+        )
+        self.surfaceVarsGroup = pn.Row(
+            pn.pane.Markdown("Surface Variables"),
+            self.surfaceVars
+        )
+
+        self.UAVars = pn.widgets.CheckButtonGroup(
+            name="Upper Air Variables",
+            value=['U'],
+            options=['U','V','T','Q'],
+            button_type='primary',
+            button_style='outline'
+        )
+        self.UAVarsGroup = pn.Row(
+            pn.pane.Markdown("Upper Air Variables"),
+            self.UAVars
+        )
+
     def _build_picker(self, width):
-        self.current_path_display = pn.widgets.TextInput(
+        self.currentPathDisplay = pn.widgets.TextInput(
             value=self.current_path_val,
             disabled=True,
             sizing_mode="stretch_width"
@@ -47,7 +71,7 @@ class DirectoryPicker:
 
         self.dialog = pn.Column(
             "### 📁 Select Directory",
-            self.current_path_display,
+            self.currentPathDisplay,
             self.list_container,
             self.select_button,
             width=width,
@@ -56,7 +80,7 @@ class DirectoryPicker:
         self._refresh()
 
     def _refresh(self):
-        self.current_path_display.value = self.current_path_val
+        self.currentPathDisplay.value = self.current_path_val
 
         try:
             entries = os.listdir(self.current_path_val)
@@ -102,7 +126,7 @@ class DirectoryPicker:
             self._refresh()
 
     def _select(self, _):
-        self.path_display.value = self.current_path_val
+        self.pathDisplay.value = self.current_path_val
 
         if self._callback:
             self._callback(self.current_path_val)
@@ -113,14 +137,16 @@ class DirectoryPicker:
 
     def panel(self):
         return pn.WidgetBox(
-            "# Simulation Output Parameters",
+            "# Output Parameters",
             self.simulationNamePicker,
             pn.Row(
                 self.browse_button,
-                self.path_display,
+                self.pathDisplay,
                 self.modal,
                 sizing_mode="stretch_width",
             ),
+            self.surfaceVarsGroup,
+            self.UAVarsGroup,
             sizing_mode="stretch_width"
         )
 

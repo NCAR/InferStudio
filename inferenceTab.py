@@ -22,10 +22,7 @@ class InferenceTab(param.Parameterized):
             #options={'1 hour':1, '6 hour':6, '12 hour':12, '24 hour':24},
         self.modelPicker = pn.widgets.RadioButtonGroup(
             name="Select Model",
-            options=['miles-credit', 'AIFS', 'AIFS Ensemble', 'Atlas', 'Aurora', 'DLWP', 'DLESyM', 'FourCastNet',
-                    'FourCastNet 3', 'FengWu', 'FuXi', 'GraphCast', 'Pangu', 'SFNO', 'StormCast', 'StormScope',
-                    'InterpModAFNO' 
-            ],
+            options=['WXFormer', 'AIFS', 'Aurora', 'FourCastNet3', 'GraphCast', 'Pangu', 'SFNO'],
             button_type='primary',
             button_style='outline',
             margin=(0,5,5,0)
@@ -47,29 +44,37 @@ class InferenceTab(param.Parameterized):
             width=30, height=30, value=False, color="primary", visible=False
         )
 
+        self.outputLog = pn.widgets.TextAreaInput(
+            name="Output Log",
+            value="",
+            height=200,
+            sizing_mode="stretch_width",
+        )
+
         self.commandRunner = CommandRunner()
 
     def _replaceParams(self):
-        start = self.timePicker.startDate
-        end = self.timePicker.endDate
-        inc = self.timePicker.increment
+        #start = self.timePicker.startDate
+        #end = self.timePicker.endDate
+        #inc = self.timePicker.increment
 
         print("CPV " + self.outputDirPicker.current_path_val)
 
-        configFile = self.outputDirPicker.current_path_val + '/' + self.outputDirPicker.simulationNamePicker.value + '.yml'
-        with open('model_predict_CI.yml', 'r') as f:
+        with open('model_predict_casper.yml', 'r') as f:
             content = f.read()
 
-        forecast_start = start
-        forecast_end   = end
+        #forecast_start = start
+        #forecast_end   = end
 
         content = content.replace(
-            'forecast_start_time: "2025-12-03 12:00:00"',
-            f'forecast_start_time: "{forecast_start}"'
+            'forecast_start_time: "2025-07-02 00:00:00"',
+            f'forecast_start_time: "{self.timePicker.startDatePicker.value}"'
+            #f'forecast_start_time: "{forecast_start}"'
         )
         content = content.replace(
-            'forecast_end_time: "2025-12-03 18:00:00"',
-            f'forecast_end_time: "{forecast_end}"'
+            'forecast_end_time: "2025-07-02 02:00:00"',
+            f'forecast_end_time: "{self.timePicker.endDatePicker.value}"'
+            #f'forecast_end_time: "{forecast_end}"'
         )
         content = content.replace(
             'forecast_timestep: "1h"',
@@ -77,13 +82,23 @@ class InferenceTab(param.Parameterized):
             #f'forecast_timestep: "{self.timePicker.increment}"'
             f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
         )
-
+        content = content.replace(
+            "variables: ['U','V','T','Q']",
+            f"variables: {self.outputDirPicker.UAVars.value}"
+        )
+        content = content.replace(
+            "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
+            f"surface_variables: {self.outputDirPicker.surfaceVars.value}"
+        )
+        content = content.replace(
+            "save_forecast: '/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/wxformer_1h_gfs_demo/'",
+            f"save_forecast: '{self.outputDirPicker.pathDisplay.value}'"
+        )
         
-        with open(configFile, 'w') as f:
+        self.configFile = self.outputDirPicker.current_path_val + '/' + self.outputDirPicker.simulationNamePicker.value + '.yml'
+        with open(self.configFile, 'w') as f:
             f.write(content)
  
-        print(start, end, inc)
-
     def _on_run_click(self, event):
         """Wrapper to launch the execution in a thread."""
         #cmd = self.editor.value.strip()
@@ -91,7 +106,13 @@ class InferenceTab(param.Parameterized):
         #cmd = "echo foo >> foo.txt"
         print("hmmm should do it ...")
         self._replaceParams()
-        cmd = "cat model_predict_casper.yml > new.yml"
+        #cmd = "cat model_predict_casper.yml > new.yml"
+        #outFile = self.outputDirPicker.current_path_val + '/' + self.outputDirPicker.simulationNamePicker.value + '.yml'
+        #cmd += f" && echo {outFile} >> new.yml"
+
+        cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/gfs_init.py -c {self.configFile} &&
+                 python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
+        #cmd = f"echo '{myCmd}' >> '{self.configFile}'"
 
         if not cmd: return
 
@@ -108,30 +129,33 @@ class InferenceTab(param.Parameterized):
         """The actual heavy lifting, now running in a background thread."""
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-
+    
+        self.outputLog.value = ""  # clear previous output
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 cmd,
                 shell=True,
-                capture_output=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=env
             )
-            response = result.stdout
+            for line in process.stdout:
+                self.outputLog.value += line
+            process.wait()
+            if process.returncode != 0:
+                self.outputLog.value += f"\nProcess exited with code {process.returncode}"
         except Exception as e:
-            response = f"Error: {str(e)}"
-
-        self.output_log = response if response else "Done (no output)."
-        self.spinner.value = False
-        self.spinner.visible = False
-        self.inferenceButton.disabled = False
-
+            self.outputLog.value = f"Error: {str(e)}"
+        finally:
+            self.spinner.value = False
+            self.spinner.visible = False
+            self.inferenceButton.disabled = False
+    
     def panel(self):
         return pn.Column(
             pn.WidgetBox(
-                '# Select Model',
+                '# AI Model',
                 self.modelPicker,
                 sizing_mode='stretch_width',
             ),
@@ -143,6 +167,7 @@ class InferenceTab(param.Parameterized):
                 sizing_mode='stretch_width',
             ),
             #self.commandRunner.panel(),
+            self.outputLog,
             sizing_mode='stretch_width',
             min_height=300 # Forces the container to expand
         )
