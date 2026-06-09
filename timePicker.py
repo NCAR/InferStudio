@@ -20,7 +20,8 @@ class TimePicker(param.Parameterized):
 
         self.endDatePicker = pn.widgets.DatetimePicker(
             name="End Date",
-            value = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72)
+            value = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
+            #value = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72)
             #value=self.endDate
         )
         #self.endDatePicker.link(self, value='endDate')
