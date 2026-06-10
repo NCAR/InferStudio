@@ -21,16 +21,15 @@ class InferenceTab(param.Parameterized):
     def __init__(self, **params):
         super().__init__(**params)
 
-            #options={'1 hour':1, '6 hour':6, '12 hour':12, '24 hour':24},
-        self.modelPicker = pn.widgets.RadioButtonGroup(
+        #self.modelPicker = pn.widgets.RadioButtonGroup(
+        self.modelPicker = pn.widgets.CheckButtonGroup(
             name="Select Model",
+            value=['WXFormer', 'AIFS'],
             options=['WXFormer', 'AIFS', 'Aurora', 'FourCastNet3', 'GraphCast', 'Pangu', 'SFNO'],
             button_type='primary',
             button_style='outline',
             margin=(0,5,5,0)
         )
-
-        #self.simulationNamePicker = pn.widgets.TextInput(name='Simulation Name', placeholder='Enter a name for your simulation')
 
         self.outputDirPicker = DirectoryPicker(start_path=Path.home())
 
@@ -55,9 +54,9 @@ class InferenceTab(param.Parameterized):
         )
 
         self.outputLog = pn.widgets.TextAreaInput(
-            name="Output Logg",
+            name="Output Log",
             value="",
-            height=200,
+            #height=200,
             sizing_mode="stretch_both",
         )
 
@@ -67,34 +66,21 @@ class InferenceTab(param.Parameterized):
         self._process = None
 
     def _replaceParams(self):
-        #start = self.timePicker.startDate
-        #end = self.timePicker.endDate
-        #inc = self.timePicker.increment
-
-        print("CPV " + self.outputDirPicker.current_path_val)
-
         with open('model_predict_casper.yml', 'r') as f:
             content = f.read()
 
-        #forecast_start = start
-        #forecast_end   = end
-
-        #content = content.replace(
-        #    'forecast_start_time: "2025-07-02 00:00:00"',
-        #    f'forecast_start_time: "{self.timePicker.startDatePicker.value}"'
-        #    #f'forecast_start_time: "{forecast_start}"'
-        #)
-        #content = content.replace(
-        #    'forecast_end_time: "2025-07-02 02:00:00"',
-        #    f'forecast_end_time: "{self.timePicker.endDatePicker.value}"'
-        #    #f'forecast_end_time: "{forecast_end}"'
-        #)
-        #content = content.replace(
-        #    'forecast_timestep: "1h"',
-        #    #f'forecast_timestep: "{inc}"'
-        #    #f'forecast_timestep: "{self.timePicker.increment}"'
-        #    f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
-        #)
+        content = content.replace(
+            'forecast_start_time: "2025-07-02 00:00:00"',
+            f'forecast_start_time: "{self.timePicker.startDatePicker.value}"'
+        )
+        content = content.replace(
+            'forecast_end_time: "2025-07-02 02:00:00"',
+            f'forecast_end_time: "{self.timePicker.endDatePicker.value}"'
+        )
+        content = content.replace(
+            'forecast_timestep: "1h"',
+            f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
+        )
         #content = content.replace(
         #    "variables: ['U','V','T','Q']",
         #    f"variables: {self.outputDirPicker.UAVars.value}"
@@ -119,10 +105,9 @@ class InferenceTab(param.Parameterized):
 
         self._replaceParams()
 
-        cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/gfs_init.py -c {self.configFile} &&
-                  python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
-        #cmd = f"echo '{myCmd}' >> '{self.configFile}'"
-        #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
+        #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/gfs_init.py -c {self.configFile} &&
+        #          python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
+        cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
 
         if not cmd: return
 

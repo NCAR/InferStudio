@@ -36,7 +36,7 @@ class TimePicker(param.Parameterized):
             margin=(0,5,5,0)
         )
         self.incrementButtonsGroup = pn.Row(
-            pn.pane.Markdown("Time Step Increment"),
+            #pn.pane.Markdown("Time Step Increment"),
             self.incrementButtons
         )
 
