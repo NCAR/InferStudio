@@ -81,14 +81,14 @@ class InferenceTab(param.Parameterized):
             'forecast_timestep: "1h"',
             f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
         )
-        #content = content.replace(
-        #    "variables: ['U','V','T','Q']",
-        #    f"variables: {self.outputDirPicker.UAVars.value}"
-        #)
-        #content = content.replace(
-        #    "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
-        #    f"surface_variables: {self.outputDirPicker.surfaceVars.value}"
-        #)
+        content = content.replace(
+            "variables: ['U','V','T','Q']",
+            f"variables: {self.outputDirPicker.UAVars.value}"
+        )
+        content = content.replace(
+            "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
+            f"surface_variables: {self.outputDirPicker.surfaceVars.value}"
+        )
         content = content.replace(
             "save_forecast: '/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/wxformer_1h_gfs_demo/'",
             f"save_forecast: '{self.outputDirPicker.pathDisplay.value}'"
@@ -107,7 +107,10 @@ class InferenceTab(param.Parameterized):
 
         #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/gfs_init.py -c {self.configFile} &&
         #          python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
-        cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
+        #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
+        cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/gfs_init.py -c {self.configFile} &&
+                  python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
+        #cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
 
         if not cmd: return
 
@@ -131,6 +134,15 @@ class InferenceTab(param.Parameterized):
         self.cancelButton.disabled = True
 
     def _execute(self, cmd):
+        #env = os.environ.copy()
+        #env["PYTHONUNBUFFERED"] = "1"
+
+        #self.outputLog.value = subprocess.run(
+        #    "echo CONDA_PREFIX=$CONDA_PREFIX", shell=True, env=env,
+        #    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        #).stdout
+        #return
+
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 

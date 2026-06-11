@@ -1,34 +1,32 @@
 import panel as pn
 import param
-
 from datetime import datetime, timedelta
 
-class TimePicker(param.Parameterized):
-    #startDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0))
-    #endDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72))
-    #increment = param.Integer(default=1)
+VALID_CYCLES = {0, 6, 12, 18}
 
+# Check available dates for gfs_init.py with
+# gsutil ls gs://global-forecast-system/gdas.20260610/
+
+class TimePicker(param.Parameterized):
     def __init__(self, **params):
         super().__init__(**params)
 
         self.startDatePicker = pn.widgets.DatetimePicker(
             name="Start Date",
-            value = datetime.now().replace(minute=0, second=0, microsecond=0)
-            #value=self.startDate
+            value = self._snap_to_cycle(datetime.now() - timedelta(hours=24))
+            #value = datetime.now().replace(minute=0, second=0, microsecond=0)
         )
-        #self.startDatePicker.link(self, value='startDate')
 
         self.endDatePicker = pn.widgets.DatetimePicker(
             name="End Date",
-            value = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
-            #value = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72)
-            #value=self.endDate
+            value = self._snap_to_cycle(datetime.now()) - timedelta(hours=18)
+            #value = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=2)
         )
-        #self.endDatePicker.link(self, value='endDate')
+        self.startDatePicker.param.watch(self._snap_start, 'value')
+        self.endDatePicker.param.watch(self._snap_end, 'value')
 
         self.incrementLabel = pn.pane.Markdown("Time Step Increment", margin=(0,0,-5,0))
         self.incrementButtons = pn.widgets.RadioButtonGroup(
-            #name="Timestep Increment",
             name="",
             options={'1 hour':'1h', '6 hour':'6h', '12 hour':'12h', '24 hour':'24h'},
             button_type='primary',
@@ -36,9 +34,29 @@ class TimePicker(param.Parameterized):
             margin=(0,5,5,0)
         )
         self.incrementButtonsGroup = pn.Row(
-            #pn.pane.Markdown("Time Step Increment"),
             self.incrementButtons
         )
+
+    #@staticmethod
+    #def _snap_to_cycle(dt: datetime) -> datetime:
+    #    """Round datetime to nearest GDAS cycle hour (00/06/12/18Z)."""
+    #    h = dt.hour
+    #    snapped = min(VALID_CYCLES, key=lambda c: min(abs(h - c), abs(h - c + 24), abs(h - c - 24)))
+    #    return dt.replace(hour=snapped, minute=0, second=0, microsecond=0)
+    @staticmethod
+    def _snap_to_cycle(dt: datetime) -> datetime:
+        snapped_hour = (dt.hour // 6) * 6
+        return dt.replace(hour=snapped_hour, minute=0, second=0, microsecond=0)
+
+    def _snap_start(self, event):
+        snapped = self._snap_to_cycle(event.new)
+        if snapped != event.new:
+            self.startDatePicker.value = snapped
+
+    def _snap_end(self, event):
+        snapped = self._snap_to_cycle(event.new)
+        if snapped != event.new:
+            self.endDatePicker.value = snapped
 
     def panel(self):
         #return pn.Column(
