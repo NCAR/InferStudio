@@ -2,7 +2,7 @@ import panel as pn
 import os
 import param
 
-class DirectoryPicker:
+class OutputParams:
     def __init__(self, start_path=".", width=400):
         self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
         self._callback = None
@@ -21,10 +21,12 @@ class DirectoryPicker:
 
         self.surfaceVars = pn.widgets.CheckButtonGroup(
             name="Surface Variables",
-            value=['SP'],
+            #value=['SP'],
+            value=['SP','t2m','V500','U500','T500','Z500','Q500'],
             options=['SP','t2m','V500','U500','T500','Z500','Q500'],
             button_type='primary',
-            button_style='outline'
+            button_style='outline',
+            disabled=True
         )
         self.surfaceVarsGroup = pn.Row(
             pn.pane.Markdown("Surface Variables"),
@@ -33,10 +35,12 @@ class DirectoryPicker:
 
         self.UAVars = pn.widgets.CheckButtonGroup(
             name="Upper Air Variables",
-            value=['U'],
+            #value=['U'],
+            value=['U','V','T','Q'],
             options=['U','V','T','Q'],
             button_type='primary',
-            button_style='outline'
+            button_style='outline',
+            disabled=True
         )
         self.UAVarsGroup = pn.Row(
             pn.pane.Markdown("Upper Air Variables"),

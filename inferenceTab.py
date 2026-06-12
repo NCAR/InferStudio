@@ -10,9 +10,15 @@ import signal
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from directoryPicker import DirectoryPicker
+from outputParams import OutputParams
 from timePicker import TimePicker
 from commandRunner import CommandRunner
+
+from milesCreditRunner import MilesCreditRunner
+from earth2StudioRunner import Earth2StudioRunner
+
+MILES_CREDIT_MODELS = {'WXFormer'}
+EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'FourCastNet3', 'GraphCast', 'Pangu', 'SFNO'}
 
 class InferenceTab(param.Parameterized):
     startDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0))
@@ -21,7 +27,6 @@ class InferenceTab(param.Parameterized):
     def __init__(self, **params):
         super().__init__(**params)
 
-        #self.modelPicker = pn.widgets.RadioButtonGroup(
         self.modelPicker = pn.widgets.CheckButtonGroup(
             name="Select Model",
             value=['WXFormer', 'AIFS'],
@@ -31,7 +36,7 @@ class InferenceTab(param.Parameterized):
             margin=(0,5,5,0)
         )
 
-        self.outputDirPicker = DirectoryPicker(start_path=Path.home())
+        self.outputParams = OutputParams(start_path=Path.home())
 
         self.timePicker = TimePicker()
 
@@ -65,64 +70,128 @@ class InferenceTab(param.Parameterized):
         self.commandRunner = CommandRunner()
         self._process = None
 
-    def _replaceParams(self):
-        with open('model_predict_casper.yml', 'r') as f:
-            content = f.read()
+    def _get_runner(self):
+        selected = set(self.modelPicker.value)
+        if selected & MILES_CREDIT_MODELS:
+            return MilesCreditRunner()
+        elif selected & EARTH2STUDIO_MODELS:
+            return Earth2StudioRunner()
+        return None
 
-        content = content.replace(
-            'forecast_start_time: "2025-07-02 00:00:00"',
-            f'forecast_start_time: "{self.timePicker.startDatePicker.value}"'
-        )
-        content = content.replace(
-            'forecast_end_time: "2025-07-02 02:00:00"',
-            f'forecast_end_time: "{self.timePicker.endDatePicker.value}"'
-        )
-        content = content.replace(
-            'forecast_timestep: "1h"',
-            f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
-        )
-        content = content.replace(
-            "variables: ['U','V','T','Q']",
-            f"variables: {self.outputDirPicker.UAVars.value}"
-        )
-        content = content.replace(
-            "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
-            f"surface_variables: {self.outputDirPicker.surfaceVars.value}"
-        )
-        content = content.replace(
-            "save_forecast: '/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/wxformer_1h_gfs_demo/'",
-            f"save_forecast: '{self.outputDirPicker.pathDisplay.value}'"
-        )
-        
-        self.configFile = self.outputDirPicker.current_path_val + '/' + self.outputDirPicker.simulationNamePicker.value + '.yml'
-        with open(self.configFile, 'w') as f:
-            f.write(content)
- 
+    #def _replaceParams(self):
+    #    with open('model_predict_casper.yml', 'r') as f:
+    #        content = f.read()
+
+    #    content = content.replace(
+    #        'forecast_start_time: "2025-07-02 00:00:00"',
+    #        f'forecast_start_time: "{self.timePicker.startDatePicker.value}"'
+    #    )
+    #    content = content.replace(
+    #        'forecast_end_time: "2025-07-02 02:00:00"',
+    #        f'forecast_end_time: "{self.timePicker.endDatePicker.value}"'
+    #    )
+    #    content = content.replace(
+    #        'forecast_timestep: "1h"',
+    #        f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
+    #    )
+    #    content = content.replace(
+    #        "variables: ['U','V','T','Q']",
+    #        f"variables: {self.outputParams.UAVars.value}"
+    #    )
+    #    content = content.replace(
+    #        "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
+    #        f"surface_variables: {self.outputParams.surfaceVars.value}"
+    #    )
+    #    content = content.replace(
+    #        "save_forecast: '/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/wxformer_1h_gfs_demo/'",
+    #        f"save_forecast: '{self.outputParams.pathDisplay.value}'"
+    #    )
+    #    
+    #    self.configFile = self.outputParams.current_path_val + '/' + self.outputParams.simulationNamePicker.value + '.yml'
+    #    with open(self.configFile, 'w') as f:
+    #        f.write(content)
+
+    def _build_config(self):
+        return {
+            "simulation_name": self.outputParams.simulationNamePicker.value,
+            "start_time":      self.timePicker.startDatePicker.value,
+            "end_time":        self.timePicker.endDatePicker.value,
+            "timestep":        self.timePicker.incrementButtons.value,
+            "ua_vars":         self.outputParams.UAVars.value,
+            "surface_vars":    self.outputParams.surfaceVars.value,
+            "output_path":     self.outputParams.pathDisplay.value,
+            "output_dir":      self.outputParams.current_path_val,
+            "model":           self.modelPicker.value,
+        }
+
     def _on_run_click(self, event):
-        if not self.outputDirPicker.simulationNamePicker.value.strip():
-            self.outputLog.value = "Error: Please enter a simulation name."
+        print("_on_run_click fired", flush=True)
+        config = self._build_config()
+        print(f"config: {config}", flush=True)
+        runner = self._get_runner()
+        print(f"runner: {runner}", flush=True)
+        if runner is None:
+            self.outputLog.value = "Error: No recognized model selected."
+            return
+ 
+        error = runner.validate(config)
+        print(f"error: {error}", flush=True)
+        if error:
+            self.outputLog.value = error
             return
 
-        self._replaceParams()
-
-        #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/gfs_init.py -c {self.configFile} &&
-        #          python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
-        #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
-        cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/gfs_init.py -c {self.configFile} &&
-                  python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
-        #cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
-
-        if not cmd: return
-
-        # UI updates happen immediately here
         self.spinner.value = True
         self.spinner.visible = True
         self.inferenceButton.disabled = True
         self.cancelButton.disabled = False
 
-        # Launch the actual subprocess in the background
-        thread = threading.Thread(target=self._execute, args=(cmd,))
+        def _prepare_and_run():
+            try:
+                prepared = runner.prepare(config)
+                config.update(prepared)
+                cmd = runner.build_cmd(config)
+            except Exception as e:
+                self.outputLog.value = f"Error during setup: {str(e)}"
+                self.spinner.value = False
+                self.spinner.visible = False
+                self.inferenceButton.disabled = False
+                self.cancelButton.disabled = True
+                return
+            self._execute(cmd)
+        #def _prepare_and_run(): 
+        #    prepared = runner.prepare(config)
+        #    config.update(prepared)
+        #    cmd = runner.build_cmd(config)
+        #    self._execute(cmd)
+ 
+        thread = threading.Thread(target=_prepare_and_run)
         thread.start()
+ 
+    #def _on_run_click(self, event):
+    #    if not self.outputParams.simulationNamePicker.value.strip():
+    #        self.outputLog.value = "Error: Please enter a simulation name."
+    #        return
+
+    #    self._replaceParams()
+
+    #    #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/gfs_init.py -c {self.configFile} &&
+    #    #          python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
+    #    #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
+    #    cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/gfs_init.py -c {self.configFile} &&
+    #              python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
+    #    #cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
+
+    #    if not cmd: return
+
+    #    # UI updates happen immediately here
+    #    self.spinner.value = True
+    #    self.spinner.visible = True
+    #    self.inferenceButton.disabled = True
+    #    self.cancelButton.disabled = False
+
+    #    # Launch the actual subprocess in the background
+    #    thread = threading.Thread(target=self._execute, args=(cmd,))
+    #    thread.start()
 
     def _on_cancel_click(self, event):
         if self._process is not None and self._process.poll() is None:
@@ -134,17 +203,12 @@ class InferenceTab(param.Parameterized):
         self.cancelButton.disabled = True
 
     def _execute(self, cmd):
-        #env = os.environ.copy()
-        #env["PYTHONUNBUFFERED"] = "1"
-
-        #self.outputLog.value = subprocess.run(
-        #    "echo CONDA_PREFIX=$CONDA_PREFIX", shell=True, env=env,
-        #    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-        #).stdout
-        #return
-
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+
+        self.outputLog.value = cmd
+        return
+        
 
         self.outputLog.value = ""
         self.elapsedLabel.value = ""
@@ -185,6 +249,7 @@ class InferenceTab(param.Parameterized):
 
             if self._process.returncode != 0:
                 self.outputLog.value += f"\nProcess exited with code {self._process.returncode}"
+
         except Exception as e:
             self.outputLog.value = f"Error: {str(e)}"
         finally:
@@ -203,12 +268,11 @@ class InferenceTab(param.Parameterized):
                 self.modelPicker,
                 sizing_mode='stretch_width',
             ),
-            self.outputDirPicker.panel(),
+            self.outputParams.panel(),
             self.timePicker.panel,
             pn.WidgetBox(
                 "# Launcher",
                 pn.Row(
-                    #pn.Column(self.inferenceButton, self.cancelButton),
                     self.inferenceButton, self.cancelButton,
                     self.spinner, 
                     pn.Column(self.elapsedLabel, self.completionLabel)
@@ -217,5 +281,5 @@ class InferenceTab(param.Parameterized):
                 sizing_mode='stretch_width',
             ),
             sizing_mode='stretch_both',
-            min_height=300 # Forces the container to expand
+            min_height=300
         )
