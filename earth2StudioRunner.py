@@ -31,10 +31,12 @@ class Earth2StudioRunner(ModelRunner):
         if not config["simulation_name"].strip():
             return "Error: Please enter a simulation name."
         selected = set(config["model"]) & set(MODEL_MAP.keys())
-        if not selected:
-            return "Error: No recognized Earth2Studio model selected."
-        if len(selected) > 1:
-            return "Error: Please select only one Earth2Studio model at a time."
+        if config["model"] not in MODEL_MAP:
+            return f"Error: '{config['model']}' is not a recognized Earth2Studio model."
+#        if not selected:
+#            return "Error: No recognized Earth2Studio model selected."
+#        if len(selected) > 1:
+#            return "Error: Please select only one Earth2Studio model at a time."
         return None
 
     def prepare(self, config) -> dict:
@@ -49,7 +51,8 @@ class Earth2StudioRunner(ModelRunner):
                 "Run: pip install earth2studio"
             )
 
-        model_name = (set(config["model"]) & set(MODEL_MAP.keys())).pop()
+        model_name = config["model"]
+        #model_name = (set(config["model"]) & set(MODEL_MAP.keys())).pop()
         start      = config["start_time"]
         end        = config["end_time"]
         timestep   = config["timestep"]
