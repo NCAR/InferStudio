@@ -71,6 +71,8 @@ class InferenceTab(param.Parameterized):
 
         # Output log area: tabs when multiple models, plain log for one
         self.outputTabs = pn.Tabs(sizing_mode="stretch_both")
+        self.statusRow = pn.Row()
+        self._status_widgets = {}
 
     # ------------------------------------------------------------------ #
     #  Runner helpers                                                      #
@@ -118,20 +120,70 @@ class InferenceTab(param.Parameterized):
                 return
 
         # Build one TextAreaInput per model and populate the tab panel
+        #self._log_widgets = {}
+        #tabs = []
+        #for model, _ in runners:
+        #    widget = pn.widgets.TextAreaInput(
+        #        name=model,
+        #        value="",
+        #        sizing_mode="stretch_both",
+        #    )
+        #    self._log_widgets[model] = widget
+        #    tabs.append((model, widget))
+
+        #self.outputTabs.objects = []
+        #for name, widget in tabs:
+        #    self.outputTabs.append((name, widget))
+
         self._log_widgets = {}
-        tabs = []
+        self._spinners = {}
+
+        self._status_widgets = {}
+        status_items = []
+        for model, _ in runners:
+            pane = pn.pane.HTML(
+                self._status_html(model, "running"),
+                width=120,
+            )
+            self._status_widgets[model] = pane
+            status_items.append(pane)
+        self.statusRow.objects = status_items
+
+        #def _status_html(self, model, state):
+        #    # state: "running" | "done" | "error"
+        #    symbol = {"running": "⟳", "done": "✓", "error": "✗"}[state]
+        #    color  = {"running": "gray", "done": "green", "error": "red"}[state]
+        #    return f'<div style="text-align:center;color:{color}"><b>{model}</b><br>{symbol}</div>'
+
+        # add new method alongside other helpers, before panel():
+        def _status_html(self, model: str, state: str) -> str:
+            symbol = {"running": "⟳", "done": "✓", "error": "✗"}[state]
+            color  = {"running": "#888888", "done": "#2ecc71", "error": "#e74c3c"}[state]
+            return (
+                f'<div style="text-align:center;line-height:1.4">'
+                f'<span style="font-size:11px;color:#555">{model}</span><br>'
+                f'<span style="font-size:20px;color:{color}">{symbol}</span>'
+                f'</div>'
+            )
+
+        self.outputTabs.objects = []
+        self._status_widgets = {}
+        self.statusRow.objects = []
         for model, _ in runners:
             widget = pn.widgets.TextAreaInput(
                 name=model,
                 value="",
                 sizing_mode="stretch_both",
             )
+            spinner = pn.indicators.LoadingSpinner(
+                width=25, height=25, value=True, color="primary", visible=True
+            )
             self._log_widgets[model] = widget
-            tabs.append((model, widget))
-
-        self.outputTabs.objects = []
-        for name, widget in tabs:
-            self.outputTabs.append((name, widget))
+            self._spinners[model] = spinner
+            self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
+            pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
+            self._status_widgets[model] = pane
+            self.statusRow.append(pane)
 
         self._processes = {}
 
@@ -252,7 +304,23 @@ class InferenceTab(param.Parameterized):
             self._append_log(model, f"Error: {e}\n")
         finally:
             self._processes.pop(model, None)
+            spinner = self._spinners.get(model)
+            if spinner is not None:
+                spinner.value = False
+                spinner.visible = False
+            pane = self._status_widgets.get(model)
+            if pane is not None:
+                returncode = self._processes.get(model)  # already popped, so check proc directly
+                # proc is gone from _processes by now; use the local variable instead
+                try:
+                    state = "done" if proc.returncode == 0 else "error"
+                except Exception:
+                    state = "error"
+                pane.object = self._status_html(model, state)
             on_done()
+        #finally:
+        #    self._processes.pop(model, None)
+        #    on_done()
 
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
@@ -286,6 +354,7 @@ class InferenceTab(param.Parameterized):
                     self.spinner,
                     pn.Column(self.elapsedLabel, self.completionLabel)
                 ),
+                self.outputTabs,
                 self.outputTabs,
                 sizing_mode='stretch_width',
             ),
