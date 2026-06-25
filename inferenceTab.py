@@ -36,7 +36,8 @@ class InferenceTab(param.Parameterized):
             margin=(0, 5, 5, 0)
         )
 
-        self.outputParams = OutputParams(start_path=Path.home())
+        #self.outputParams = OutputParams(start_path=Path.home())
+        self.outputParams = OutputParams(start_path=Path(f"/glade/scratch/{os.environ['USER']}"))
         self.timePicker = TimePicker()
 
         self.inferenceButton = pn.widgets.Button(
@@ -59,6 +60,7 @@ class InferenceTab(param.Parameterized):
 
         self.elapsedLabel = pn.widgets.StaticText(name="Elapsed", value="N/A")
         self.completionLabel = pn.widgets.StaticText(name="Completed at", value="N/A")
+        self.completionPathLabel = pn.widgets.StaticText(name="", value="")
 
         self.commandRunner = CommandRunner()
 
@@ -119,22 +121,6 @@ class InferenceTab(param.Parameterized):
                 self._set_single_log(f"[{model}] {error}")
                 return
 
-        # Build one TextAreaInput per model and populate the tab panel
-        #self._log_widgets = {}
-        #tabs = []
-        #for model, _ in runners:
-        #    widget = pn.widgets.TextAreaInput(
-        #        name=model,
-        #        value="",
-        #        sizing_mode="stretch_both",
-        #    )
-        #    self._log_widgets[model] = widget
-        #    tabs.append((model, widget))
-
-        #self.outputTabs.objects = []
-        #for name, widget in tabs:
-        #    self.outputTabs.append((name, widget))
-
         self._log_widgets = {}
         self._spinners = {}
 
@@ -148,23 +134,6 @@ class InferenceTab(param.Parameterized):
             self._status_widgets[model] = pane
             status_items.append(pane)
         self.statusRow.objects = status_items
-
-        #def _status_html(self, model, state):
-        #    # state: "running" | "done" | "error"
-        #    symbol = {"running": "⟳", "done": "✓", "error": "✗"}[state]
-        #    color  = {"running": "gray", "done": "green", "error": "red"}[state]
-        #    return f'<div style="text-align:center;color:{color}"><b>{model}</b><br>{symbol}</div>'
-
-        # add new method alongside other helpers, before panel():
-        def _status_html(self, model: str, state: str) -> str:
-            symbol = {"running": "⟳", "done": "✓", "error": "✗"}[state]
-            color  = {"running": "#888888", "done": "#2ecc71", "error": "#e74c3c"}[state]
-            return (
-                f'<div style="text-align:center;line-height:1.4">'
-                f'<span style="font-size:11px;color:#555">{model}</span><br>'
-                f'<span style="font-size:20px;color:{color}">{symbol}</span>'
-                f'</div>'
-            )
 
         self.outputTabs.objects = []
         self._status_widgets = {}
@@ -193,6 +162,7 @@ class InferenceTab(param.Parameterized):
         self.cancelButton.disabled = False
         self.elapsedLabel.value = ""
         self.completionLabel.value = ""
+        self.completionPathLabel.value = ""
 
         # Shared elapsed timer
         overall_start = time.time()
@@ -228,6 +198,10 @@ class InferenceTab(param.Parameterized):
                 self.spinner.visible = False
                 self.inferenceButton.disabled = False
                 self.cancelButton.disabled = True
+                self.completionPathLabel.value = (
+                    f"Files written to {self.outputParams.pathDisplay.value}"
+                    f"/{self.outputParams.simulationNamePicker.value_input}"
+                )
 
         for model, runner in runners:
             t = threading.Thread(
@@ -334,6 +308,17 @@ class InferenceTab(param.Parameterized):
         self.outputTabs.objects = []
         self.outputTabs.append(("Log", widget))
 
+    def _status_html(self, model: str, state: str) -> str:
+        symbol = {"running": "⟳", "done": "✓", "error": "✗"}[state]
+        color  = {"running": "#888888", "done": "#2ecc71", "error": "#e74c3c"}[state]
+        return (
+            f'<div style="text-align:center;line-height:1.4">'
+            f'<span style="font-size:11px;color:#555">{model}</span><br>'
+            f'<span style="font-size:20px;color:{color}">{symbol}</span>'
+            f'</div>'
+        )
+
+
     # ------------------------------------------------------------------ #
     #  Layout                                                              #
     # ------------------------------------------------------------------ #
@@ -352,9 +337,9 @@ class InferenceTab(param.Parameterized):
                 pn.Row(
                     self.inferenceButton, self.cancelButton,
                     self.spinner,
-                    pn.Column(self.elapsedLabel, self.completionLabel)
+                    pn.Column(self.elapsedLabel, self.completionLabel, self.completionPathLabel)
                 ),
-                self.outputTabs,
+                self.statusRow,
                 self.outputTabs,
                 sizing_mode='stretch_width',
             ),
