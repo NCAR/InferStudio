@@ -3,7 +3,6 @@ import param
 import subprocess
 import threading
 import os
-import shutil
 import time
 import signal
 
@@ -20,6 +19,7 @@ from earth2StudioRunner import Earth2StudioRunner
 MILES_CREDIT_MODELS = {'WXFormer'}
 EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'FourCastNet3', 'GraphCast', 'Pangu', 'SFNO'}
 
+
 class InferenceTab(param.Parameterized):
     startDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0))
     endDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72))
@@ -33,11 +33,10 @@ class InferenceTab(param.Parameterized):
             options=['WXFormer', 'AIFS', 'Aurora', 'FourCastNet3', 'GraphCast', 'Pangu', 'SFNO'],
             button_type='primary',
             button_style='outline',
-            margin=(0,5,5,0)
+            margin=(0, 5, 5, 0)
         )
 
         self.outputParams = OutputParams(start_path=Path.home())
-
         self.timePicker = TimePicker()
 
         self.inferenceButton = pn.widgets.Button(
@@ -58,19 +57,27 @@ class InferenceTab(param.Parameterized):
             width=30, height=30, value=False, color="primary", visible=False
         )
 
-        self.outputLog = pn.widgets.TextAreaInput(
-            name="Output Log",
-            value="",
-            #height=200,
-            sizing_mode="stretch_both",
-        )
-
         self.elapsedLabel = pn.widgets.StaticText(name="Elapsed", value="N/A")
         self.completionLabel = pn.widgets.StaticText(name="Completed at", value="N/A")
+
         self.commandRunner = CommandRunner()
-        self._process = None
+
+        # Per-model state; populated fresh on each Run click
+        self._processes = {}       # model -> Popen
+        self._log_widgets = {}     # model -> TextAreaInput
+        self._timer_running = False
+        self._active_count = 0     # how many model threads are still running
+        self._active_lock = threading.Lock()
+
+        # Output log area: tabs when multiple models, plain log for one
+        self.outputTabs = pn.Tabs(sizing_mode="stretch_both")
+
+    # ------------------------------------------------------------------ #
+    #  Runner helpers                                                      #
+    # ------------------------------------------------------------------ #
 
     def _get_runners(self):
+        """Return list of (model_name, runner) for every selected model."""
         runners = []
         for model in self.modelPicker.value:
             if model in MILES_CREDIT_MODELS:
@@ -79,48 +86,7 @@ class InferenceTab(param.Parameterized):
                 runners.append((model, Earth2StudioRunner()))
         return runners
 
-    #def _get_runner(self):
-    #    selected = set(self.modelPicker.value)
-    #    if selected & MILES_CREDIT_MODELS:
-    #        return MilesCreditRunner()
-    #    elif selected & EARTH2STUDIO_MODELS:
-    #        return Earth2StudioRunner()
-    #    return None
-
-    #def _replaceParams(self):
-    #    with open('model_predict_casper.yml', 'r') as f:
-    #        content = f.read()
-
-    #    content = content.replace(
-    #        'forecast_start_time: "2025-07-02 00:00:00"',
-    #        f'forecast_start_time: "{self.timePicker.startDatePicker.value}"'
-    #    )
-    #    content = content.replace(
-    #        'forecast_end_time: "2025-07-02 02:00:00"',
-    #        f'forecast_end_time: "{self.timePicker.endDatePicker.value}"'
-    #    )
-    #    content = content.replace(
-    #        'forecast_timestep: "1h"',
-    #        f'forecast_timestep: "{self.timePicker.incrementButtons.value}"'
-    #    )
-    #    content = content.replace(
-    #        "variables: ['U','V','T','Q']",
-    #        f"variables: {self.outputParams.UAVars.value}"
-    #    )
-    #    content = content.replace(
-    #        "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
-    #        f"surface_variables: {self.outputParams.surfaceVars.value}"
-    #    )
-    #    content = content.replace(
-    #        "save_forecast: '/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/wxformer_1h_gfs_demo/'",
-    #        f"save_forecast: '{self.outputParams.pathDisplay.value}'"
-    #    )
-    #    
-    #    self.configFile = self.outputParams.current_path_val + '/' + self.outputParams.simulationNamePicker.value + '.yml'
-    #    with open(self.configFile, 'w') as f:
-    #        f.write(content)
-
-    def _build_config(self, model: str):
+    def _build_config(self, model: str) -> dict:
         return {
             "simulation_name": self.outputParams.simulationNamePicker.value,
             "start_time":      self.timePicker.startDatePicker.value,
@@ -130,268 +96,180 @@ class InferenceTab(param.Parameterized):
             "surface_vars":    self.outputParams.surfaceVars.value,
             "output_path":     self.outputParams.pathDisplay.value,
             "output_dir":      self.outputParams.current_path_val,
-            "model":           model,   # single string now
+            "model":           model,
         }
 
-    #def _build_config(self):
-    #    return {
-    #        "simulation_name": self.outputParams.simulationNamePicker.value,
-    #        "start_time":      self.timePicker.startDatePicker.value,
-    #        "end_time":        self.timePicker.endDatePicker.value,
-    #        "timestep":        self.timePicker.incrementButtons.value,
-    #        "ua_vars":         self.outputParams.UAVars.value,
-    #        "surface_vars":    self.outputParams.surfaceVars.value,
-    #        "output_path":     self.outputParams.pathDisplay.value,
-    #        "output_dir":      self.outputParams.current_path_val,
-    #        "model":           self.modelPicker.value,
-    #    }
+    # ------------------------------------------------------------------ #
+    #  UI event handlers                                                   #
+    # ------------------------------------------------------------------ #
 
     def _on_run_click(self, event):
-        print("_on_run_click fired", flush=True)
         runners = self._get_runners()
         if not runners:
-            self.outputLog.value = "Error: No recognized model selected."
+            self._set_single_log("Error: No recognized model selected.")
             return
-    
-        # Pre-validate all runners before starting anything
+
+        # Pre-validate all runners before touching the UI
         for model, runner in runners:
             config = self._build_config(model)
             error = runner.validate(config)
             if error:
-                self.outputLog.value = f"[{model}] {error}"
+                self._set_single_log(f"[{model}] {error}")
                 return
-    
+
+        # Build one TextAreaInput per model and populate the tab panel
+        self._log_widgets = {}
+        tabs = []
+        for model, _ in runners:
+            widget = pn.widgets.TextAreaInput(
+                name=model,
+                value="",
+                sizing_mode="stretch_both",
+            )
+            self._log_widgets[model] = widget
+            tabs.append((model, widget))
+
+        self.outputTabs.objects = []
+        for name, widget in tabs:
+            self.outputTabs.append((name, widget))
+
+        self._processes = {}
+
         self.spinner.value = True
         self.spinner.visible = True
         self.inferenceButton.disabled = True
         self.cancelButton.disabled = False
-    
-        def _prepare_and_run():
-            self._execute_all(runners)
-    
-        threading.Thread(target=_prepare_and_run).start()
-
-    #def _on_run_click(self, event):
-    #    print("_on_run_click fired", flush=True)
-    #    config = self._build_config()
-    #    print(f"config: {config}", flush=True)
-    #    runner = self._get_runner()
-    #    print(f"runner: {runner}", flush=True)
-    #    if runner is None:
-    #        self.outputLog.value = "Error: No recognized model selected."
-    #        return
- 
-    #    error = runner.validate(config)
-    #    print(f"error: {error}", flush=True)
-    #    if error:
-    #        self.outputLog.value = error
-    #        return
-
-    #    self.spinner.value = True
-    #    self.spinner.visible = True
-    #    self.inferenceButton.disabled = True
-    #    self.cancelButton.disabled = False
-
-    #    def _prepare_and_run():
-    #        try:
-    #            prepared = runner.prepare(config)
-    #            config.update(prepared)
-    #            cmd = runner.build_cmd(config)
-    #        except Exception as e:
-    #            self.outputLog.value = f"Error during setup: {str(e)}"
-    #            self.spinner.value = False
-    #            self.spinner.visible = False
-    #            self.inferenceButton.disabled = False
-    #            self.cancelButton.disabled = True
-    #            return
-    #        self._execute(cmd)
-    #    #def _prepare_and_run(): 
-    #    #    prepared = runner.prepare(config)
-    #    #    config.update(prepared)
-    #    #    cmd = runner.build_cmd(config)
-    #    #    self._execute(cmd)
- 
-    #    thread = threading.Thread(target=_prepare_and_run)
-    #    thread.start()
- 
-    #def _on_run_click(self, event):
-    #    if not self.outputParams.simulationNamePicker.value.strip():
-    #        self.outputLog.value = "Error: Please enter a simulation name."
-    #        return
-
-    #    self._replaceParams()
-
-    #    #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/gfs_init.py -c {self.configFile} &&
-    #    #          python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
-    #    #cmd = f"""python /glade/work/pearse/credit-panel/miles-credit/applications/rollout_realtime.py -c {self.configFile}"""
-    #    cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/gfs_init.py -c {self.configFile} &&
-    #              python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
-    #    #cmd = f"""python $CONDA_PREFIX/lib/python3.12/site-packages/credit/applications/rollout_realtime.py -c {self.configFile}"""
-
-    #    if not cmd: return
-
-    #    # UI updates happen immediately here
-    #    self.spinner.value = True
-    #    self.spinner.visible = True
-    #    self.inferenceButton.disabled = True
-    #    self.cancelButton.disabled = False
-
-    #    # Launch the actual subprocess in the background
-    #    thread = threading.Thread(target=self._execute, args=(cmd,))
-    #    thread.start()
-
-    def _on_cancel_click(self, event):
-        if self._process is not None and self._process.poll() is None:
-            try:
-                os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
-            except Exception:
-                self._process.terminate()
-            self.outputLog.value += "\n\nCancelled by user."
-        self.cancelButton.disabled = True
-
-    def _execute_all(self, runners):
-        self.outputLog.value = ""
         self.elapsedLabel.value = ""
         self.completionLabel.value = ""
+
+        # Shared elapsed timer
         overall_start = time.time()
         self._timer_running = True
-    
+
         def _tick():
             while self._timer_running:
                 elapsed = time.time() - overall_start
                 mins, secs = divmod(int(elapsed), 60)
                 self.elapsedLabel.value = f"{mins}m {secs}s"
                 time.sleep(1)
-    
+
         timer_thread = threading.Thread(target=_tick, daemon=True)
         timer_thread.start()
-    
+
+        # Track how many model threads are still alive
+        with self._active_lock:
+            self._active_count = len(runners)
+
+        def _on_model_done():
+            """Called by each model thread when it finishes."""
+            with self._active_lock:
+                self._active_count -= 1
+                all_done = self._active_count == 0
+            if all_done:
+                self._timer_running = False
+                timer_thread.join()
+                elapsed = time.time() - overall_start
+                mins, secs = divmod(int(elapsed), 60)
+                self.elapsedLabel.value = f"{mins}m {secs}s"
+                self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.spinner.value = False
+                self.spinner.visible = False
+                self.inferenceButton.disabled = False
+                self.cancelButton.disabled = True
+
+        for model, runner in runners:
+            t = threading.Thread(
+                target=self._run_model,
+                args=(model, runner, _on_model_done),
+                daemon=True,
+            )
+            t.start()
+
+    def _on_cancel_click(self, event):
+        for model, proc in list(self._processes.items()):
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+                self._append_log(model, "\n\nCancelled by user.")
+        self.cancelButton.disabled = True
+
+    # ------------------------------------------------------------------ #
+    #  Per-model execution                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _append_log(self, model: str, text: str):
+        widget = self._log_widgets.get(model)
+        if widget is not None:
+            widget.value += text
+
+    def _run_model(self, model: str, runner, on_done):
+        """Prepare, build, and execute a single model in its own thread."""
+        log = self._log_widgets[model]
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-    
-        cancelled = False
+
+        config = self._build_config(model)
+
+        # Each model writes into <output_path>/<model_name>/
+        model_output = Path(config["output_path"]) / model
+        model_output.mkdir(parents=True, exist_ok=True)
+        config["output_path"] = str(model_output)
+
         try:
-            for i, (model, runner) in enumerate(runners, 1):
-                if cancelled:
-                    break
-    
-                self.outputLog.value += f"\n{'='*60}\n[{i}/{len(runners)}] {model}\n{'='*60}\n"
-    
-                config = self._build_config(model)
-    
-                # Each model writes into <output_path>/<model_name>/
-                base_output = Path(config["output_path"])
-                model_output = base_output / model
-                model_output.mkdir(parents=True, exist_ok=True)
-                config["output_path"] = str(model_output)
-    
-                try:
-                    prepared = runner.prepare(config)
-                    config.update(prepared)
-                    cmd = runner.build_cmd(config)
-                except Exception as e:
-                    self.outputLog.value += f"Error during setup: {e}\n"
-                    continue   # try remaining models
-    
-                try:
-                    self._process = subprocess.Popen(
-                        cmd,
-                        shell=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        env=env,
-                        start_new_session=True,
-                    )
-                    for line in self._process.stdout:
-                        self.outputLog.value += line
-                    self._process.wait()
-    
-                    if self._process.returncode != 0:
-                        self.outputLog.value += f"\n{model} exited with code {self._process.returncode}\n"
-    
-                except Exception as e:
-                    self.outputLog.value += f"Error running {model}: {e}\n"
-    
-                finally:
-                    # If cancel was clicked mid-model the process is already dead;
-                    # check so we don't try subsequent models.
-                    if self._process is not None and self._process.returncode is None:
-                        cancelled = True
-                    self._process = None
-    
-            if cancelled:
-                self.outputLog.value += "\nCancelled — remaining models skipped.\n"
-    
-            elapsed = time.time() - overall_start
-            mins, secs = divmod(int(elapsed), 60)
-            self.elapsedLabel.value = f"{mins}m {secs}s"
-            self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+            prepared = runner.prepare(config)
+            config.update(prepared)
+            cmd = runner.build_cmd(config)
+        except Exception as e:
+            self._append_log(model, f"Error during setup: {e}\n")
+            on_done()
+            return
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+                start_new_session=True,
+            )
+            self._processes[model] = proc
+
+            for line in proc.stdout:
+                self._append_log(model, line)
+
+            proc.wait()
+
+            if proc.returncode != 0:
+                self._append_log(model, f"\nExited with code {proc.returncode}\n")
+            else:
+                self._append_log(model, "\nDone.\n")
+
+        except Exception as e:
+            self._append_log(model, f"Error: {e}\n")
         finally:
-            self._timer_running = False
-            timer_thread.join()
-            self._process = None
-            self.spinner.value = False
-            self.spinner.visible = False
-            self.inferenceButton.disabled = False
-            self.cancelButton.disabled = True
+            self._processes.pop(model, None)
+            on_done()
 
-    #def _execute(self, cmd):
-    #    env = os.environ.copy()
-    #    env["PYTHONUNBUFFERED"] = "1"
+    # ------------------------------------------------------------------ #
+    #  Helpers                                                             #
+    # ------------------------------------------------------------------ #
 
-    #    self.outputLog.value = ""
-    #    self.elapsedLabel.value = ""
-    #    self.completionLabel.value = ""
-    #    start_time = time.time()
-    #    self._timer_running = True
+    def _set_single_log(self, message: str):
+        """Show a plain error message before tabs have been built."""
+        widget = pn.widgets.TextAreaInput(
+            name="Log", value=message, sizing_mode="stretch_both"
+        )
+        self.outputTabs.objects = []
+        self.outputTabs.append(("Log", widget))
 
-    #    def _tick():
-    #        while self._timer_running:
-    #            elapsed = time.time() - start_time
-    #            mins, secs = divmod(int(elapsed), 60)
-    #            self.elapsedLabel.value = f"{mins}m {secs}s"
-    #            time.sleep(1)
+    # ------------------------------------------------------------------ #
+    #  Layout                                                              #
+    # ------------------------------------------------------------------ #
 
-    #    timer_thread = threading.Thread(target=_tick, daemon=True)
-    #    timer_thread.start()
-
-    #    try:
-    #        self._process = subprocess.Popen(
-    #            cmd,
-    #            shell=True,
-    #            stdout=subprocess.PIPE,
-    #            stderr=subprocess.STDOUT,
-    #            text=True,
-    #            env=env,
-    #            start_new_session=True
-    #        )
-
-    #        for line in self._process.stdout:
-    #            self.outputLog.value += line
-
-    #        self._process.wait()
-
-    #        elapsed = time.time() - start_time
-    #        mins, secs = divmod(int(elapsed), 60)
-    #        self.elapsedLabel.value = f"{mins}m {secs}s"
-    #        self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    #        if self._process.returncode != 0:
-    #            self.outputLog.value += f"\nProcess exited with code {self._process.returncode}"
-
-    #    except Exception as e:
-    #        self.outputLog.value = f"Error: {str(e)}"
-    #    finally:
-    #        self._timer_running = False
-    #        timer_thread.join()
-    #        self._process = None
-    #        self.spinner.value = False
-    #        self.spinner.visible = False
-    #        self.inferenceButton.disabled = False
-    #        self.cancelButton.disabled = True
-    
     def panel(self):
         return pn.Column(
             pn.WidgetBox(
@@ -405,10 +283,10 @@ class InferenceTab(param.Parameterized):
                 "# Launcher",
                 pn.Row(
                     self.inferenceButton, self.cancelButton,
-                    self.spinner, 
+                    self.spinner,
                     pn.Column(self.elapsedLabel, self.completionLabel)
                 ),
-                self.outputLog,
+                self.outputTabs,
                 sizing_mode='stretch_width',
             ),
             sizing_mode='stretch_both',
