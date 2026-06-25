@@ -24,14 +24,20 @@ class MilesCreditRunner(ModelRunner):
             'forecast_timestep: "1h"',
             f'forecast_timestep: "{config["timestep"]}"'
         )
+
         content = content.replace(
-            "variables: ['U','V','T','Q']",
-            f"variables: {config['ua_vars']}"
+            "save_vars: []",
+            f"save_vars: {config['surface_vars'] + config['ua_vars']}"
         )
-        content = content.replace(
-            "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
-            f"surface_variables: {config['surface_vars']}"
-        )
+        #content = content.replace(
+        #    "variables: ['U','V','T','Q']",
+        #    f"variables: {config['ua_vars']}"
+        #)
+        #content = content.replace(
+        #    "surface_variables: ['SP','t2m','V500','U500','T500','Z500','Q500']",
+        #    f"surface_variables: {config['surface_vars']}"
+        #)
+
         content = content.replace(
             "save_forecast: '/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/wxformer_1h_gfs_demo/'",
             f"save_forecast: '{config['output_path']}'"

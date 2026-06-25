@@ -206,10 +206,6 @@ class InferenceTab(param.Parameterized):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        self.outputLog.value = cmd
-        return
-        
-
         self.outputLog.value = ""
         self.elapsedLabel.value = ""
         self.completionLabel.value = ""

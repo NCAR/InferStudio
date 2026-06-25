@@ -26,7 +26,7 @@ class OutputParams:
             options=['SP','t2m','V500','U500','T500','Z500','Q500'],
             button_type='primary',
             button_style='outline',
-            disabled=True
+            #disabled=True
         )
         self.surfaceVarsGroup = pn.Row(
             pn.pane.Markdown("Surface Variables"),
@@ -40,7 +40,7 @@ class OutputParams:
             options=['U','V','T','Q'],
             button_type='primary',
             button_style='outline',
-            disabled=True
+            #disabled=True
         )
         self.UAVarsGroup = pn.Row(
             pn.pane.Markdown("Upper Air Variables"),

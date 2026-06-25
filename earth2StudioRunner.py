@@ -40,23 +40,14 @@ class Earth2StudioRunner(ModelRunner):
     def prepare(self, config) -> dict:
         return config
 
-    def _translateVars(self, vars):
-        result = []
-        for v in vars:
-            if v in CREDIT_TO_AIFS:
-                result.extend(CREDIT_TO_AIFS[v])
-            else:
-                result.append(v.lower())  # fallback: just lowercase it
-        return list(dict.fromkeys(result))  # deduplicate while preserving order
-    
-        def build_cmd(self, config) -> str:
-            try:
-                import earth2studio  # noqa: F401
-            except ImportError:
-                raise RuntimeError(
-                    "earth2studio is not installed in this environment. "
-                    "Run: pip install earth2studio"
-                )
+    def build_cmd(self, config) -> str:
+        try:
+            import earth2studio  # noqa: F401
+        except ImportError:
+            raise RuntimeError(
+                "earth2studio is not installed in this environment. "
+                "Run: pip install earth2studio"
+            )
 
         model_name = (set(config["model"]) & set(MODEL_MAP.keys())).pop()
         start      = config["start_time"]
@@ -64,8 +55,9 @@ class Earth2StudioRunner(ModelRunner):
         timestep   = config["timestep"]
         output_path = config["output_path"]
         sim_name   = config["simulation_name"]
-        ua_vars    = self.translateVars(config["ua_vars"])
-        sfc_vars   = self.translateVars(config["surface_vars"])
+        ua_vars    = self._translateVars(config["ua_vars"])
+        sfc_vars   = self._translateVars(config["surface_vars"])
+        all_vars = list(dict.fromkeys(ua_vars + sfc_vars))
 
         # Compute number of steps from start/end/timestep
         hours = int(timestep.replace("h", ""))
@@ -114,7 +106,7 @@ print(f"Running on: {{device}}", flush=True)
 model = model.to(device)
 
 print("Setting up output backend...", flush=True)
-io = NetCDF4Backend("{output_nc}")
+io = NetCDF4Backend("{output_nc}", backend_kwargs={{'mode': 'w'}})
 
 print("Setting up data source...", flush=True)
 data = GFS()
@@ -127,7 +119,7 @@ deterministic(
     data=data,
     io=io,
     output_coords={{
-        "variable": np.array({list(ua_vars) + list(sfc_vars)}),
+        "variable": np.array({all_vars}),
     }},
 )
 print("Output written to {output_nc}", flush=True)
@@ -137,3 +129,13 @@ print("Output written to {output_nc}", flush=True)
             f.write(script)
 
         return f"python {script_path}"
+
+    def _translateVars(self, vars):
+        result = []
+        for v in vars:
+            if v in CREDIT_TO_AIFS:
+                result.extend(CREDIT_TO_AIFS[v])
+            else:
+                result.append(v.lower())  # fallback: just lowercase it
+        return list(dict.fromkeys(result))  # deduplicate while preserving order
+    

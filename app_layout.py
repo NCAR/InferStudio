@@ -17,18 +17,18 @@ def scan_datasets(data_dir):
         if d.is_dir():
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", FutureWarning)
-            with xr.open_mfdataset(f"{d}/*.nc", engine="netcdf4", autoclose=True, data_vars='all') as ds:
-                metadata[d.name] = {
-                    "ntime": len(ds.time),
-                    "nlev": len(ds.get(LEV_NAME, [])),
-                    "nplev": int(ds.sizes[PRES_NAME]),
-                    "nlat": int(ds.sizes[LAT_NAME]),
-                    "nlon": int(ds.sizes[LON_NAME]),
-                    "stime": str(ds.time.values[0].astype("datetime64[s]")),
-                    "etime": str(ds.time.values[-1].astype("datetime64[s]")),
-                    "vars2d": [v for v in ds.data_vars if len(ds[v].dims) <= 3],
-                    "vars3d": [v for v in ds.data_vars if len(ds[v].dims) > 3],
-                }
+                with xr.open_mfdataset(f"{d}/*.nc", engine="netcdf4", autoclose=True, data_vars='all') as ds:
+                    metadata[d.name] = {
+                        "ntime": len(ds.time),
+                        "nlev": len(ds.get(LEV_NAME, [])),
+                        "nplev": int(ds.sizes[PRES_NAME]),
+                        "nlat": int(ds.sizes[LAT_NAME]),
+                        "nlon": int(ds.sizes[LON_NAME]),
+                        "stime": str(ds.time.values[0].astype("datetime64[s]")),
+                        "etime": str(ds.time.values[-1].astype("datetime64[s]")),
+                        "vars2d": [v for v in ds.data_vars if len(ds[v].dims) <= 3],
+                        "vars3d": [v for v in ds.data_vars if len(ds[v].dims) > 3],
+                    }
     return metadata
 
 
