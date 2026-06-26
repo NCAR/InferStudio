@@ -36,7 +36,6 @@ class InferenceTab(param.Parameterized):
             margin=(0, 5, 5, 0)
         )
 
-        #self.outputParams = OutputParams(start_path=Path.home())
         self.outputParams = OutputParams(start_path=Path(f"/glade/scratch/{os.environ['USER']}"))
         self.timePicker = TimePicker()
 
@@ -65,16 +64,16 @@ class InferenceTab(param.Parameterized):
         self.commandRunner = CommandRunner()
 
         # Per-model state; populated fresh on each Run click
-        self._processes = {}       # model -> Popen
-        self._log_widgets = {}     # model -> TextAreaInput
+        self._processes = {}        # model -> Popen
+        self._log_widgets = {}      # model -> TextAreaInput
+        self._spinners = {}         # model -> LoadingSpinner
+        self._status_widgets = {}   # model -> HTML pane
         self._timer_running = False
-        self._active_count = 0     # how many model threads are still running
+        self._active_count = 0
         self._active_lock = threading.Lock()
 
-        # Output log area: tabs when multiple models, plain log for one
         self.outputTabs = pn.Tabs(sizing_mode="stretch_both")
         self.statusRow = pn.Row()
-        self._status_widgets = {}
 
     # ------------------------------------------------------------------ #
     #  Runner helpers                                                      #
@@ -92,7 +91,7 @@ class InferenceTab(param.Parameterized):
 
     def _build_config(self, model: str) -> dict:
         return {
-            "simulation_name": self.outputParams.simulationNamePicker.value,
+            "simulation_name": self.outputParams.simulationNamePicker.value_input,
             "start_time":      self.timePicker.startDatePicker.value,
             "end_time":        self.timePicker.endDatePicker.value,
             "timestep":        self.timePicker.incrementButtons.value,
@@ -121,58 +120,29 @@ class InferenceTab(param.Parameterized):
                 self._set_single_log(f"[{model}] {error}")
                 return
 
-            self._log_widgets = {}
-            self._spinners = {}
-            self._status_widgets = {}
-            self.outputTabs.objects = []
-            self.statusRow.objects = []
-            for model, _ in runners:
-                widget = pn.widgets.TextAreaInput(
-                    name=model,
-                    value="",
-                    sizing_mode="stretch_both",
-                )
-                spinner = pn.indicators.LoadingSpinner(
-                    width=25, height=25, value=True, color="primary", visible=True
-                )
-                pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
-                self._log_widgets[model] = widget
-                self._spinners[model] = spinner
-                self._status_widgets[model] = pane
-                self.statusRow.append(pane)
-                self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
+        # Build tabs, spinners, and status indicators — one per model
+        self._log_widgets = {}
+        self._spinners = {}
+        self._status_widgets = {}
+        self._processes = {}
+        self.outputTabs.objects = []
+        self.statusRow.objects = []
 
-            self._processes = {}
-
-
-            #if error:
-            #self._log_widgets = {}
-            #self._spinners = {}
-            #self._status_widgets = {}
-            #self.outputTabs.objects = []
-            #self.statusRow.objects = []
-            #for model, _ in runners:
-            #    widget = pn.widgets.TextAreaInput(
-            #        name=model,
-            #        value="",
-            #        sizing_mode="stretch_both",
-            #    )
-            #    spinner = pn.indicators.LoadingSpinner(
-            #        width=25, height=25, value=True, color="primary", visible=True
-            #    )
-            #    pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
-            #    self._log_widgets[model] = widget
-            #    self._spinners[model] = spinner
-            #    self._status_widgets[model] = pane
-            #    self.statusRow.append(pane)
-            #    self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
-            #    self._spinners[model] = spinner
-            #    self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
-            #    pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
-            #    self._status_widgets[model] = pane
-            #    self.statusRow.append(pane)
-
-            #self._processes = {}
+        for model, _ in runners:
+            widget = pn.widgets.TextAreaInput(
+                name=model,
+                value="",
+                sizing_mode="stretch_both",
+            )
+            spinner = pn.indicators.LoadingSpinner(
+                width=25, height=25, value=True, color="primary", visible=True
+            )
+            pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
+            self._log_widgets[model] = widget
+            self._spinners[model] = spinner
+            self._status_widgets[model] = pane
+            self.statusRow.append(pane)
+            self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
 
         self.spinner.value = True
         self.spinner.visible = True
@@ -196,7 +166,6 @@ class InferenceTab(param.Parameterized):
         timer_thread = threading.Thread(target=_tick, daemon=True)
         timer_thread.start()
 
-        # Track how many model threads are still alive
         with self._active_lock:
             self._active_count = len(runners)
 
@@ -212,14 +181,14 @@ class InferenceTab(param.Parameterized):
                 mins, secs = divmod(int(elapsed), 60)
                 self.elapsedLabel.value = f"{mins}m {secs}s"
                 self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.spinner.value = False
-                self.spinner.visible = False
-                self.inferenceButton.disabled = False
-                self.cancelButton.disabled = True
                 self.completionPathLabel.value = (
                     f"Files written to {self.outputParams.pathDisplay.value}"
                     f"/{self.outputParams.simulationNamePicker.value_input}"
                 )
+                self.spinner.value = False
+                self.spinner.visible = False
+                self.inferenceButton.disabled = False
+                self.cancelButton.disabled = True
 
         for model, runner in runners:
             t = threading.Thread(
@@ -250,7 +219,6 @@ class InferenceTab(param.Parameterized):
 
     def _run_model(self, model: str, runner, on_done):
         """Prepare, build, and execute a single model in its own thread."""
-        log = self._log_widgets[model]
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
@@ -261,12 +229,20 @@ class InferenceTab(param.Parameterized):
         model_output.mkdir(parents=True, exist_ok=True)
         config["output_path"] = str(model_output)
 
+        proc = None
         try:
             prepared = runner.prepare(config)
             config.update(prepared)
             cmd = runner.build_cmd(config)
         except Exception as e:
             self._append_log(model, f"Error during setup: {e}\n")
+            pane = self._status_widgets.get(model)
+            if pane is not None:
+                pane.object = self._status_html(model, "error")
+            spinner = self._spinners.get(model)
+            if spinner is not None:
+                spinner.value = False
+                spinner.visible = False
             on_done()
             return
 
@@ -302,17 +278,12 @@ class InferenceTab(param.Parameterized):
                 spinner.visible = False
             pane = self._status_widgets.get(model)
             if pane is not None:
-                returncode = self._processes.get(model)  # already popped, so check proc directly
-                # proc is gone from _processes by now; use the local variable instead
                 try:
                     state = "done" if proc.returncode == 0 else "error"
                 except Exception:
                     state = "error"
                 pane.object = self._status_html(model, state)
             on_done()
-        #finally:
-        #    self._processes.pop(model, None)
-        #    on_done()
 
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
@@ -335,7 +306,6 @@ class InferenceTab(param.Parameterized):
             f'<span style="font-size:20px;color:{color}">{symbol}</span>'
             f'</div>'
         )
-
 
     # ------------------------------------------------------------------ #
     #  Layout                                                              #
