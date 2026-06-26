@@ -121,40 +121,58 @@ class InferenceTab(param.Parameterized):
                 self._set_single_log(f"[{model}] {error}")
                 return
 
-        self._log_widgets = {}
-        self._spinners = {}
+            self._log_widgets = {}
+            self._spinners = {}
+            self._status_widgets = {}
+            self.outputTabs.objects = []
+            self.statusRow.objects = []
+            for model, _ in runners:
+                widget = pn.widgets.TextAreaInput(
+                    name=model,
+                    value="",
+                    sizing_mode="stretch_both",
+                )
+                spinner = pn.indicators.LoadingSpinner(
+                    width=25, height=25, value=True, color="primary", visible=True
+                )
+                pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
+                self._log_widgets[model] = widget
+                self._spinners[model] = spinner
+                self._status_widgets[model] = pane
+                self.statusRow.append(pane)
+                self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
 
-        self._status_widgets = {}
-        status_items = []
-        for model, _ in runners:
-            pane = pn.pane.HTML(
-                self._status_html(model, "running"),
-                width=120,
-            )
-            self._status_widgets[model] = pane
-            status_items.append(pane)
-        self.statusRow.objects = status_items
+            self._processes = {}
 
-        self.outputTabs.objects = []
-        self._status_widgets = {}
-        self.statusRow.objects = []
-        for model, _ in runners:
-            widget = pn.widgets.TextAreaInput(
-                name=model,
-                value="",
-                sizing_mode="stretch_both",
-            )
-            spinner = pn.indicators.LoadingSpinner(
-                width=25, height=25, value=True, color="primary", visible=True
-            )
-            self._log_widgets[model] = widget
-            self._spinners[model] = spinner
-            self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
-            pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
-            self._status_widgets[model] = pane
-            self.statusRow.append(pane)
 
-        self._processes = {}
+            #if error:
+            #self._log_widgets = {}
+            #self._spinners = {}
+            #self._status_widgets = {}
+            #self.outputTabs.objects = []
+            #self.statusRow.objects = []
+            #for model, _ in runners:
+            #    widget = pn.widgets.TextAreaInput(
+            #        name=model,
+            #        value="",
+            #        sizing_mode="stretch_both",
+            #    )
+            #    spinner = pn.indicators.LoadingSpinner(
+            #        width=25, height=25, value=True, color="primary", visible=True
+            #    )
+            #    pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
+            #    self._log_widgets[model] = widget
+            #    self._spinners[model] = spinner
+            #    self._status_widgets[model] = pane
+            #    self.statusRow.append(pane)
+            #    self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
+            #    self._spinners[model] = spinner
+            #    self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
+            #    pane = pn.pane.HTML(self._status_html(model, "running"), width=100)
+            #    self._status_widgets[model] = pane
+            #    self.statusRow.append(pane)
+
+            #self._processes = {}
 
         self.spinner.value = True
         self.spinner.visible = True
