@@ -6,17 +6,28 @@ import param
 pn.extension()
 
 class DatasetBrowser(param.Parameterized):
-    # Track multi-select state
     checked_items = param.List(default=[])
-    # Track single "active" focus state
     active_dataset = param.String(default="")
 
     def __init__(self, datasets, **params):
         super().__init__(**params)
-        self.datasets = datasets
-        print(self.datasets)
-        # Storage for row objects to allow dynamic style updates
+        self.datasets = list(datasets)
         self._rows = {}
+        # Build once, keep a handle so we can append to it later
+        self._column = pn.Column(
+            *[self._make_row(d) for d in self.datasets],
+            sizing_mode='stretch_width',
+            max_height=600,
+            scroll=True,
+            styles={'border': '1px solid #ddd', 'border-radius': '4px', 'background': 'white'}
+        )
+
+    #def __init__(self, datasets, **params):
+    #    super().__init__(**params)
+    #    self.datasets = datasets
+    #    print(self.datasets)
+    #    # Storage for row objects to allow dynamic style updates
+    #    self._rows = {}
 
     def _get_row_style(self, name):
         """Calculates the CSS for a row based on whether it is active."""
@@ -107,16 +118,28 @@ class DatasetBrowser(param.Parameterized):
             # Explicitly trigger the parameter update for older Panel versions
             row.param.trigger('styles')
 
+    def add_datasets(self, names):
+        """Append new dataset rows in place without disturbing existing ones."""
+        for name in names:
+            if name in self._rows:
+                continue
+            self.datasets.append(name)
+            self._column.append(self._make_row(name))
+
     @property
     def panel(self):
-        """Returns the scrollable list of datasets."""
-        return pn.Column(
-            *[self._make_row(d) for d in self.datasets],
-            sizing_mode='stretch_width',
-            max_height=600,
-            scroll=True,
-            styles={'border': '1px solid #ddd', 'border-radius': '4px', 'background': 'white'}
-        )
+        return self._column
+
+#    @property
+#    def panel(self):
+#        """Returns the scrollable list of datasets."""
+#        return pn.Column(
+#            *[self._make_row(d) for d in self.datasets],
+#            sizing_mode='stretch_width',
+#            max_height=600,
+#            scroll=True,
+#            styles={'border': '1px solid #ddd', 'border-radius': '4px', 'background': 'white'}
+#        )
 
 # --- App Construction ---
 

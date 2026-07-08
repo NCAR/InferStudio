@@ -39,17 +39,31 @@ PRES_NAME = "pressure"
 FILL_THRESHOLD = 1.0e20
 
 
-def plot_png(dataset: str, t: int, lev: int, var_name: str = VAR_NAME):
+#def plot_png(dataset: str, t: int, lev: int, var_name: str = VAR_NAME):
+def plot_png(dataset: str, t: int, lev: int, var_name: str = VAR_NAME, path: str | None = None):
+
     print("time " + str(t) + " lev " + str(lev))
     print("dataset " + str(dataset) +  " var " + var_name)
     print(f"plot time {t}, variable {var_name}")
-    if dataset == "": 
+
+    if path:
+        NETCDF_FILE = f"{path}/*.nc"
+        print("using explicit path " + NETCDF_FILE)
+    elif dataset == "":
         NETCDF_FILE = os.environ.get("NETCDF_FILE", str(newest_directory(data_dir)) + "/*.nc")
         print("dataset is empty " + NETCDF_FILE)
     else:
-        #NETCDF_FILE = str(Path(data_dir + "/" + dataset) / "/*.nc")
         NETCDF_FILE = f"{data_dir}/{dataset}/*.nc"
         print("dataset not empty " + data_dir + " " + dataset + " " + NETCDF_FILE)
+
+#    if dataset == "": 
+#        NETCDF_FILE = os.environ.get("NETCDF_FILE", str(newest_directory(data_dir)) + "/*.nc")
+#        print("dataset is empty " + NETCDF_FILE)
+#    else:
+#        #NETCDF_FILE = str(Path(data_dir + "/" + dataset) / "/*.nc")
+#        NETCDF_FILE = f"{data_dir}/{dataset}/*.nc"
+#        print("dataset not empty " + data_dir + " " + dataset + " " + NETCDF_FILE)
+
     with PLOT_LOCK:
         with xr.open_mfdataset(NETCDF_FILE, engine="netcdf4", autoclose=True) as ds:
             if var_name not in ds.data_vars:
