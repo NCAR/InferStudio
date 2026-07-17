@@ -27,6 +27,8 @@ from datetime import datetime
 
 import numpy as np
 import torch
+import earth2studio.models.px.fcn3 as fcn3_module
+fcn3_module._cuda_extension_available = True
 
 # ---------------------------------------------------------------------------
 # Model registry
@@ -97,7 +99,8 @@ def run_one_step(model, device):
     io = ZarrBackend()
 
     t0 = time.perf_counter()
-    deterministic(
+    with torch.no_grad():
+        deterministic(
         time=["2024-01-01T00:00:00"],
         nsteps=1,
         prognostic=model,

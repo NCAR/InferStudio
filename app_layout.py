@@ -37,6 +37,39 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 "vars3d": [v for v in ds.data_vars if len(ds[v].dims) > 3],
             }
 
+def scan_simulation_suite(sim_dir: Path) -> dict:
+    """Scan every model subdirectory under a simulation dir and combine
+    them into a single metadata entry representing the whole suite."""
+    model_meta = {}
+    errors = {}
+    for model_dir in sorted(p for p in sim_dir.iterdir() if p.is_dir()):
+        try:
+            model_meta[model_dir.name] = scan_single_dataset(model_dir)
+        except Exception as e:
+            errors[model_dir.name] = str(e)
+
+    if not model_meta:
+        raise RuntimeError(f"No scannable model outputs found under {sim_dir}")
+
+    any_model = next(iter(model_meta.values()))
+    vars2d = sorted(set().union(*(m["vars2d"] for m in model_meta.values())))
+    vars3d = sorted(set().union(*(m["vars3d"] for m in model_meta.values())))
+
+    return {
+        "path": str(sim_dir),
+        "models": model_meta,      # per-model breakdown: {model_name: {...}}
+        "model_errors": errors,
+        "ntime": any_model["ntime"],
+        "nlev": any_model["nlev"],
+        "nplev": any_model["nplev"],
+        "nlat": any_model["nlat"],
+        "nlon": any_model["nlon"],
+        "stime": any_model["stime"],
+        "etime": any_model["etime"],
+        "vars2d": vars2d,
+        "vars3d": vars3d,
+    }
+
 def scan_datasets(data_dir):
     metadata = {}
     for d in data_dir.iterdir():
@@ -83,70 +116,99 @@ def build_app(data_dir):
     inference_tab = InferenceTab()
 
     def _on_new_output(event):
-        with open('/tmp/debug.log', 'a') as f:
-            f.write(f"_on_new_output fired: {event.new}\n")
-
         sim_dir = Path(event.new)
-        if pn.state.notifications:
-            pn.state.notifications.info(f"_on_new_output fired: {sim_dir}", duration=0)
-    
         if not sim_dir.is_dir():
-            with open('/tmp/debug.log', 'a') as f:
-                f.write(f"sim_dir not a dir: {sim_dir}\n")
             if pn.state.notifications:
                 pn.state.notifications.error(f"sim_dir not found: {sim_dir}", duration=0)
             return
 
-        with open('/tmp/debug.log', 'a') as f:
-            f.write(f"sim_dir contents: {list(sim_dir.iterdir())}\n")
-    
-        new_keys = []
-        scan_errors = []
-        for model_dir in sorted(p for p in sim_dir.iterdir() if p.is_dir()):
-            key = f"{sim_dir.name}/{model_dir.name}"
-            try:
-                dataset_metadata[key] = scan_single_dataset(model_dir)
-                new_keys.append(key)
-            except Exception as e:
-                scan_errors.append(f"{key}: {e}")
-    
-        if pn.state.notifications:
-            pn.state.notifications.info(f"new_keys={new_keys} scan_errors={scan_errors}", duration=0)
-    
-        if scan_errors and pn.state.notifications is not None:
-            for err in scan_errors:
-                pn.state.notifications.error(f"Could not scan {err}", duration=0)
-   
-        with open('/tmp/debug.log', 'a') as f:
-            f.write(f"new_keys={new_keys} scan_errors={scan_errors}\n")
- 
-        if not new_keys:
+        key = sim_dir.name
+        try:
+            dataset_metadata[key] = scan_simulation_suite(sim_dir)
+        except Exception as e:
+            if pn.state.notifications:
+                pn.state.notifications.error(f"Could not scan {key}: {e}", duration=0)
             with open('/tmp/debug.log', 'a') as f:
-                f.write("no new_keys, returning\n")
+                f.write(f"scan_simulation_suite failed for {key}: {e}\n")
             return
-    
+        with open('/tmp/debug.log', 'a') as f:
+            f.write(f"scanned {key}: vars2d={dataset_metadata[key]['vars2d']} vars3d={dataset_metadata[key]['vars3d']} models={list(dataset_metadata[key].get('models', {}).keys())}\n")
+        for model, err in dataset_metadata[key].get("model_errors", {}).items():
+            if pn.state.notifications:
+                pn.state.notifications.error(f"Could not scan {key}/{model}: {err}", duration=0)
         meta_panel.metadata = dict(dataset_metadata)
-        with open('/tmp/debug.log', 'a') as f:
-            f.write("meta_panel.metadata set\n")
-
-        browser.add_datasets(new_keys)
-        with open('/tmp/debug.log', 'a') as f:
-            f.write("browser.add_datasets done\n")
-
-        browser.checked_items = list(browser.checked_items) + new_keys
-        with open('/tmp/debug.log', 'a') as f:
-            f.write("browser.checked_items set\n")
-
-        browser.active_dataset = new_keys[0]
-        with open('/tmp/debug.log', 'a') as f:
-            f.write("browser.active_dataset set\n")
-
+        browser.add_datasets([key])
+        browser.checked_items = list(browser.checked_items) + [key]
+        browser.active_dataset = key
         tabs.active = 0
-        with open('/tmp/debug.log', 'a') as f:
-            f.write("tabs.active set — done!\n")
-    
         if pn.state.notifications:
-            pn.state.notifications.info(f"browser now has: {browser.datasets}", duration=0)
+            pn.state.notifications.info(f"browser now has: {browser.datasets}", duration=0)    
+
+    #def _on_new_output(event):
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write(f"_on_new_output fired: {event.new}\n")
+
+    #    sim_dir = Path(event.new)
+    #    if pn.state.notifications:
+    #        pn.state.notifications.info(f"_on_new_output fired: {sim_dir}", duration=0)
+    #
+    #    if not sim_dir.is_dir():
+    #        with open('/tmp/debug.log', 'a') as f:
+    #            f.write(f"sim_dir not a dir: {sim_dir}\n")
+    #        if pn.state.notifications:
+    #            pn.state.notifications.error(f"sim_dir not found: {sim_dir}", duration=0)
+    #        return
+
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write(f"sim_dir contents: {list(sim_dir.iterdir())}\n")
+    #
+    #    new_keys = []
+    #    scan_errors = []
+    #    for model_dir in sorted(p for p in sim_dir.iterdir() if p.is_dir()):
+    #        key = f"{sim_dir.name}/{model_dir.name}"
+    #        try:
+    #            dataset_metadata[key] = scan_single_dataset(model_dir)
+    #            new_keys.append(key)
+    #        except Exception as e:
+    #            scan_errors.append(f"{key}: {e}")
+    #
+    #    if pn.state.notifications:
+    #        pn.state.notifications.info(f"new_keys={new_keys} scan_errors={scan_errors}", duration=0)
+    #
+    #    if scan_errors and pn.state.notifications is not None:
+    #        for err in scan_errors:
+    #            pn.state.notifications.error(f"Could not scan {err}", duration=0)
+   
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write(f"new_keys={new_keys} scan_errors={scan_errors}\n")
+ 
+    #    if not new_keys:
+    #        with open('/tmp/debug.log', 'a') as f:
+    #            f.write("no new_keys, returning\n")
+    #        return
+    #
+    #    meta_panel.metadata = dict(dataset_metadata)
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write("meta_panel.metadata set\n")
+
+    #    browser.add_datasets(new_keys)
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write("browser.add_datasets done\n")
+
+    #    browser.checked_items = list(browser.checked_items) + new_keys
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write("browser.checked_items set\n")
+
+    #    browser.active_dataset = new_keys[0]
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write("browser.active_dataset set\n")
+
+    #    tabs.active = 0
+    #    with open('/tmp/debug.log', 'a') as f:
+    #        f.write("tabs.active set — done!\n")
+    #
+    #    if pn.state.notifications:
+    #        pn.state.notifications.info(f"browser now has: {browser.datasets}", duration=0)
 
     inference_tab.param.watch(_on_new_output, 'outputDirectory')
 
