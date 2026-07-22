@@ -13,6 +13,10 @@ class DatasetBrowser(param.Parameterized):
         super().__init__(**params)
         self.datasets = list(datasets)
         self._rows = {}
+        self._checkboxes = {}   # name -> Checkbox widget, for two-way sync
+        self._syncing = False   # guards against recursive updates while
+                                 # programmatically setting checkbox values
+
         # Build once, keep a handle so we can append to it later
         self._column = pn.Column(
             *[self._make_row(d) for d in self.datasets],
@@ -21,13 +25,6 @@ class DatasetBrowser(param.Parameterized):
             scroll=True,
             styles={'border': '1px solid #ddd', 'border-radius': '4px', 'background': 'white'}
         )
-
-    #def __init__(self, datasets, **params):
-    #    super().__init__(**params)
-    #    self.datasets = datasets
-    #    print(self.datasets)
-    #    # Storage for row objects to allow dynamic style updates
-    #    self._rows = {}
 
     def _get_row_style(self, name):
         """Calculates the CSS for a row based on whether it is active."""
@@ -50,23 +47,32 @@ class DatasetBrowser(param.Parameterized):
         self._update_ui()
 
     def _make_row(self, name):
-        # 1. Checkbox for multi-select
-        # align='center' and specific margins ensure vertical centering with text
+        # 1. Checkbox — only one may be checked at a time (see update_checked)
         cb = pn.widgets.Checkbox(
             name="", value=False, width=10, 
             align='center', margin=(10, 0, 2, 0) 
         )
-        
+        self._checkboxes[name] = cb
+
         def update_checked(event):
-            current = list(self.checked_items)
+            if self._syncing:
+                # This value change came from _sync_checkbox_widgets reacting
+                # to an external checked_items change, not a user click —
+                # don't re-derive checked_items from it (would be redundant
+                # and risks feedback loops).
+                return
+
             if event.new:
-                if name not in current: current.append(name)
-                # Highlight the row when the box is checked
+                # Enforce single-selection: checking this box replaces
+                # whatever was checked before, rather than adding to it.
                 self._set_active(name)
+                self.checked_items = [name]
             else:
-                if name in current: current.remove(name)
-            self.checked_items = current
-            
+                current = list(self.checked_items)
+                if name in current:
+                    current.remove(name)
+                self.checked_items = current
+
         cb.param.watch(update_checked, 'value')
 
         # 2. Button styled as a flat label for single-select/highlight
@@ -118,6 +124,21 @@ class DatasetBrowser(param.Parameterized):
             # Explicitly trigger the parameter update for older Panel versions
             row.param.trigger('styles')
 
+    @param.depends('checked_items', watch=True)
+    def _sync_checkbox_widgets(self):
+        """Keep every row's Checkbox visually in sync with checked_items,
+        including when it's set programmatically from outside this class
+        (e.g. app_layout.py selecting a newly-completed simulation)."""
+        checked_set = set(self.checked_items)
+        self._syncing = True
+        try:
+            for name, cb in self._checkboxes.items():
+                desired = name in checked_set
+                if cb.value != desired:
+                    cb.value = desired
+        finally:
+            self._syncing = False
+
     def add_datasets(self, names):
         """Append new dataset rows in place without disturbing existing ones."""
         for name in names:
@@ -129,44 +150,3 @@ class DatasetBrowser(param.Parameterized):
     @property
     def panel(self):
         return self._column
-
-#    @property
-#    def panel(self):
-#        """Returns the scrollable list of datasets."""
-#        return pn.Column(
-#            *[self._make_row(d) for d in self.datasets],
-#            sizing_mode='stretch_width',
-#            max_height=600,
-#            scroll=True,
-#            styles={'border': '1px solid #ddd', 'border-radius': '4px', 'background': 'white'}
-#        )
-
-# --- App Construction ---
-
-## Simulated Dataset Names
-#dataset_names = [
-#    "2026-02-18T00:00Z_Control",
-#    "2026-02-18T06:00Z_Control",
-#    "2026-02-18T12:00Z_Exp_v1",
-#    "2026-02-18T18:00Z_Exp_v1",
-#    "2026-02-19T00:00Z_Exp_v2",
-#    "Dataset_Ref_Standard",
-#    "Calibration_Run_01"
-#]
-#
-## Instantiate the browser
-#browser = DatasetBrowser(datasets=dataset_names)
-#
-## Define a display area to show what is happening (for debugging)
-#status_info = pn.Column(
-#    pn.bind(lambda x: f"### 🔍 Focused Dataset: `{x}`" if x else "### 🔍 Select a dataset", browser.param.active_dataset),
-#    pn.bind(lambda x: f"**✅ Items to Plot:** {', '.join(x) if x else 'None'}", browser.param.checked_items),
-#    width=400,
-#    margin=(0, 0, 0, 20)
-#)
-#
-## Final Layout
-#layout = pn.Row(
-#    pn.Column("## Dataset Browser", browser.panel, width=350),
-#    status_info
-#).servable()

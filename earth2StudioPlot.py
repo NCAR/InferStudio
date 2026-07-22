@@ -147,7 +147,7 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
         lats = ds[lat_dim].values if lat_dim else np.arange(data.shape[0])
         lons = ds[lon_dim].values if lon_dim else np.arange(data.shape[1])
 
-    fig, ax = plt.subplots(figsize=(5, 2.7))
+    fig, ax = plt.subplots(figsize=(7, 3.8))
     mesh = ax.pcolormesh(lons, lats, data, cmap=cmap, shading="auto")
     title = f"{var_name}  (index={t})"
     ax.set_title(title, fontsize=10)
@@ -157,7 +157,7 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
     fig.tight_layout()
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100)
+    fig.savefig(buf, format="png", dpi=130)
     plt.close(fig)
     buf.seek(0)
     return buf

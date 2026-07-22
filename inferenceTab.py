@@ -17,7 +17,6 @@ from milesCreditRunner import MilesCreditRunner
 from earth2StudioRunner import Earth2StudioRunner
 
 MILES_CREDIT_MODELS = {'WXFormer'}
-#EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'FourCastNet3', 'GraphCast', 'Pangu', 'SFNO'}
 EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'Pangu'}
 
 
@@ -31,9 +30,7 @@ class InferenceTab(param.Parameterized):
 
         self.modelPicker = pn.widgets.CheckButtonGroup(
             name="Select Model",
-            #value=['WXFormer', 'AIFS'],
             value=['AIFS', 'Aurora'],
-            #options=['WXFormer', 'AIFS', 'Aurora', 'FourCastNet3', 'GraphCast', 'Pangu', 'SFNO'],
             options=['WXFormer', 'AIFS', 'Aurora', 'Pangu'],
             button_type='primary',
             button_style='outline',
@@ -80,9 +77,10 @@ class InferenceTab(param.Parameterized):
         self._timer_running = False
         self._active_count = 0
         self._active_lock = threading.Lock()
+        self._cancel_event = threading.Event()
 
         self.outputTabs = pn.Tabs(sizing_mode="stretch_both")
-        self.statusRow = pn.Row()
+        self.statusRow = pn.Row(pn.pane.Markdown("", margin=0))
 
     # ------------------------------------------------------------------ #
     #  Runner helpers                                                      #
@@ -174,6 +172,7 @@ class InferenceTab(param.Parameterized):
         self.elapsedLabel.value = ""
         self.completionLabel.value = ""
         self.completionPathLabel.value = ""
+        self._cancel_event.clear()
 
         # Shared elapsed timer
         overall_start = time.time()
@@ -185,128 +184,11 @@ class InferenceTab(param.Parameterized):
             self.elapsedLabel.value = f"{mins}m {secs}s"
 
         self._periodic_cb = pn.state.add_periodic_callback(_tick_update, period=1000)
-        #self._timer_running = True
-        #self._doc = pn.state.curdoc   # capture on the server thread, before spawning background work
-
-        #def _tick():
-        #    while self._timer_running:
-        #        try:
-        #            elapsed = time.time() - overall_start
-        #            mins, secs = divmod(int(elapsed), 60)
-        #            label = f"{mins}m {secs}s"
-        #            if self._doc is not None:
-        #                self._doc.add_next_tick_callback(lambda label=label: setattr(self.elapsedLabel, 'value', label))
-        #            else:
-        #                self.elapsedLabel.value = label
-        #        except Exception as e:
-        #            with open('/tmp/debug.log', 'a') as f:
-        #                f.write(f"_tick died: {e!r}\n")
-        #            break
-        #        time.sleep(1)
-
-        #timer_thread = threading.Thread(target=_tick, daemon=True)
-        #timer_thread.start()
 
         with self._active_lock:
             self._active_count = len(runners)
 
-        #def _on_model_done():
-        #    """Called by each model thread when it finishes."""
-        #    with self._active_lock:
-        #        self._active_count -= 1
-        #        all_done = self._active_count == 0
-        #    if all_done:
-        #        self._timer_running = False
-        #        timer_thread.join()
-        #        elapsed = time.time() - overall_start
-        #        mins, secs = divmod(int(elapsed), 60)
-        #        self.elapsedLabel.value = f"{mins}m {secs}s"
-        #        self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        #        self.completionPathLabel.value = (
-        #            f"Files written to {self.outputParams.pathDisplay.value}"
-        #            f"/{self.outputParams.simulationNamePicker.value_input}"
-        #        )
-        #        self.spinner.value = False
-        #        self.spinner.visible = False
-        #        self.inferenceButton.disabled = False
-        #        self.cancelButton.disabled = True
-
-        #def _run_all_sequential():
-        #    for model, runner in runners:
-        #        _on_model_done_sequential = None  # not used individually now
-        #        self._run_model(model, runner, lambda: None)
-        #    # all done — trigger final UI teardown
-        #    _on_model_done()
-
-        #def _all_done():
-        #    self._timer_running = False
-        #    timer_thread.join()
-        #    elapsed = time.time() - overall_start
-        #    mins, secs = divmod(int(elapsed), 60)
-        #    self.elapsedLabel.value = f"{mins}m {secs}s"
-        #    self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        #    sim_dir = Path(self.outputParams.pathDisplay.value) / self.outputParams.simulationNamePicker.value_input
-        #    self.completionPathLabel.value = f"Files written to {sim_dir}"
-        #    self.outputDirectory = str(sim_dir)
-
-        #    self.spinner.value = False
-        #    self.spinner.visible = False
-        #    self.inferenceButton.disabled = False
-        #    self.cancelButton.disabled = True
-
-        #def _all_done():
-        #    self._timer_running = False
-        #    timer_thread.join()
-        #    elapsed = time.time() - overall_start
-        #    mins, secs = divmod(int(elapsed), 60)
-        #
-        #    sim_dir = Path(self.outputParams.pathDisplay.value) / self.outputParams.simulationNamePicker.value_input
-        #
-        #    def _finish():
-        #        self.elapsedLabel.value = f"{mins}m {secs}s"
-        #        self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        #        self.completionPathLabel.value = f"Files written to {sim_dir}"
-        #        self.outputDirectory = str(sim_dir)   # triggers _on_new_output — now on the right thread
-        #        self.param.trigger('outputDirectory')
-        #        self.spinner.value = False
-        #        self.spinner.visible = False
-        #        self.inferenceButton.disabled = False
-        #        self.cancelButton.disabled = True
-        #
-        #    pn.state.execute(_finish)
-
-        #def _all_done():
-        #    with open('/tmp/debug.log', 'a') as f:
-        #        f.write("_all_done called\n")
-        #    self._timer_running = False
-        #    timer_thread.join()
-        #    elapsed = time.time() - overall_start
-        #    mins, secs = divmod(int(elapsed), 60)
-        #
-        #    sim_dir = Path(self.outputParams.pathDisplay.value) / self.outputParams.simulationNamePicker.value_input
-        #
-        #    self.elapsedLabel.value = f"{mins}m {secs}s"
-        #    self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        #    self.completionPathLabel.value = f"Files written to {sim_dir}"
-
-        #    with open('/tmp/debug.log', 'a') as f:
-        #        f.write(f"about to set outputDirectory = {sim_dir}\n")
-
-        #    self.outputDirectory = str(sim_dir)
-        #    self.param.trigger('outputDirectory')
-        #    self.spinner.value = False
-        #    self.spinner.visible = False
-        #    self.inferenceButton.disabled = False
-        #    self.cancelButton.disabled = True
         def _all_done():
-            #with open('/tmp/debug.log', 'a') as f:
-            #    f.write("_all_done called\n")
-            #self._timer_running = False
-            #timer_thread.join()
-            #elapsed = time.time() - overall_start
-            #mins, secs = divmod(int(elapsed), 60)
-
             with open('/tmp/debug.log', 'a') as f:
                 f.write("_all_done called\n")
             elapsed = time.time() - overall_start
@@ -316,8 +198,6 @@ class InferenceTab(param.Parameterized):
 
             def _finish():
                 try:
-                    #with open('/tmp/debug.log', 'a') as f:
-                    #    f.write("_finish running on doc thread\n")
                     with open('/tmp/debug.log', 'a') as f:
                         f.write("_finish running on doc thread\n")
                     if self._periodic_cb is not None:
@@ -343,12 +223,26 @@ class InferenceTab(param.Parameterized):
         def _run_all_sequential():
             try:
                 for model, runner in runners:
+                    if self._cancel_event.is_set():
+                        self._append_log(model, "Skipped (cancelled by user).\n")
+
+                        def _mark_skipped(model=model):
+                            pane = self._status_widgets.get(model)
+                            if pane is not None:
+                                pane.object = self._status_html(model, "cancelled")
+                            spinner = self._spinners.get(model)
+                            if spinner is not None:
+                                spinner.value = False
+                                spinner.visible = False
+
+                        self._ui(_mark_skipped)
+                        continue
                     self._run_model(model, runner, lambda: None)
                 _all_done()
             except Exception:
                 import traceback
                 tb = traceback.format_exc()
-        
+
                 def _report():
                     for model in self._log_widgets:
                         self._append_log(model, f"\n\n[INTERNAL ERROR]\n{tb}\n")
@@ -356,20 +250,13 @@ class InferenceTab(param.Parameterized):
                     self.spinner.visible = False
                     self.inferenceButton.disabled = False
                     self.cancelButton.disabled = True
-        
+
                 pn.state.execute(_report)
 
         threading.Thread(target=_run_all_sequential, daemon=True).start()
 
-        #for model, runner in runners:
-        #    t = threading.Thread(
-        #        target=self._run_model,
-        #        args=(model, runner, _on_model_done),
-        #        daemon=True,
-        #    )
-        #    t.start()
-
     def _on_cancel_click(self, event):
+        self._cancel_event.set()
         for model, proc in list(self._processes.items()):
             if proc is not None and proc.poll() is None:
                 try:
@@ -382,17 +269,6 @@ class InferenceTab(param.Parameterized):
     # ------------------------------------------------------------------ #
     #  Per-model execution                                                 #
     # ------------------------------------------------------------------ #
-
-    #def _append_log(self, model: str, text: str):
-    #    widget = self._log_widgets.get(model)
-    #    if widget is None:
-    #        return
-    #    def _do_append():
-    #        widget.value += text
-    #    if self._doc is not None:
-    #        self._doc.add_next_tick_callback(_do_append)
-    #    else:
-    #        _do_append()
 
     def _ui(self, fn):
         """Schedule a UI-mutating callable safely on the document's own thread."""
@@ -416,7 +292,7 @@ class InferenceTab(param.Parameterized):
         """Prepare, build, and execute a single model in its own thread."""
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-    
+
         def _update_start():
             spinner = self._spinners.get(model)
             if spinner is not None:
@@ -426,14 +302,14 @@ class InferenceTab(param.Parameterized):
             if pane is not None:
                 pane.object = self._status_html(model, "running")
             self.outputTabs.active = list(self._log_widgets.keys()).index(model)
-    
+
         self._ui(_update_start)
-    
+
         config = self._build_config(model)
         model_output = Path(config["output_path"]) / model
         model_output.mkdir(parents=True, exist_ok=True)
         config["output_path"] = str(model_output)
-    
+
         proc = None
         try:
             prepared = runner.prepare(config)
@@ -452,20 +328,20 @@ class InferenceTab(param.Parameterized):
             self._ui(_update_setup_error)
             on_done()
             return
-    
+
         try:
             proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, env=env, start_new_session=True,
             )
             self._processes[model] = proc
-    
+
             # --- batched log flushing ---
             buf = []
             buf_lock = threading.Lock()
             last_flush = time.time()
             FLUSH_INTERVAL = 0.3  # seconds
-    
+
             def _flush(force=False):
                 nonlocal last_flush
                 now = time.time()
@@ -478,20 +354,20 @@ class InferenceTab(param.Parameterized):
                     buf.clear()
                 last_flush = now
                 self._append_log(model, text)
-    
+
             for line in proc.stdout:
                 with buf_lock:
                     buf.append(line)
                 _flush()
-    
+
             _flush(force=True)  # catch any remainder
             proc.wait()
-    
+
             if proc.returncode != 0:
                 self._append_log(model, f"\nExited with code {proc.returncode}\n")
             else:
                 self._append_log(model, "\nDone.\n")
-    
+
         except Exception as e:
             self._append_log(model, f"Error: {e}\n")
         finally:
@@ -500,7 +376,7 @@ class InferenceTab(param.Parameterized):
                 state = "done" if proc.returncode == 0 else "error"
             except Exception:
                 state = "error"
-    
+
             def _update_finish(state=state):
                 spinner = self._spinners.get(model)
                 if spinner is not None:
@@ -509,7 +385,7 @@ class InferenceTab(param.Parameterized):
                 pane = self._status_widgets.get(model)
                 if pane is not None:
                     pane.object = self._status_html(model, state)
-    
+
             self._ui(_update_finish)
             on_done()
 
@@ -527,8 +403,8 @@ class InferenceTab(param.Parameterized):
         self.outputTabs.append(("Log", widget))
 
     def _status_html(self, model: str, state: str) -> str:
-        symbol = {"pending": "◷", "running": "⟳", "done": "✓", "error": "✗"}[state]
-        color  = {"pending": "#cccccc", "running": "#888888", "done": "#2ecc71", "error": "#e74c3c"}[state]
+        symbol = {"pending": "◷", "running": "⟳", "done": "✓", "error": "✗", "cancelled": "⊘"}[state]
+        color  = {"pending": "#cccccc", "running": "#888888", "done": "#2ecc71", "error": "#e74c3c", "cancelled": "#999999"}[state]
         return (
             f'<div style="text-align:center;line-height:1.4">'
             f'<span style="font-size:11px;color:#555">{model}</span><br>'
@@ -540,7 +416,7 @@ class InferenceTab(param.Parameterized):
         styles = dict(widget.styles or {})
         styles.update({'border': '2px solid #e74c3c', 'border-radius': '4px'})
         widget.styles = styles
-    
+
     def _clear_highlight(self, widget):
         styles = dict(widget.styles or {})
         styles.pop('border', None)

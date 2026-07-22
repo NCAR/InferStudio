@@ -5,7 +5,8 @@ import panel as pn
 from pathlib import Path
 from datasetSelector2 import DatasetBrowser
 from metadata import DatasetMetadata
-from datasetPlot import DatasetPlot2
+from datasetPlot import DatasetPlot2, SharedPlotControls
+from forecastStatsPanel import ForecastStatsPanel
 from commandRunner import CommandRunner
 from inferenceTab import InferenceTab
 from era5_plot import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
@@ -27,7 +28,6 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 "path": str(dataset_dir),
                 "ntime": len(ds.time),
                 "nlev": len(ds.get(LEV_NAME, [])),
-                #"nplev": int(ds.sizes[PRES_NAME]),
                 "nplev": int(ds.sizes.get(PRES_NAME, 0)),
                 "nlat": int(ds.sizes[lat_dim]) if lat_dim else 0,
                 "nlon": int(ds.sizes[lon_dim]) if lon_dim else 0,
@@ -81,26 +81,6 @@ def scan_datasets(data_dir):
                 continue
     return metadata
 
-#def scan_datasets(data_dir):
-#    metadata = {}
-#    for d in data_dir.iterdir():
-#        if d.is_dir():
-#            with warnings.catch_warnings():
-#                warnings.simplefilter("ignore", FutureWarning)
-#                with xr.open_mfdataset(f"{d}/*.nc", engine="netcdf4", autoclose=True, data_vars='all') as ds:
-#                    metadata[d.name] = {
-#                        "ntime": len(ds.time),
-#                        "nlev": len(ds.get(LEV_NAME, [])),
-#                        "nplev": int(ds.sizes[PRES_NAME]),
-#                        "nlat": int(ds.sizes[LAT_NAME]),
-#                        "nlon": int(ds.sizes[LON_NAME]),
-#                        "stime": str(ds.time.values[0].astype("datetime64[s]")),
-#                        "etime": str(ds.time.values[-1].astype("datetime64[s]")),
-#                        "vars2d": [v for v in ds.data_vars if len(ds[v].dims) <= 3],
-#                        "vars3d": [v for v in ds.data_vars if len(ds[v].dims) > 3],
-#                    }
-#    return metadata
-
 
 def build_app(data_dir):
     dataset_metadata = scan_datasets(data_dir)
@@ -108,10 +88,20 @@ def build_app(data_dir):
     browser = DatasetBrowser(datasets=datasets)
     meta_panel = DatasetMetadata(metadata=dataset_metadata)
 
+    # Shared variable/level controls — one set drives every plot in the
+    # Visualization tab, rather than each DatasetPlot2 owning its own.
+    controls = SharedPlotControls()
+    controls.update_choices(browser.checked_items, dataset_metadata)
+
     def sync_active(event):
         meta_panel.active_key = event.new
 
     browser.param.watch(sync_active, 'active_dataset')
+
+    def sync_controls(event):
+        controls.update_choices(event.new, dataset_metadata)
+
+    browser.param.watch(sync_controls, 'checked_items')
 
     inference_tab = InferenceTab()
 
@@ -138,77 +128,12 @@ def build_app(data_dir):
                 pn.state.notifications.error(f"Could not scan {key}/{model}: {err}", duration=0)
         meta_panel.metadata = dict(dataset_metadata)
         browser.add_datasets([key])
-        browser.checked_items = list(browser.checked_items) + [key]
+        if browser.checked_items != [key]:
+            browser.checked_items = [key]
         browser.active_dataset = key
         tabs.active = 0
         if pn.state.notifications:
-            pn.state.notifications.info(f"browser now has: {browser.datasets}", duration=0)    
-
-    #def _on_new_output(event):
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write(f"_on_new_output fired: {event.new}\n")
-
-    #    sim_dir = Path(event.new)
-    #    if pn.state.notifications:
-    #        pn.state.notifications.info(f"_on_new_output fired: {sim_dir}", duration=0)
-    #
-    #    if not sim_dir.is_dir():
-    #        with open('/tmp/debug.log', 'a') as f:
-    #            f.write(f"sim_dir not a dir: {sim_dir}\n")
-    #        if pn.state.notifications:
-    #            pn.state.notifications.error(f"sim_dir not found: {sim_dir}", duration=0)
-    #        return
-
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write(f"sim_dir contents: {list(sim_dir.iterdir())}\n")
-    #
-    #    new_keys = []
-    #    scan_errors = []
-    #    for model_dir in sorted(p for p in sim_dir.iterdir() if p.is_dir()):
-    #        key = f"{sim_dir.name}/{model_dir.name}"
-    #        try:
-    #            dataset_metadata[key] = scan_single_dataset(model_dir)
-    #            new_keys.append(key)
-    #        except Exception as e:
-    #            scan_errors.append(f"{key}: {e}")
-    #
-    #    if pn.state.notifications:
-    #        pn.state.notifications.info(f"new_keys={new_keys} scan_errors={scan_errors}", duration=0)
-    #
-    #    if scan_errors and pn.state.notifications is not None:
-    #        for err in scan_errors:
-    #            pn.state.notifications.error(f"Could not scan {err}", duration=0)
-   
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write(f"new_keys={new_keys} scan_errors={scan_errors}\n")
- 
-    #    if not new_keys:
-    #        with open('/tmp/debug.log', 'a') as f:
-    #            f.write("no new_keys, returning\n")
-    #        return
-    #
-    #    meta_panel.metadata = dict(dataset_metadata)
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write("meta_panel.metadata set\n")
-
-    #    browser.add_datasets(new_keys)
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write("browser.add_datasets done\n")
-
-    #    browser.checked_items = list(browser.checked_items) + new_keys
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write("browser.checked_items set\n")
-
-    #    browser.active_dataset = new_keys[0]
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write("browser.active_dataset set\n")
-
-    #    tabs.active = 0
-    #    with open('/tmp/debug.log', 'a') as f:
-    #        f.write("tabs.active set — done!\n")
-    #
-    #    if pn.state.notifications:
-    #        pn.state.notifications.info(f"browser now has: {browser.datasets}", duration=0)
+            pn.state.notifications.info(f"browser now has: {browser.datasets}", duration=0)
 
     inference_tab.param.watch(_on_new_output, 'outputDirectory')
 
@@ -216,20 +141,42 @@ def build_app(data_dir):
     def plot_grid(datasets):
         if not datasets:
             return pn.pane.Markdown("### Select one or more datasets")
-        plots = [DatasetPlot2(dataset=ds, metadata=dataset_metadata).panel() for ds in datasets]
-        return pn.GridBox(*plots, ncols=2, sizing_mode=None, css_classes=["plot-grid"],
-                          styles={"grid-auto-rows": "min-content", "align-items": "start"})
+        # Only one dataset can be checked at a time (see DatasetBrowser),
+        # so just render it directly rather than wrapping it in a GridBox —
+        # GridBox's column sizing doesn't reliably stretch to fill available
+        # width even with sizing_mode="stretch_width", whereas a plain
+        # stretch_width Column (as used elsewhere in this app) does.
+        ds = datasets[0]
+        return DatasetPlot2(controls=controls, dataset=ds, metadata=dataset_metadata).panel()
+
+    @pn.depends(browser.param.checked_items)
+    def stats_panel(datasets):
+        if not datasets:
+            return pn.pane.Markdown("")
+        ds = datasets[0]
+        return ForecastStatsPanel(controls=controls, dataset_key=ds, metadata=dataset_metadata).panel()
 
     sidebar = pn.Column(
         pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
         browser.panel,
+        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Variable &amp; Level</h2>"),
+        controls.panel(),
         pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
         meta_panel.panel,
         width=250,
     )
-    main = pn.Column(plot_grid, sizing_mode="stretch_width", css_classes=["main-content"])
+    main = pn.Column(
+        pn.panel(plot_grid, sizing_mode="stretch_width"),
+        pn.panel(stats_panel, sizing_mode="stretch_width"),
+        sizing_mode="stretch_width",
+        css_classes=["main-content"],
+    )
     vis = pn.Row(sidebar, main, sizing_mode="stretch_both", styles={"height": "100vh"})
-    inference = inference_tab.panel()
+    inference = pn.Column(
+        inference_tab.panel(),
+        sizing_mode="stretch_both",
+        styles={"height": "100vh", "overflow": "auto"},
+    )
     tabs = pn.Tabs(
         ("Visualization", vis),
         ("Inference", inference),
@@ -240,55 +187,40 @@ def build_app(data_dir):
             .bk-tabs-content { border: 1px solid #ccc; padding: 10px; }
         """],
     )
-    template = pn.template.BootstrapTemplate(title="InferStudio")
+    template = pn.template.BootstrapTemplate(title="", busy_indicator=None)
+    template.header.append(
+        pn.pane.HTML(
+            "InferStudio",
+            styles={
+                "font-size": "20px",
+                "font-weight": "600",
+                "color": "white",
+                "white-space": "nowrap",
+                "overflow": "hidden",
+                "text-overflow": "ellipsis",
+                "min-width": "0",
+                "padding-left": "10px",
+            },
+            sizing_mode="stretch_width",
+        )
+    )
+    busy_spinner = pn.indicators.LoadingSpinner(
+        value=False, width=20, height=20, color="light",
+        margin=(10, 10, 10, 0),
+    )
+    pn.state.sync_busy(busy_spinner)  # re-wire actual busy-state reflection, since we disabled the built-in one
+    template.header.append(busy_spinner)
+    template.header.append(
+        pn.pane.PNG(
+            "static/nsf_ncar_logo_padded.png",
+            height=45,
+            width=534,
+            sizing_mode="fixed",
+            margin=(5, 0, 5, 0),
+        )
+    )
     template.main[:] = [pn.Column(tabs, sizing_mode="stretch_both")]
     return template
-
-#def build_app(data_dir):
-#    dataset_metadata = scan_datasets(data_dir)
-#    datasets = sorted(d.name for d in data_dir.iterdir() if d.is_dir())
-#
-#    browser = DatasetBrowser(datasets=datasets)
-#    meta_panel = DatasetMetadata(metadata=dataset_metadata)
-#
-#    def sync_active(event):
-#        meta_panel.active_key = event.new
-#    browser.param.watch(sync_active, 'active_dataset')
-#
-#    @pn.depends(browser.param.checked_items)
-#    def plot_grid(datasets):
-#        if not datasets:
-#            return pn.pane.Markdown("### Select one or more datasets")
-#        plots = [DatasetPlot2(dataset=ds, metadata=dataset_metadata).panel() for ds in datasets]
-#        return pn.GridBox(*plots, ncols=2, sizing_mode=None, css_classes=["plot-grid"],
-#                          styles={"grid-auto-rows": "min-content", "align-items": "start"})
-#
-#    sidebar = pn.Column(
-#        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
-#        browser.panel,
-#        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
-#        meta_panel.panel,
-#        width=250,
-#    )
-#    main = pn.Column(plot_grid, sizing_mode="stretch_width", css_classes=["main-content"])
-#    vis = pn.Row(sidebar, main, sizing_mode="stretch_both", styles={"height": "100vh"})
-#
-#    inference = InferenceTab().panel()
-#
-#    tabs = pn.Tabs(
-#        ("Visualization", vis),
-#        ("Inference", inference),
-#        stylesheets=["""
-#        .bk-tab { background: #f0f0f0; border-radius: 4px 4px 0 0; font-size: 14px; padding: 8px 16px; }
-#        .bk-tab.bk-active { background: white; border-top: 2px solid #007bff; font-weight: bold; }
-#        .bk-tabs-header { background: #e8e8e8; }
-#        .bk-tabs-content { border: 1px solid #ccc; padding: 10px; }
-#        """],
-#    )
-#
-#    template = pn.template.BootstrapTemplate(title="InferStudio")
-#    template.main[:] = [pn.Column(tabs, sizing_mode="stretch_both")]
-#    return template
 
 # To drop jupyter in the future:
 # if __name__ == "__main__": build_app(DATA_DIR).servable()
