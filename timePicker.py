@@ -29,6 +29,7 @@ class TimePicker(param.Parameterized):
         self.incrementButtons = pn.widgets.RadioButtonGroup(
             name="",
             options={'1 hour':'1h', '6 hour':'6h', '12 hour':'12h', '24 hour':'24h'},
+            value='6h',
             button_type='primary',
             button_style='outline',
             margin=(0,5,5,0)

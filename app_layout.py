@@ -24,15 +24,36 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
         with xr.open_mfdataset(f"{dataset_dir}/*.nc", engine="netcdf4", autoclose=True, data_vars='all') as ds:
             lat_dim = _resolve_dim(ds, LAT_NAME, "lat")
             lon_dim = _resolve_dim(ds, LON_NAME, "lon")
+
+            # Forecast-style earth2studio output (AIFS/Aurora/Pangu/...) has
+            # a size-1 `time` dim (the init/cycle time) plus a separate
+            # `lead_time` dim holding the actual forecast steps. ERA5-style
+            # files have no `lead_time` and step through `time` directly.
+            # Prefer `lead_time` as the "number of forecast steps" dimension
+            # whenever it's present and non-trivial, instead of always
+            # reading the (possibly size-1) init-time dim.
+            has_lead_time = "lead_time" in ds.sizes and ds.sizes["lead_time"] > 1
+
+            if has_lead_time:
+                ntime = int(ds.sizes["lead_time"])
+                init_time = ds.time.values[0]
+                lead_times = ds.lead_time.values
+                stime = str((init_time + lead_times.min()).astype("datetime64[s]"))
+                etime = str((init_time + lead_times.max()).astype("datetime64[s]"))
+            else:
+                ntime = len(ds.time)
+                stime = str(ds.time.values[0].astype("datetime64[s]"))
+                etime = str(ds.time.values[-1].astype("datetime64[s]"))
+
             return {
                 "path": str(dataset_dir),
-                "ntime": len(ds.time),
+                "ntime": ntime,
                 "nlev": len(ds.get(LEV_NAME, [])),
                 "nplev": int(ds.sizes.get(PRES_NAME, 0)),
                 "nlat": int(ds.sizes[lat_dim]) if lat_dim else 0,
                 "nlon": int(ds.sizes[lon_dim]) if lon_dim else 0,
-                "stime": str(ds.time.values[0].astype("datetime64[s]")),
-                "etime": str(ds.time.values[-1].astype("datetime64[s]")),
+                "stime": stime,
+                "etime": etime,
                 "vars2d": [v for v in ds.data_vars if len(ds[v].dims) <= 3],
                 "vars3d": [v for v in ds.data_vars if len(ds[v].dims) > 3],
             }
@@ -112,6 +133,7 @@ def build_app(data_dir):
     DEFAULT_DATASET = "ExampleDataset"
     if DEFAULT_DATASET in dataset_metadata:
         browser.checked_items = [DEFAULT_DATASET]
+        browser.active_dataset = DEFAULT_DATASET
     elif DEFAULT_DATASET and DEFAULT_DATASET != "REPLACE_WITH_YOUR_FOLDER_NAME":
         print(f"Warning: default dataset {DEFAULT_DATASET!r} not found under {data_dir}")
 
@@ -232,8 +254,7 @@ def build_app(data_dir):
         pn.state.notifications.info(
             "Welcome to InferStudio.<br><br>"
             "You are currently viewing information from "
-            "an example dataset.<br><br>"
-            " To run your own AI weather model inference, go "
+            "an example dataset. To run your own AI weather model inference, go "
             "to the Inference tab. Then select your desired parameters, click "
             "\"Run Inference,\" and your simulation suite will be viewable from here."
             "<br><br><br>",

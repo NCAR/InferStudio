@@ -83,27 +83,45 @@ def compute_model_stats(model_dir, base_or_var, level) -> pd.DataFrame:
 
         lat_dim = _resolve_dim(ds, *LAT_NAMES)
         lon_dim = _resolve_dim(ds, *LON_NAMES)
-        time_dim = _resolve_dim(ds, "time")
-        if time_dim is None:
-            # Fall back to "whatever dim isn't lat/lon" — same approach
-            # used in earth2studioPlot.plot_e2s_field
-            candidates = [d for d in ds[var_name].dims if d not in (lat_dim, lon_dim)]
-            time_dim = candidates[0] if candidates else None
 
-        if time_dim is None:
-            raise ValueError(f"Could not identify a time-like dimension for {var_name!r}")
+        # Same lead_time-vs-time detection as scan_single_dataset in
+        # app_layout.py: earth2studio forecast output has a size-1 `time`
+        # (init/cycle time) plus a separate `lead_time` dim holding the
+        # actual forecast steps. Iterating over `time` alone (size 1) was
+        # producing only a single verification point regardless of how
+        # many real forecast steps existed — prefer `lead_time` whenever
+        # it's present and non-trivial.
+        has_lead_time = "lead_time" in ds.sizes and ds.sizes["lead_time"] > 1
 
-        n_steps = ds.sizes[time_dim]
-        valid_times = ds[time_dim].values if time_dim in ds.coords else None
+        if has_lead_time:
+            select_dim = "lead_time"
+            n_steps = ds.sizes["lead_time"]
+            init_time = ds["time"].values[0] if "time" in ds.coords else None
+            lead_time_values = ds["lead_time"].values
+        else:
+            select_dim = _resolve_dim(ds, "time")
+            if select_dim is None:
+                candidates = [d for d in ds[var_name].dims if d not in (lat_dim, lon_dim)]
+                select_dim = candidates[0] if candidates else None
+            if select_dim is None:
+                raise ValueError(f"Could not identify a time-like dimension for {var_name!r}")
+            n_steps = ds.sizes[select_dim]
+            init_time = None
+            lead_time_values = None
 
         rows = []
         for i in range(n_steps):
-            model_field = ds[var_name].isel({time_dim: i})
+            model_field = ds[var_name].isel({select_dim: i})
             for extra in [d for d in model_field.dims if d not in (lat_dim, lon_dim)]:
                 if model_field.sizes[extra] == 1:
                     model_field = model_field.isel({extra: 0})
 
-            if valid_times is not None:
+            if has_lead_time and init_time is not None:
+                lead_delta = lead_time_values[i]
+                valid_time = init_time + lead_delta
+                lead_hours = float(lead_delta / np.timedelta64(1, "h"))
+            elif select_dim in ds.coords:
+                valid_times = ds[select_dim].values
                 valid_time = valid_times[i]
                 lead_hours = float((valid_time - valid_times[0]) / np.timedelta64(1, "h"))
             else:
@@ -113,10 +131,17 @@ def compute_model_stats(model_dir, base_or_var, level) -> pd.DataFrame:
             try:
                 truth_field = _load_gfs_truth(valid_time, var_name)
                 rmse, mae = _spatial_errors(model_field, truth_field)
-            except Exception:
+                error_msg = None
+            except Exception as e:
                 rmse, mae = np.nan, np.nan
+                error_msg = repr(e)
 
-            rows.append({"lead_hours": lead_hours, "rmse": rmse, "crps": mae})
+            rows.append({
+                "lead_hours": lead_hours,
+                "rmse": rmse,
+                "crps": mae,
+                "error": error_msg,
+            })
 
     return pd.DataFrame(rows)
 
@@ -181,6 +206,20 @@ class ForecastStatsPanel(param.Parameterized):
             self.compute_button.disabled = False
             return
 
+        # Surface per-lead-time failures (e.g. GFS fetch errors) that were
+        # recorded per row but would otherwise just show up as silent gaps
+        # in the plotted curve.
+        failure_summaries = []
+        for model, df in results.items():
+            failed = df[df["rmse"].isna()]
+            if not failed.empty:
+                sample_errors = failed["error"].dropna().unique()
+                sample = sample_errors[0] if len(sample_errors) else "unknown error"
+                failure_summaries.append(
+                    f"{model}: {len(failed)}/{len(df)} lead times failed "
+                    f"(e.g. {sample})"
+                )
+
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
         for model, df in results.items():
             axes[0].plot(df["lead_hours"] / 24, df["rmse"], marker="o", label=model)
@@ -201,6 +240,8 @@ class ForecastStatsPanel(param.Parameterized):
         msg = f"Computed stats for: {', '.join(results.keys())}."
         if errors:
             msg += f" Failed for: {errors}"
+        if failure_summaries:
+            msg += "\n\n" + "\n\n".join(failure_summaries)
         self.status.object = msg
         self.compute_button.disabled = False
 
