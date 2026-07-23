@@ -73,12 +73,20 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
 def scan_datasets(data_dir):
     metadata = {}
     for d in data_dir.iterdir():
-        if d.is_dir():
-            try:
+        if not d.is_dir():
+            continue
+        subdirs_with_nc = [
+            sub for sub in d.iterdir()
+            if sub.is_dir() and any(sub.glob("*.nc"))
+        ]
+        try:
+            if subdirs_with_nc:
+                metadata[d.name] = scan_simulation_suite(d)
+            else:
                 metadata[d.name] = scan_single_dataset(d)
-            except Exception as e:
-                print(f"Skipping {d.name}: {e}")
-                continue
+        except Exception as e:
+            print(f"Skipping {d.name}: {e}")
+            continue
     return metadata
 
 
@@ -88,8 +96,6 @@ def build_app(data_dir):
     browser = DatasetBrowser(datasets=datasets)
     meta_panel = DatasetMetadata(metadata=dataset_metadata)
 
-    # Shared variable/level controls — one set drives every plot in the
-    # Visualization tab, rather than each DatasetPlot2 owning its own.
     controls = SharedPlotControls()
     controls.update_choices(browser.checked_items, dataset_metadata)
 
@@ -102,6 +108,12 @@ def build_app(data_dir):
         controls.update_choices(event.new, dataset_metadata)
 
     browser.param.watch(sync_controls, 'checked_items')
+
+    DEFAULT_DATASET = "ExampleDataset"
+    if DEFAULT_DATASET in dataset_metadata:
+        browser.checked_items = [DEFAULT_DATASET]
+    elif DEFAULT_DATASET and DEFAULT_DATASET != "REPLACE_WITH_YOUR_FOLDER_NAME":
+        print(f"Warning: default dataset {DEFAULT_DATASET!r} not found under {data_dir}")
 
     inference_tab = InferenceTab()
 
@@ -141,11 +153,6 @@ def build_app(data_dir):
     def plot_grid(datasets):
         if not datasets:
             return pn.pane.Markdown("### Select one or more datasets")
-        # Only one dataset can be checked at a time (see DatasetBrowser),
-        # so just render it directly rather than wrapping it in a GridBox —
-        # GridBox's column sizing doesn't reliably stretch to fill available
-        # width even with sizing_mode="stretch_width", whereas a plain
-        # stretch_width Column (as used elsewhere in this app) does.
         ds = datasets[0]
         return DatasetPlot2(controls=controls, dataset=ds, metadata=dataset_metadata).panel()
 
@@ -208,7 +215,7 @@ def build_app(data_dir):
         value=False, width=20, height=20, color="light",
         margin=(10, 10, 10, 0),
     )
-    pn.state.sync_busy(busy_spinner)  # re-wire actual busy-state reflection, since we disabled the built-in one
+    pn.state.sync_busy(busy_spinner)
     template.header.append(busy_spinner)
     template.header.append(
         pn.pane.PNG(
@@ -220,6 +227,19 @@ def build_app(data_dir):
         )
     )
     template.main[:] = [pn.Column(tabs, sizing_mode="stretch_both")]
+
+    if pn.state.notifications:
+        pn.state.notifications.info(
+            "Welcome to InferStudio.<br><br>"
+            "You are currently viewing information from "
+            "an example dataset.<br><br>"
+            " To run your own AI weather model inference, go "
+            "to the Inference tab. Then select your desired parameters, click "
+            "\"Run Inference,\" and your simulation suite will be viewable from here."
+            "<br><br><br>",
+            duration=0,
+        )
+
     return template
 
 # To drop jupyter in the future:

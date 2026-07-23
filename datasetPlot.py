@@ -379,7 +379,7 @@ class DatasetPlot2(param.Parameterized):
     def panel(self):
         return pn.Column(
             pn.pane.Markdown(f"### {self.dataset}"),
-            self.view,
+            pn.panel(self.view, sizing_mode="stretch_width"),
             align="center",
             sizing_mode="stretch_width",
             height=None,
