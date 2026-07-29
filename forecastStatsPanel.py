@@ -172,6 +172,10 @@ class ForecastStatsPanel(param.Parameterized):
         )
         self.compute_button.on_click(self._on_compute_click)
 
+        self.spinner = pn.indicators.LoadingSpinner(
+            value=False, visible=False, width=20, height=20, color="primary"
+        )
+
         self.status = pn.pane.Markdown(
             "*Click \"Compute Stats\" to verify the current variable/level "
             "against GFS analysis (fetches data over the network — may take "
@@ -181,6 +185,8 @@ class ForecastStatsPanel(param.Parameterized):
 
     def _on_compute_click(self, event):
         self.compute_button.disabled = True
+        self.spinner.value = True
+        self.spinner.visible = True
         self.status.object = "*Computing...*"
 
         var_name = self.controls.var_name
@@ -189,6 +195,8 @@ class ForecastStatsPanel(param.Parameterized):
         if not var_name:
             self.status.object = "*No variable selected.*"
             self.compute_button.disabled = False
+            self.spinner.value = False
+            self.spinner.visible = False
             return
 
         results = {}
@@ -204,6 +212,8 @@ class ForecastStatsPanel(param.Parameterized):
         if not results:
             self.status.object = f"*Could not compute stats. Errors: {errors}*"
             self.compute_button.disabled = False
+            self.spinner.value = False
+            self.spinner.visible = False
             return
 
         # Surface per-lead-time failures (e.g. GFS fetch errors) that were
@@ -244,10 +254,16 @@ class ForecastStatsPanel(param.Parameterized):
             msg += "\n\n" + "\n\n".join(failure_summaries)
         self.status.object = msg
         self.compute_button.disabled = False
+        self.spinner.value = False
+        self.spinner.visible = False
 
     def panel(self):
         return pn.Column(
-            pn.pane.Markdown("### Forecast Verification Statistics"),
+            pn.Row(
+                pn.pane.Markdown("### Forecast Verification Statistics"),
+                self.spinner,
+                align="center",
+            ),
             self.compute_button,
             self.status,
             self.plot_pane,
