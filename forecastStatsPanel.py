@@ -13,12 +13,13 @@ IMPORTANT — things that need verifying against your actual environment:
    installed version. If this fails, check earth2studio's actual
    DataSource.__call__ signature and adjust accordingly.
 
-2. This assumes the model's own lat/lon grid matches GFS's grid exactly,
-   so it can diff the two fields directly. If AIFS/Aurora output on a
-   different grid/resolution than GFS's 0.25deg grid, this will need an
-   interpolation step (e.g. via xr.DataArray.interp_like) before diffing
-   — currently it does NOT do this, so a grid mismatch would produce
-   garbage (or an outright shape-mismatch error).
+2. If the model's grid doesn't match GFS's grid exactly (e.g. Aurora's
+   720-point latitude grid vs GFS's 721-point grid, which includes both
+   poles), the model field is interpolated onto GFS's actual grid via
+   xr.DataArray.interp_like before differencing. This assumes both
+   DataArrays carry real coordinate values (not just dimension sizes) for
+   lat/lon — true for standard CF-compliant output, which GFS and
+   earth2studio's model outputs should both be.
 
 3. For a SINGLE DETERMINISTIC forecast (no ensemble members), CRPS reduces
    mathematically to the absolute error at each point/time — it is not
@@ -33,6 +34,7 @@ directly in a notebook cell) before relying on the full UI button.
 """
 
 from pathlib import Path
+import threading
 
 import numpy as np
 import pandas as pd
@@ -61,8 +63,32 @@ def _load_gfs_truth(valid_time, var_name):
 
 
 def _spatial_errors(model_da, truth_da):
-    """Return (rmse, mae) between two 2D fields. Assumes matching grids —
-    see module docstring point 2."""
+    """Return (rmse, mae) between two 2D fields, interpolating the model
+    field onto the truth field's grid first if they don't already match
+    (e.g. Aurora's 720-point latitude grid vs GFS's 721-point grid)."""
+    # Match dimension names first — interp_like matches by name, so if the
+    # model and GFS use different names for the same axis (e.g. "lat" vs
+    # "latitude"), rename the model's dims to whatever truth_da uses before
+    # attempting interpolation.
+    model_lat = _resolve_dim(model_da, *LAT_NAMES)
+    model_lon = _resolve_dim(model_da, *LON_NAMES)
+    truth_lat = _resolve_dim(truth_da, *LAT_NAMES)
+    truth_lon = _resolve_dim(truth_da, *LON_NAMES)
+
+    rename_map = {}
+    if model_lat and truth_lat and model_lat != truth_lat:
+        rename_map[model_lat] = truth_lat
+    if model_lon and truth_lon and model_lon != truth_lon:
+        rename_map[model_lon] = truth_lon
+    if rename_map:
+        model_da = model_da.rename(rename_map)
+
+    if model_da.shape != truth_da.shape:
+        # Grids don't line up (different resolution/point count) —
+        # interpolate the model field onto the truth field's actual grid
+        # rather than assuming they already match.
+        model_da = model_da.interp_like(truth_da)
+
     diff = np.asarray(model_da.values) - np.asarray(truth_da.values)
     rmse = float(np.sqrt(np.nanmean(diff ** 2)))
     mae = float(np.nanmean(np.abs(diff)))
@@ -199,72 +225,86 @@ class ForecastStatsPanel(param.Parameterized):
             self.spinner.visible = False
             return
 
-        results = {}
-        errors = {}
-        for model in self.models:
-            if model not in EARTH2STUDIO_FORMAT_MODELS:
-                continue
-            try:
-                results[model] = compute_model_stats(self.model_paths[model], var_name, level_value)
-            except Exception as e:
-                errors[model] = str(e)
+        # Capture the document on this (correct) callback thread before
+        # handing off the slow work to a background thread — same pattern
+        # used in InferenceTab, needed because setting spinner.visible=True
+        # here and then blocking synchronously on slow network fetches
+        # means Panel never gets a chance to flush that "show" state to
+        # the browser before we'd otherwise flip it back off.
+        doc = pn.state.curdoc
 
-        if not results:
-            self.status.object = f"*Could not compute stats. Errors: {errors}*"
-            self.compute_button.disabled = False
-            self.spinner.value = False
-            self.spinner.visible = False
-            return
+        def _do_compute():
+            results = {}
+            errors = {}
+            for model in self.models:
+                if model not in EARTH2STUDIO_FORMAT_MODELS:
+                    continue
+                try:
+                    results[model] = compute_model_stats(self.model_paths[model], var_name, level_value)
+                except Exception as e:
+                    errors[model] = str(e)
 
-        # Surface per-lead-time failures (e.g. GFS fetch errors) that were
-        # recorded per row but would otherwise just show up as silent gaps
-        # in the plotted curve.
-        failure_summaries = []
-        for model, df in results.items():
-            failed = df[df["rmse"].isna()]
-            if not failed.empty:
-                sample_errors = failed["error"].dropna().unique()
-                sample = sample_errors[0] if len(sample_errors) else "unknown error"
-                failure_summaries.append(
-                    f"{model}: {len(failed)}/{len(df)} lead times failed "
-                    f"(e.g. {sample})"
-                )
+            def _finish():
+                if not results:
+                    self.status.object = f"*Could not compute stats. Errors: {errors}*"
+                    self.compute_button.disabled = False
+                    self.spinner.value = False
+                    self.spinner.visible = False
+                    return
 
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        for model, df in results.items():
-            axes[0].plot(df["lead_hours"] / 24, df["rmse"], marker="o", label=model)
-            axes[1].plot(df["lead_hours"] / 24, df["crps"], marker="o", label=model)
+                failure_summaries = []
+                for model, df in results.items():
+                    failed = df[df["rmse"].isna()]
+                    if not failed.empty:
+                        sample_errors = failed["error"].dropna().unique()
+                        sample = sample_errors[0] if len(sample_errors) else "unknown error"
+                        failure_summaries.append(
+                            f"{model}: {len(failed)}/{len(df)} lead times failed "
+                            f"(e.g. {sample})"
+                        )
 
-        axes[0].set_title("RMSE")
-        axes[0].set_xlabel("Lead Time (days)")
-        axes[0].set_ylabel(var_name)
-        axes[1].set_title("CRPS (= MAE for a deterministic forecast)")
-        axes[1].set_xlabel("Lead Time (days)")
-        axes[0].legend(fontsize=8)
-        fig.suptitle(f"Verification vs GFS analysis \u2014 {var_name}")
-        fig.tight_layout()
+                fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+                for model, df in results.items():
+                    axes[0].plot(df["lead_hours"] / 24, df["rmse"], marker="o", label=model)
+                    axes[1].plot(df["lead_hours"] / 24, df["crps"], marker="o", label=model)
 
-        self.plot_pane.object = fig
-        plt.close(fig)
+                axes[0].set_title("RMSE")
+                axes[0].set_xlabel("Lead Time (days)")
+                axes[0].set_ylabel(var_name)
+                axes[1].set_title("CRPS (= MAE for a deterministic forecast)")
+                axes[1].set_xlabel("Lead Time (days)")
+                axes[0].legend(fontsize=8)
+                fig.suptitle(f"Verification vs GFS analysis \u2014 {var_name}")
+                fig.tight_layout()
 
-        msg = f"Computed stats for: {', '.join(results.keys())}."
-        if errors:
-            msg += f" Failed for: {errors}"
-        if failure_summaries:
-            msg += "\n\n" + "\n\n".join(failure_summaries)
-        self.status.object = msg
-        self.compute_button.disabled = False
-        self.spinner.value = False
-        self.spinner.visible = False
+                self.plot_pane.object = fig
+                plt.close(fig)
+
+                msg = f"Computed stats for: {', '.join(results.keys())}."
+                if errors:
+                    msg += f" Failed for: {errors}"
+                if failure_summaries:
+                    msg += "\n\n" + "\n\n".join(failure_summaries)
+                self.status.object = msg
+                self.compute_button.disabled = False
+                self.spinner.value = False
+                self.spinner.visible = False
+
+            if doc is not None:
+                doc.add_next_tick_callback(_finish)
+            else:
+                _finish()
+
+        threading.Thread(target=_do_compute, daemon=True).start()
 
     def panel(self):
         return pn.Column(
+            pn.pane.Markdown("### Forecast Verification Statistics"),
             pn.Row(
-                pn.pane.Markdown("### Forecast Verification Statistics"),
+                self.compute_button,
                 self.spinner,
                 align="center",
             ),
-            self.compute_button,
             self.status,
             self.plot_pane,
             sizing_mode="stretch_width",
