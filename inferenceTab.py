@@ -42,6 +42,8 @@ class InferenceTab(param.Parameterized):
             lambda e: self._clear_highlight(self.outputParams.simulationNamePicker),
             'value_input'
         )
+        self.modelPicker.param.watch(self._update_default_sim_name, 'value')
+        self._update_default_sim_name()
 
         self.timePicker = TimePicker()
 
@@ -79,7 +81,7 @@ class InferenceTab(param.Parameterized):
         self._active_lock = threading.Lock()
         self._cancel_event = threading.Event()
 
-        self.outputTabs = pn.Tabs(sizing_mode="stretch_both")
+        self.outputTabs = pn.Tabs(sizing_mode="stretch_width", height=500)
         self.statusRow = pn.Row(pn.pane.Markdown("", margin=0))
 
     # ------------------------------------------------------------------ #
@@ -100,7 +102,7 @@ class InferenceTab(param.Parameterized):
         return {
             "simulation_name": self.outputParams.simulationNamePicker.value_input,
             "start_time":      self.timePicker.startDatePicker.value,
-            "end_time":        self.timePicker.endDatePicker.value,
+            "end_time":        self.timePicker.end_date,
             "timestep":        self.timePicker.incrementButtons.value,
             "ua_vars":         self.outputParams.UAVars.value,
             "surface_vars":    self.outputParams.surfaceVars.value,
@@ -153,7 +155,8 @@ class InferenceTab(param.Parameterized):
             widget = pn.widgets.TextAreaInput(
                 name=model,
                 value="",
-                sizing_mode="stretch_both",
+                sizing_mode="stretch_width",
+                height=400,
             )
             spinner = pn.indicators.LoadingSpinner(
                 width=25, height=25, value=True, color="primary", visible=True
@@ -163,7 +166,7 @@ class InferenceTab(param.Parameterized):
             self._spinners[model] = spinner
             self._status_widgets[model] = pane
             self.statusRow.append(pane)
-            self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_both")))
+            self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_width", height=450)))
 
         self.spinner.value = True
         self.spinner.visible = True
@@ -411,6 +414,9 @@ class InferenceTab(param.Parameterized):
             f'<span style="font-size:20px;color:{color}">{symbol}</span>'
             f'</div>'
         )
+
+    def _update_default_sim_name(self, event=None):
+        self.outputParams.set_default_simulation_name(self.modelPicker.value)
 
     def _highlight_error(self, widget):
         styles = dict(widget.styles or {})

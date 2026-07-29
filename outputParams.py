@@ -1,13 +1,19 @@
 import panel as pn
 import os
 import param
+from datetime import datetime
 
 class OutputParams:
     def __init__(self, start_path=".", width=400):
         self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
         self._callback = None
+        self._last_auto_name = None
 
-        self.simulationNamePicker = pn.widgets.TextInput(name='Simulation Name:', placeholder='Enter a name for your simulation')
+        self.simulationNamePicker = pn.widgets.TextInput(
+            name='Simulation Name:', 
+            sizing_mode="stretch_width",
+            placeholder='Enter a name for your simulation'
+        )
 
         self.pathDisplay = pn.widgets.TextInput(
             value=self.current_path_val,
@@ -46,6 +52,28 @@ class OutputParams:
             pn.pane.Markdown("Upper Air Variables"),
             self.UAVars
         )
+
+    def set_default_simulation_name(self, models):
+        """Regenerate the default simulation name from the given list of
+        model names, formatted as:
+            InferStudio_<ModelName1>_<ModelName2>_..._Year_Month_Day_hh:mm:ss
+
+        Only overwrites the field if it's currently empty or still matches
+        a previously auto-generated value — so if the user has typed their
+        own custom name, changing the model selection afterward won't
+        clobber it.
+        """
+        current = self.simulationNamePicker.value_input
+        if current and current != self._last_auto_name:
+            return  # user has typed a custom name — leave it alone
+
+        timestamp = datetime.now().strftime("%Y_%m_%d_%H:%M:%S")
+        model_part = "_".join(models) if models else "NoModel"
+        new_name = f"InferStudio_{model_part}_{timestamp}"
+
+        self._last_auto_name = new_name
+        self.simulationNamePicker.value = new_name
+        self.simulationNamePicker.value_input = new_name
 
     def _build_picker(self, width):
         self.currentPathDisplay = pn.widgets.TextInput(
@@ -147,4 +175,3 @@ class OutputParams:
             self.UAVarsGroup,
             sizing_mode="stretch_width"
         )
-

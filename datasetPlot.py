@@ -110,7 +110,6 @@ class SharedPlotControls(param.Parameterized):
             max_width=150,
             sizing_mode="stretch_width",
         )
-        self.level_selector.link(self, value="level_value")
 
         # NOTE: Select widgets reset their own value to None if the current
         # value isn't a member of `options` — and an empty options list
@@ -128,6 +127,7 @@ class SharedPlotControls(param.Parameterized):
             sizing_mode="stretch_width",
         )
         self.var_selector.link(self, value="var_name")
+        self.level_selector.link(self, value="level_value")
 
         # Colormap selector — built from cmocean (or a matplotlib fallback
         # if cmocean isn't installed). self._colormaps maps name -> the
@@ -268,11 +268,9 @@ class SharedPlotControls(param.Parameterized):
             self.level_selector.options = levels
             self.level_selector.disabled = False
             if self.level_value not in levels:
-                default = round(len(levels)/2)+1
-                #self.level_selector.value = levels[0]
-                self.level_selector.value = levels[default]
-                #self.level_value = levels[0]
-                self.level_value = levels[default]
+                default_level = 500 if 500 in levels else levels[0]
+                self.level_selector.value = default_level
+                self.level_value = default_level
         else:
             self.level_selector.options = [0]
             self.level_selector.disabled = True
@@ -326,17 +324,17 @@ class DatasetPlot2(param.Parameterized):
             if model not in EARTH2STUDIO_FORMAT_MODELS:
                 panes.append(
                     pn.Column(
-                        pn.pane.Markdown(
-                            f"**{model}**",
-                            styles={"text-align": "center", "font-size": "20px", "width": "100%"},
+                        pn.pane.HTML(
+                            f"<div style='text-align:center; font-size:20px; font-weight:bold; margin:0; padding:0;'>{model}</div>",
                             sizing_mode="stretch_width",
-                            margin=(0, 0, 4, 0),
+                            margin=0,
                         ),
                         pn.pane.Markdown(
                             f"*Plotting for {model} output format isn't wired up yet.*"
                         ),
                         align="center",
                         sizing_mode="stretch_width",
+                        margin=0,
                     )
                 )
                 continue
@@ -356,21 +354,22 @@ class DatasetPlot2(param.Parameterized):
                     height=None,
                     min_height=None,
                     max_height=None,
+                    margin=0,
                 )
             except Exception as e:
                 pane = pn.pane.Markdown(f"*Error plotting {model}: {e}*")
 
             panes.append(
                 pn.Column(
-                    pn.pane.Markdown(
-                        f"**{model}**",
-                        styles={"text-align": "center", "font-size": "20px", "width": "100%"},
+                    pn.pane.HTML(
+                        f"<div style='text-align:center; font-size:20px; font-weight:bold; margin:0; padding:0;'>{model}</div>",
                         sizing_mode="stretch_width",
-                        margin=(0, 0, 4, 0),
+                        margin=0,
                     ),
                     pane,
                     align="center",
                     sizing_mode="stretch_width",
+                    margin=0,
                 )
             )
 

@@ -23,6 +23,7 @@ class DatasetBrowser(param.Parameterized):
             sizing_mode='stretch_width',
             max_height=600,
             scroll=True,
+            margin=(0, 10, 0, 0),
             styles={'border': '1px solid #ddd', 'border-radius': '4px', 'background': 'white'}
         )
 

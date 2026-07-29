@@ -114,11 +114,16 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
         level_vars, surface_vars = parse_variable_groups(list(ds.data_vars))
         var_name = resolve_var_name(level_vars, surface_vars, base_or_var, level)
 
-        time_dim = _resolve_dim(ds, *TIME_NAMES)  # used only for the plot title, not selection
         lat_dim = _resolve_dim(ds, *LAT_NAMES)
         lon_dim = _resolve_dim(ds, *LON_NAMES)
 
         da = ds[var_name]
+
+        # Capture the init/cycle time (if present) before it potentially
+        # gets squeezed out below as a singleton dim — needed to compute
+        # the actual valid time for the title even though this size-1 axis
+        # isn't the one selected by `t`.
+        init_time = ds["time"].values[0] if "time" in ds.coords else None
 
         # Don't rely on the axis actually being named "time" — earth2studio
         # outputs may call it lead_time/step/forecast_time/etc., and there
@@ -132,6 +137,8 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
                 da = da.isel({d: 0})
                 extra_dims.remove(d)
 
+        select_dim = None
+        t_clamped = t
         if len(extra_dims) == 1:
             select_dim = extra_dims[0]
             t_clamped = min(max(t, 0), da.sizes[select_dim] - 1)
@@ -143,14 +150,39 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
                 f"one the time index should select."
             )
 
+        # Compute valid time / forecast (lead) time for the title, from
+        # whichever coordinate we actually selected by, if possible.
+        valid_time = None
+        lead_hours = None
+        if select_dim is not None and select_dim in ds.coords:
+            coord_val = ds[select_dim].values[t_clamped]
+            if np.issubdtype(ds[select_dim].dtype, np.timedelta64):
+                # select_dim is a lead-time-style offset (e.g. "lead_time")
+                lead_hours = coord_val / np.timedelta64(1, "h")
+                if init_time is not None:
+                    valid_time = init_time + coord_val
+            elif np.issubdtype(ds[select_dim].dtype, np.datetime64):
+                # select_dim IS itself the actual timestamp (ERA5-style)
+                valid_time = coord_val
+                first_val = ds[select_dim].values[0]
+                lead_hours = (coord_val - first_val) / np.timedelta64(1, "h")
+
         data = da.values
         lats = ds[lat_dim].values if lat_dim else np.arange(data.shape[0])
         lons = ds[lon_dim].values if lon_dim else np.arange(data.shape[1])
 
     fig, ax = plt.subplots(figsize=(7, 3.8))
     mesh = ax.pcolormesh(lons, lats, data, cmap=cmap, shading="auto")
-    title = f"{var_name}  (index={t})"
-    ax.set_title(title, fontsize=10)
+
+    if valid_time is not None and lead_hours is not None:
+        valid_str = str(np.datetime64(valid_time, "s"))
+        title = f"{var_name}  |  Valid: {valid_str}  |  Forecast: +{lead_hours:.0f}h"
+    elif lead_hours is not None:
+        title = f"{var_name}  |  Forecast: +{lead_hours:.0f}h"
+    else:
+        title = f"{var_name}  (index={t})"
+
+    ax.set_title(title, fontsize=14)
     ax.set_xticks([])
     ax.set_yticks([])
     fig.colorbar(mesh, ax=ax, fraction=0.03, pad=0.02)
