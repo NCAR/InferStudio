@@ -81,7 +81,7 @@ class InferenceTab(param.Parameterized):
         self._active_lock = threading.Lock()
         self._cancel_event = threading.Event()
 
-        self.outputTabs = pn.Tabs(sizing_mode="stretch_width", height=500)
+        self.outputTabs = pn.Tabs(sizing_mode="stretch_width", height=350)
         self.statusRow = pn.Row(pn.pane.Markdown("", margin=0))
 
     # ------------------------------------------------------------------ #
@@ -156,7 +156,7 @@ class InferenceTab(param.Parameterized):
                 name=model,
                 value="",
                 sizing_mode="stretch_width",
-                height=400,
+                height=300,
             )
             spinner = pn.indicators.LoadingSpinner(
                 width=25, height=25, value=True, color="primary", visible=True
@@ -166,7 +166,7 @@ class InferenceTab(param.Parameterized):
             self._spinners[model] = spinner
             self._status_widgets[model] = pane
             self.statusRow.append(pane)
-            self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_width", height=450)))
+            self.outputTabs.append((model, pn.Column(spinner, widget, sizing_mode="stretch_width", height=330)))
 
         self.spinner.value = True
         self.spinner.visible = True
@@ -454,5 +454,5 @@ class InferenceTab(param.Parameterized):
                 sizing_mode='stretch_width',
             ),
             sizing_mode='stretch_both',
-            min_height=300
+            min_height=300,
         )

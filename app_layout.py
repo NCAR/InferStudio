@@ -264,4 +264,4 @@ def build_app(data_dir):
     return template
 
 # To drop jupyter in the future:
-# if __name__ == "__main__": build_app(DATA_DIR).servable()
+if __name__ == "__main__": build_app(DATA_DIR).servable()
