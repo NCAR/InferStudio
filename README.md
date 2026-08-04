@@ -48,7 +48,7 @@ any inference yourself.
 - **AI Model** — choose one or more models to run.
 - **Output Parameters** — simulation name (auto-generated from the selected
   models and a timestamp, but editable), output directory, and which
-  surface/upper-air variables to save.
+  surface/upper-air variables to save. 
 - **Time Settings** — pick a start date and a lead time (in forecast steps);
   combined with the time-step increment, this determines the run's end date
   automatically.
