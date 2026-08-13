@@ -48,6 +48,7 @@ attributes:
       - [ 'Casper PBS batch', 'casper_batch',
           data-exclusive-option-for-cluster-casper: true,
           data-set-custom-queue: 'casper',
+          data-hide-custom-queue: true,
           data-set-bc-num-hours: 1 ]
       # - [ 'Derecho PBS batch', "derecho_batch",
       #     data-exclusive-option-for-cluster-derecho: true,
@@ -100,6 +101,7 @@ attributes:
     min: 1
     max: 72
     value: 2 # Default
+    disabled: true
   threads:
     label: "Specify Threads per Process (-l ompthreads=N)"
     widget: "number_field"
@@ -119,13 +121,15 @@ attributes:
     widget: "number_field"
     min: 1
     max: 1494
-    value: 4 # Default
+    value: 128 # Default
+    disabled: true
   num_gpus:
     label: "Specify X Number of GPUs / Node (-l ngpus=X)"
     widget: 'number_field'
     min: 0
     max: 8
     value: 1 # Default — InferStudio needs a GPU to run inference
+    disabled: true
   gpu_type:
     label: "Select GPU Type, X (-l gpu_type=X)"
     widget: 'select'
