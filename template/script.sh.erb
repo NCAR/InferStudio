@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+echo "Starting InferStudio..."
+
+module restore
+
+CONDA_SETUP_FILE="${NCAR_JUPYTERHUB_PREFIX}/stable/etc/profile.d/conda.sh"
+[ -f ${CONDA_SETUP_FILE} ] && . ${CONDA_SETUP_FILE}
+conda activate /glade/work/pearse/conda-envs/creditJun3
+
+cd /glade/work/pearse/InferStudio
+
+set -x
+panel serve panel_app.py \
+    --port ${port} \
+    --address 0.0.0.0 \
+    --prefix "${INFERSTUDIO_PREFIX}" \
+    --allow-websocket-origin="*" \
+    --no-autoreload

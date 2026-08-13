@@ -1,0 +1,8 @@
+---
+batch_connect:
+  template: "basic"
+script:
+  queue_name: <%= custom_queue %>
+  native:
+    - "-l"
+    - "select=<%= num_nodes %>:ncpus=<%= bc_num_slots %>:mem=<%= memory %>GB<% if num_gpus.to_i > 0 %>:ngpus=<%= num_gpus %>:gpu_type=<%= gpu_type %><% end %>"

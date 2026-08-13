@@ -1,0 +1,166 @@
+---
+cluster:
+  - "casper"
+  # - "derecho"  # disabled for now — L40 GPUs only exist on Casper
+form:
+  - resource
+  - custom_queue
+  - bc_account
+  - num_nodes
+  - bc_num_slots
+  - threads
+  - mpiprocs
+  - memory
+  - num_gpus
+  - gpu_type
+  - bc_num_hours
+  - conda_env
+  - bc_email_on_started
+attributes:
+  resource:
+    label: 'Resource Selection'
+    widget: 'select'
+    options:
+      # - [ 'Casper login', 'jhublogin',
+      #     data-exclusive-option-for-cluster-casper: true,
+      #     data-hide-custom-queue: true,
+      #     data-set-custom-queue: 'jhublogin',
+      #     data-hide-num-nodes: true,
+      #     data-set-num-nodes: 1,
+      #     data-hide-bc-num-slots: true,
+      #     data-set-bc-num-slots: 2,
+      #     data-hide-threads: true,
+      #     data-set-threads: 1,
+      #     data-hide-mpiprocs: true,
+      #     data-set-mpi-procs: 1,
+      #     data-hide-memory: true,
+      #     data-set-memory: 10,
+      #     data-hide-enable-gpus: true,
+      #     data-set-enable-gpus: 0,
+      #     data-hide-num-gpus: true,
+      #     data-set-num-gpus: 0,
+      #     data-hide-gpu-type: true,
+      #     data-hide-bc-num-hours: true,
+      #     data-set-bc-num-hours: 720,
+      #     data-max-bc-num-hours: 720,
+      #     data-hide-conda-env: true,
+      #     data-set-conda-env: '/glade/work/pearse/conda-envs/creditJun3' ]
+      - [ 'Casper PBS batch', 'casper_batch',
+          data-exclusive-option-for-cluster-casper: true,
+          data-set-custom-queue: 'casper',
+          data-set-bc-num-hours: 1 ]
+      # - [ 'Derecho PBS batch', "derecho_batch",
+      #     data-exclusive-option-for-cluster-derecho: true,
+      #     data-set-custom-queue: 'main',
+      #     data-set-bc-num-hours: 1 ]
+  custom_queue:
+    widget: 'select'
+    label: "Queue or Reservation (-q)"
+    options:
+      <%- CustomQueues.queues["cr"].each do |queue| %>
+      - [ "<%= queue.strip %>", "<%= queue.strip %>",
+          data-exclusive-option-for-cluster-casper: true ]
+    <%- end %>
+      # Derecho queues disabled for now — this app is Casper-only.
+      # <%- CustomQueues.queues["de"].each do |queue| %>
+      # - [ "<%= queue.strip %>", "<%= queue.strip %>",
+      #     data-exclusive-option-for-cluster-derecho: true ]
+      # <%- end %>
+      # - [ 'jhublogin', 'jhublogin',
+      #     data-exclusive-option-for-resource-jhublogin: true
+      #   ]
+  bc_account:
+    label: "Project Account (-A)"
+    widget: 'select'
+    help: "Select the account to charge for this job."
+    options:
+      <%- CustomAccounts.accounts["cr"].each do |account| %>
+       - [
+         "<%= account.strip %>", "<%= account.strip %>",
+         data-option-for-cluster-derecho: false
+         ]
+    <%- end %>
+      # Derecho accounts disabled for now — this app is Casper-only.
+      # <%- CustomAccounts.accounts["de"].each do |account| %>
+      #  - [
+      #    "<%= account.strip %>", "<%= account.strip %>",
+      #    data-option-for-cluster-casper: false
+      #    ]
+      # <%- end %>
+  num_nodes:
+    label: "Specify N Nodes (-l select=N)"
+    widget: 'number_field'
+    min: 1
+    max: 1
+    value: 1 # Fixed — InferStudio runs as a single process on a single node
+    disabled: true
+  bc_num_slots:
+    widget: "number_field"
+    label: "Specify N CPUs per Node (-l ncpus=N)"
+    min: 1
+    max: 72
+    value: 2 # Default
+  threads:
+    label: "Specify Threads per Process (-l ompthreads=N)"
+    widget: "number_field"
+    min: 1
+    max: 1
+    value: 1 # Fixed — not an MPI/OpenMP application
+    disabled: true
+  mpiprocs:
+    label: "Specify MPI processes per Node (-l mpiprocs=N)"
+    widget: "number_field"
+    min: 1
+    max: 1
+    value: 1 # Fixed — not an MPI application
+    disabled: true
+  memory:
+    label: "Specify Memory per Node in GB (-l mem=N)"
+    widget: "number_field"
+    min: 1
+    max: 1494
+    value: 4 # Default
+  num_gpus:
+    label: "Specify X Number of GPUs / Node (-l ngpus=X)"
+    widget: 'number_field'
+    min: 0
+    max: 8
+    value: 1 # Default — InferStudio needs a GPU to run inference
+  gpu_type:
+    label: "Select GPU Type, X (-l gpu_type=X)"
+    widget: 'select'
+    options:
+      # Restricted to L40 for now — InferStudio's model backends
+      # (earth2studio / MILES-CREDIT) are currently only validated on
+      # NVIDIA L40 GPUs on Casper.
+      - ["NVIDIA L40", "l40"]
+      # --- other GPU types disabled for now, re-enable as needed ---
+      # - ["NVIDIA Compute Capability 7.0", "cc70"]
+      # - ["NVIDIA Compute Capability 8.0", "cc80"]
+      # - ["NVIDIA Compute Capability 9.0", "cc90"]
+      # - ["Any NVIDIA GPGPU", "nvgpu"]
+      # - ["NVIDIA V100 SXM 4-way", "v100_4way"]
+      # - ["NVIDIA V100 SXM 8-way", "v100_8way"]
+      # - ["NVIDIA A100 PCIe 1-way", "a100_1way"]
+      # - ["NVIDIA A100 SXM 4-way", "a100_4way"]
+      # - ["NVIDIA A100 80GB 4-way", "a100_80gb"]
+      # - ["NVIDIA H100 SXM 4-way", "h100_4way"]
+      # - ["NVIDIA H100 80GB", "h100_80gb"]
+      # - ["Any AMD GPGPU", "amdgpu"]
+      # - ["AMD MI300a", "mi300a"]
+      # - ["Visualization - ANY Vis GPU", "vis"]
+      # - ["Visualization - NVIDIA GP100", "gp100"]
+  bc_num_hours:
+    label: "Wall Time in hours (24-hour max)"
+    widget: 'number_field'
+    min: 1
+    max: 24
+    value: 1 # Default
+  conda_env:
+    label: "Conda Environment"
+    widget: 'select'
+    options:
+      # Restricted to InferStudio's own environment for now. Kept as a
+      # list (rather than a fixed value) so additional environments can
+      # be added later without changing the form structure.
+      - ["creditJun3", "/glade/work/pearse/conda-envs/creditJun3"]

@@ -1,0 +1,5 @@
+[[ $(type -t module) == "function" ]] && export -f module
+
+# Find a free port, provided by OOD's "basic" template
+port=$(find_port ${host})
+export INFERSTUDIO_PREFIX="/node/${host}/${port}"

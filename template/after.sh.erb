@@ -1,0 +1,8 @@
+echo "Waiting for InferStudio to open port ${port}..."
+if wait_until_port_used "${host}:${port}" 600; then
+  echo "InferStudio is listening on port ${port}!"
+else
+  echo "Timed out waiting for InferStudio to start!"
+  clean_up 1
+fi
+sleep 2
