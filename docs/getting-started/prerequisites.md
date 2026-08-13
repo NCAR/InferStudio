@@ -61,23 +61,13 @@ The Panel application itself runs from a conda environment maintained alongside
 the code:
 
 ```text
-Application code:   /glade/work/<user>/InferStudio/
-Panel environment:  /glade/work/<user>/conda-envs/creditJun3/
-Per-model venvs:    /glade/work/<user>/E2S/envs/<model>/
+Application code:   /glade/work/pearse/InferStudio/
+Panel environment:  /glade/work/pearse/conda-envs/creditJun3/
+Per-model venvs:    /glade/work/pearse/E2S/envs/<model>/
 ```
-
-:::{admonition} Site-specific paths
-:class: important
-
-The paths above reflect a single developer installation. If your group runs a
-shared deployment, substitute the shared prefix. Ask the maintainers for the
-canonical location rather than cloning your own copy — the per-model
-environments are expensive to rebuild.
-:::
 
 ## Local requirements
 
 - A modern browser (Chrome, Firefox, or Safari). Panel relies on WebSockets;
   proxies that strip WebSocket upgrade requests leave the app visibly loaded but
   permanently unresponsive.
-- An SSH client, if you plan to launch outside of JupyterHub.

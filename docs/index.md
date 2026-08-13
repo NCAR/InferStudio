@@ -6,8 +6,8 @@ writing an inference script, building a Python environment, or hand-editing a
 PBS submission.
 
 It is built with [HoloViz Panel](https://panel.holoviz.org/) and runs on a
-Casper compute node, reached through a port-forwarded tunnel from JupyterHub.
-From a single sidebar you pick a model, an initialization time, and a forecast
+Casper compute node, reached through [NCAR's Open OnDemand portal](https://ondemand.hpc.ucar.edu/).
+From InferStudio's Inference tab you can pick a model, an initialization time, and a forecast
 length; InferStudio dispatches the run into the correct pre-built environment,
 streams the log back into the browser, and then loads the output for plotting
 and scoring against a reference analysis.
@@ -27,12 +27,12 @@ problems before you see a single field:
 
 1. **Environment resolution.** Each model in the
    [Earth2Studio](https://nvidia.modulus.github.io/earth2studio/) ecosystem
-   pins a mutually incompatible dependency stack — ONNX Runtime for Pangu,
+   pins a mutually incompatible dependency stack.  For example ONNX Runtime for Pangu,
    `makani` plus `torch-harmonics` compiled from source for SFNO and
-   FourCastNet3, `flash_attn` for AIFS. On a shared HPC system these stacks
+   FourCastNet3, `flash_attn` for AIFS to name a few. On a shared HPC system these stacks
    also have to respect the site CUDA driver ceiling.
 2. **Driver code.** Calling `earth2studio.run.deterministic()` correctly
-   requires knowing which data source to hand it, how to snap an
+   requires knowing which data source to hand it, how to apply an
    initialization time to an available analysis cycle, and how to configure the
    IO backend.
 3. **Job placement.** GPU inference needs the right queue, the right account
@@ -42,8 +42,8 @@ problems before you see a single field:
    carries a `lead_time` dimension, while MILES-CREDIT models write ERA5-style
    files with a separate vertical coordinate.
 
-InferStudio absorbs all four. The user-facing surface is a form and a set of
-plots.
+InferStudio absorbs all four. The user interface runs custom inference, stores data
+on glade, and presents a set of plots.
 
 ## Who it is for
 
