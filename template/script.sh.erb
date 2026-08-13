@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 echo "Starting InferStudio..."
 
-module restore
+#module restore
+module load ncarenv/25.10 cuda/12.9.0 conda
 
 CONDA_SETUP_FILE="${NCAR_JUPYTERHUB_PREFIX}/stable/etc/profile.d/conda.sh"
 [ -f ${CONDA_SETUP_FILE} ] && . ${CONDA_SETUP_FILE}
