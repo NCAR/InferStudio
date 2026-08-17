@@ -45,7 +45,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from earth2StudioPlot import parse_variable_groups, resolve_var_name, _resolve_dim, LAT_NAMES, LON_NAMES
+from visualization.earth2StudioPlot import parse_variable_groups, resolve_var_name, _resolve_dim, LAT_NAMES, LON_NAMES
 
 # Same set used in datasetPlot.py — models whose output this verification
 # pipeline (and the earth2studio GFS datasource) can currently handle.

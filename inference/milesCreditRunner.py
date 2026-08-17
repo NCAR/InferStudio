@@ -1,4 +1,4 @@
-from modelRunner import ModelRunner
+from inference.modelRunner import ModelRunner
 from pathlib import Path
 
 class MilesCreditRunner(ModelRunner):

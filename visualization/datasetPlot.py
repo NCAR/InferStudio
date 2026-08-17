@@ -3,8 +3,9 @@ from pathlib import Path
 import panel as pn
 import param
 
-from era5_plot import plot_png, NETCDF_FILE, VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
-from earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
+from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
+from visualization.era5_plot import plot_png, NETCDF_FILE
+from visualization.earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
 
 pn.extension(raw_css=[Path("static/styles.css").read_text()])
 

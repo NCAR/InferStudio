@@ -9,12 +9,12 @@ import signal
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from outputParams import OutputParams
-from timePicker import TimePicker
-from commandRunner import CommandRunner
+from inference.outputParams import OutputParams
+from inference.timePicker import TimePicker
+from inference.commandRunner import CommandRunner
 
-from milesCreditRunner import MilesCreditRunner
-from earth2StudioRunner import Earth2StudioRunner
+from inference.milesCreditRunner import MilesCreditRunner
+from inference.earth2StudioRunner import Earth2StudioRunner
 
 MILES_CREDIT_MODELS = {'WXFormer'}
 EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'Pangu'}

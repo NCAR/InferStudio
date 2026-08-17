@@ -3,13 +3,13 @@ import warnings
 import xarray as xr
 import panel as pn
 from pathlib import Path
-from datasetSelector2 import DatasetBrowser
-from metadata import DatasetMetadata
-from datasetPlot import DatasetPlot2, SharedPlotControls
-from forecastStatsPanel import ForecastStatsPanel
-from commandRunner import CommandRunner
-from inferenceTab import InferenceTab
-from era5_plot import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
+from visualization.datasetSelector2 import DatasetBrowser
+from visualization.metadata import DatasetMetadata
+from visualization.datasetPlot import DatasetPlot2, SharedPlotControls
+from visualization.forecastStatsPanel import ForecastStatsPanel
+from inference.commandRunner import CommandRunner
+from inference.inferenceTab import InferenceTab
+from dimensions import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
 
 def _resolve_dim(ds, *candidates):
     """Return the first candidate name that exists as a dimension in ds."""

@@ -10,6 +10,7 @@ import io
 import os
 
 from pathlib import Path
+from dimensions import VAR_NAME, TIME_NAME, LAT_NAME, LON_NAME, LEV_NAME, PRES_NAME
 
 PLOT_LOCK = threading.Lock()
 
@@ -30,12 +31,6 @@ print("DATA_DIR " + data_dir)
 print("NEWEST " + str(newest_directory(data_dir)))
 #NETCDF_FILE = os.environ.get("NETCDF_FILE", str(newest_directory("/output/model_predict")) + "/*.nc")
 NETCDF_FILE = os.environ.get("NETCDF_FILE", str(newest_directory(data_dir)) + "/*.nc")
-VAR_NAME = "t2m"
-TIME_NAME = "time"
-LAT_NAME = "latitude"
-LON_NAME = "longitude"
-LEV_NAME = "level"
-PRES_NAME = "pressure"
 FILL_THRESHOLD = 1.0e20
 
 
