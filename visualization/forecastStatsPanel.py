@@ -45,6 +45,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from dimensions import resolve_nc_glob
 from visualization.earth2StudioPlot import parse_variable_groups, resolve_var_name, _resolve_dim, LAT_NAMES, LON_NAMES
 
 # Same set used in datasetPlot.py — models whose output this verification
@@ -103,7 +104,7 @@ def compute_model_stats(model_dir, base_or_var, level) -> pd.DataFrame:
     """
     model_dir = Path(model_dir)
 
-    with xr.open_mfdataset(f"{model_dir}/*.nc", engine="netcdf4", autoclose=True, data_vars="all") as ds:
+    with xr.open_mfdataset(resolve_nc_glob(model_dir), engine="netcdf4", autoclose=True, data_vars="all") as ds:
         level_vars, surface_vars = parse_variable_groups(list(ds.data_vars))
         var_name = resolve_var_name(level_vars, surface_vars, base_or_var, level)
 

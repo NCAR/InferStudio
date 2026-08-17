@@ -22,6 +22,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from dimensions import resolve_nc_glob
+
 # Same fallback names used elsewhere in the codebase (see app_layout._resolve_dim)
 LAT_NAMES = ("lat", "latitude")
 LON_NAMES = ("lon", "longitude")
@@ -110,7 +112,7 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
     """
     model_dir = Path(model_dir)
 
-    with xr.open_mfdataset(f"{model_dir}/*.nc", engine="netcdf4", autoclose=True, data_vars="all") as ds:
+    with xr.open_mfdataset(resolve_nc_glob(model_dir), engine="netcdf4", autoclose=True, data_vars="all") as ds:
         level_vars, surface_vars = parse_variable_groups(list(ds.data_vars))
         var_name = resolve_var_name(level_vars, surface_vars, base_or_var, level)
 

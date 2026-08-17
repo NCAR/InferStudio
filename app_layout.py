@@ -3,13 +3,13 @@ import warnings
 import xarray as xr
 import panel as pn
 from pathlib import Path
+from dimensions import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME, resolve_nc_glob
 from visualization.datasetSelector2 import DatasetBrowser
 from visualization.metadata import DatasetMetadata
 from visualization.datasetPlot import DatasetPlot2, SharedPlotControls
 from visualization.forecastStatsPanel import ForecastStatsPanel
 from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
-from dimensions import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
 
 def _resolve_dim(ds, *candidates):
     """Return the first candidate name that exists as a dimension in ds."""
@@ -21,7 +21,7 @@ def _resolve_dim(ds, *candidates):
 def scan_single_dataset(dataset_dir: Path) -> dict:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
-        with xr.open_mfdataset(f"{dataset_dir}/*.nc", engine="netcdf4", autoclose=True, data_vars='all') as ds:
+        with xr.open_mfdataset(resolve_nc_glob(dataset_dir), engine="netcdf4", autoclose=True, data_vars='all') as ds:
             lat_dim = _resolve_dim(ds, LAT_NAME, "lat")
             lon_dim = _resolve_dim(ds, LON_NAME, "lon")
 

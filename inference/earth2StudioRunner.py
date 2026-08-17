@@ -183,6 +183,15 @@ deterministic(
     }},
 )
 print("Output written to {output_nc}", flush=True)
+
+print("Converting to CF-compliant format...", flush=True)
+try:
+    sys.path.insert(0, "/glade/work/pearse/InferStudio")
+    from cf_convert import make_cf_compliant
+    cf_path = make_cf_compliant("{output_nc}")
+    print(f"CF-compliant file written: {{cf_path}}", flush=True)
+except Exception as e:
+    print(f"WARNING: CF conversion failed, raw output is still available: {{e}}", flush=True)
 """
 
         with open(script_path, 'w') as f:
