@@ -45,6 +45,22 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 stime = str(ds.time.values[0].astype("datetime64[s]"))
                 etime = str(ds.time.values[-1].astype("datetime64[s]"))
 
+            # CF-compliant files (post cf_convert.py) stack pressure levels
+            # into a real `pressure` dimension on each leveled variable,
+            # rather than earth2studio's original flattened per-level
+            # variable names (u100, u850, ...). Capture which variables
+            # actually have this real dimension, and the real coordinate
+            # values, so the Level (hPa) dropdown can be populated
+            # correctly even though these variable names no longer end in
+            # a digit (parse_variable_groups can't detect levels from the
+            # name alone for these).
+            leveled_vars_cf = {}
+            if PRES_NAME in ds.coords:
+                pressure_values = sorted(float(x) for x in ds[PRES_NAME].values.tolist())
+                for v in ds.data_vars:
+                    if PRES_NAME in ds[v].dims:
+                        leveled_vars_cf[v] = pressure_values
+
             return {
                 "path": str(dataset_dir),
                 "ntime": ntime,
@@ -56,6 +72,7 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 "etime": etime,
                 "vars2d": [v for v in ds.data_vars if len(ds[v].dims) <= 3],
                 "vars3d": [v for v in ds.data_vars if len(ds[v].dims) > 3],
+                "leveled_vars_cf": leveled_vars_cf,
             }
 
 def scan_simulation_suite(sim_dir: Path) -> dict:
@@ -76,6 +93,12 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
     vars2d = sorted(set().union(*(m["vars2d"] for m in model_meta.values())))
     vars3d = sorted(set().union(*(m["vars3d"] for m in model_meta.values())))
 
+    leveled_vars_cf = {}
+    for m in model_meta.values():
+        for var, levels in m.get("leveled_vars_cf", {}).items():
+            leveled_vars_cf.setdefault(var, set()).update(levels)
+    leveled_vars_cf = {k: sorted(v) for k, v in leveled_vars_cf.items()}
+
     return {
         "path": str(sim_dir),
         "models": model_meta,      # per-model breakdown: {model_name: {...}}
@@ -89,6 +112,7 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
         "etime": any_model["etime"],
         "vars2d": vars2d,
         "vars3d": vars3d,
+        "leveled_vars_cf": leveled_vars_cf,
     }
 
 def scan_datasets(data_dir):
@@ -250,16 +274,29 @@ def build_app(data_dir):
     )
     template.main[:] = [pn.Column(tabs, sizing_mode="stretch_both")]
 
-    if pn.state.notifications:
-        pn.state.notifications.info(
-            "Welcome to InferStudio.<br><br>"
-            "You are currently viewing information from "
-            "an example dataset. To run your own AI weather model inference, go "
-            "to the Inference tab. Then select your desired parameters, click "
-            "\"Run Inference,\" and your simulation suite will be viewable from here."
-            "<br><br><br>",
-            duration=0,
-        )
+    # Deferred via pn.state.onload rather than called directly here:
+    # pn.state.notifications requires the browser session to be fully
+    # connected before it can actually display anything client-side.
+    # Calling .info(...) synchronously at this point in build_app() runs
+    # before that connection is guaranteed to be live, so the message was
+    # being silently dropped — this is why the welcome message never
+    # appeared on initial launch, while the (unrelated) notification fired
+    # from _on_new_output above worked fine, since by the time an
+    # inference run completes the session has obviously been live for a
+    # while already.
+    def _show_welcome():
+        if pn.state.notifications:
+            pn.state.notifications.info(
+                "Welcome to InferStudio.<br><br>"
+                "You are currently viewing information from "
+                "an example dataset. To run your own AI weather model inference, go "
+                "to the Inference tab. Then select your desired parameters, click "
+                "\"Run Inference,\" and your simulation suite will be viewable from here."
+                "<br><br><br>",
+                duration=0,
+            )
+
+    pn.state.onload(_show_welcome)
 
     return template
 

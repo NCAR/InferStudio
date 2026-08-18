@@ -74,12 +74,32 @@ class SharedPlotControls(param.Parameterized):
     level_value = param.Integer(default=0)
     time_index = param.Integer(default=0)
     colormap = param.String(default="")
+    # None means "auto" (matplotlib's own per-plot scaling). Once the user
+    # actually types into the Min/Max box, this becomes a real number and
+    # both models' plots share that exact same fixed color range, since
+    # they're both driven by these same shared params. Distinguishing
+    # "user typed this" from "code just displayed the live auto value" is
+    # handled via the guarded watchers below (_on_cmap_min_input etc.),
+    # NOT via a simple .link() — a plain link would treat every
+    # programmatic display update as a real user override too, silently
+    # turning "auto" into a permanently fixed value after the very first
+    # render.
+    cmap_min = param.Number(default=None, allow_None=True)
+    cmap_max = param.Number(default=None, allow_None=True)
 
     def __init__(self, **params):
         super().__init__(**params)
 
         self.level_vars = {}
         self.surface_vars = []
+        # Per-variable real pressure levels captured from CF-compliant
+        # files (post cf_convert.py) during scanning — see
+        # scan_single_dataset's `leveled_vars_cf` in app_layout.py. Takes
+        # precedence over name-parsed levels (self.level_vars) whenever a
+        # variable has real levels available, since parse_variable_groups
+        # can't detect them from a CF file's plain variable names (e.g.
+        # "q" has no trailing digit even though it now spans 13 levels).
+        self._leveled_vars_cf = {}
 
         self.time_slider = pn.widgets.IntSlider(
             name="",
@@ -167,6 +187,38 @@ class SharedPlotControls(param.Parameterized):
             self.colormap_selector.link(self, value="colormap")
         self.colormap = default_cmap_name
 
+        # Colormap Min/Max — always display the actual value currently in
+        # effect (whether auto-computed from the data or user-fixed), no
+        # placeholder text. Guard flags (_syncing_cmap_min/_max) let code
+        # update the DISPLAYED value after each render without that write
+        # being mistaken for the user manually overriding the range.
+        self._syncing_cmap_min = False
+        self._syncing_cmap_max = False
+
+        self.cmap_min_input = pn.widgets.FloatInput(
+            name="",
+            value=0.0,
+            sizing_mode="stretch_width",
+        )
+        self.cmap_max_input = pn.widgets.FloatInput(
+            name="",
+            value=0.0,
+            sizing_mode="stretch_width",
+        )
+
+        def _on_cmap_min_input(event):
+            if self._syncing_cmap_min:
+                return  # this write came from _set_displayed_min, not the user
+            self.cmap_min = event.new
+
+        def _on_cmap_max_input(event):
+            if self._syncing_cmap_max:
+                return  # this write came from _set_displayed_max, not the user
+            self.cmap_max = event.new
+
+        self.cmap_min_input.param.watch(_on_cmap_min_input, 'value')
+        self.cmap_max_input.param.watch(_on_cmap_max_input, 'value')
+
         self._row = pn.Column(
             pn.Row(
                 self._time_display,
@@ -208,8 +260,50 @@ class SharedPlotControls(param.Parameterized):
                 self.colormap_selector,
                 sizing_mode="stretch_width",
             ),
+            pn.Row(
+                pn.pane.HTML(
+                    "<b>Colormap Min</b>",
+                    styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
+                    width=90,
+                    margin=0,
+                ),
+                self.cmap_min_input,
+                align="start",
+                sizing_mode="stretch_width",
+                css_classes=["widget-row"],
+            ),
+            pn.Row(
+                pn.pane.HTML(
+                    "<b>Colormap Max</b>",
+                    styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
+                    width=90,
+                    margin=0,
+                ),
+                self.cmap_max_input,
+                align="start",
+                sizing_mode="stretch_width",
+                css_classes=["widget-row"],
+            ),
             sizing_mode="stretch_width",
         )
+
+    def _set_displayed_min(self, value):
+        """Update the Colormap Min box's displayed value without it being
+        mistaken for the user manually fixing a range."""
+        self._syncing_cmap_min = True
+        try:
+            self.cmap_min_input.value = value
+        finally:
+            self._syncing_cmap_min = False
+
+    def _set_displayed_max(self, value):
+        """Update the Colormap Max box's displayed value without it being
+        mistaken for the user manually fixing a range."""
+        self._syncing_cmap_max = True
+        try:
+            self.cmap_max_input.value = value
+        finally:
+            self._syncing_cmap_max = False
 
     def update_choices(self, dataset_keys, dataset_metadata):
         """Recompute variable/level/time choices from the union of
@@ -217,6 +311,7 @@ class SharedPlotControls(param.Parameterized):
         (typically browser.checked_items)."""
         all_vars = set()
         max_ntime = 0
+        leveled_vars_cf = {}
         for key in dataset_keys:
             meta = dataset_metadata.get(key) or {}
             all_vars.update(meta.get("vars2d") or [])
@@ -224,6 +319,9 @@ class SharedPlotControls(param.Parameterized):
             ntime = meta.get("ntime") or 0
             if ntime > max_ntime:
                 max_ntime = ntime
+            for var, levels in (meta.get("leveled_vars_cf") or {}).items():
+                leveled_vars_cf.setdefault(var, set()).update(levels)
+        self._leveled_vars_cf = {k: sorted(v) for k, v in leveled_vars_cf.items()}
 
         # Time: use the longest checked dataset's range. Shorter datasets
         # get their time index clamped automatically in plot_e2s_field, so
@@ -239,7 +337,16 @@ class SharedPlotControls(param.Parameterized):
 
         self.level_vars, self.surface_vars = parse_variable_groups(sorted(all_vars))
 
-        base_choices = sorted(self.level_vars.keys())
+        # Variables with real CF pressure levels should be treated as
+        # "leveled" (base) choices even though their name has no trailing
+        # digit — remove them from surface_vars if name-parsing put them
+        # there, since parse_variable_groups can't detect this from the
+        # name alone.
+        for var in self._leveled_vars_cf:
+            if var in self.surface_vars:
+                self.surface_vars.remove(var)
+
+        base_choices = sorted(set(self.level_vars.keys()) | set(self._leveled_vars_cf.keys()))
         surface_choices = sorted(self.surface_vars)
         var_choices = base_choices + surface_choices
 
@@ -264,7 +371,17 @@ class SharedPlotControls(param.Parameterized):
 
     @param.depends('var_name', watch=True)
     def _update_level_options(self):
-        levels = available_levels(self.level_vars, self.var_name)
+        # Prefer real CF pressure-coordinate levels when available for
+        # this variable (post cf_convert.py); fall back to the old
+        # flattened-variable-name parsing for legacy (pre-conversion)
+        # files, where a variable like "u500" encodes its level in the
+        # name rather than a real dimension.
+        cf_levels = self._leveled_vars_cf.get(self.var_name)
+        if cf_levels:
+            levels = [int(round(lv)) for lv in cf_levels]
+        else:
+            levels = available_levels(self.level_vars, self.var_name)
+
         if levels:
             self.level_selector.options = levels
             self.level_selector.disabled = False
@@ -302,23 +419,29 @@ class DatasetPlot2(param.Parameterized):
             self.model_paths = {self.dataset: self.metadata["path"]}
 
         # Reactive view bound to the *shared* controls' time_index/var_name/
-        # level_value — same pn.bind pattern used for the time label in
-        # SharedPlotControls itself.
+        # level_value/colormap/cmap_min/cmap_max — same pn.bind pattern
+        # used for the time label in SharedPlotControls itself. Since both
+        # models' plots read from these same shared params, they always
+        # get the exact same color range.
         self.view = pn.bind(
             self._render,
             self.controls.param.var_name,
             self.controls.param.level_value,
             self.controls.param.time_index,
             self.controls.param.colormap,
+            self.controls.param.cmap_min,
+            self.controls.param.cmap_max,
         )
 
-    def _render(self, var_name, level_value, time_index, colormap_name):
+    def _render(self, var_name, level_value, time_index, colormap_name, cmap_min, cmap_max):
         if not var_name:
             return pn.pane.Markdown("*No variable selected*")
 
         cmap = self.controls._colormaps.get(colormap_name, "viridis")
 
         panes = []
+        actual_mins = []
+        actual_maxs = []
         for model in self.models:
             model_path = self.model_paths.get(model)
 
@@ -341,13 +464,17 @@ class DatasetPlot2(param.Parameterized):
                 continue
 
             try:
-                buf = plot_e2s_field(
+                buf, vmin_used, vmax_used = plot_e2s_field(
                     model_dir=model_path,
                     base_or_var=var_name,
                     level=level_value,
                     t=time_index,
                     cmap=cmap,
+                    vmin=cmap_min,
+                    vmax=cmap_max,
                 )
+                actual_mins.append(vmin_used)
+                actual_maxs.append(vmax_used)
                 pane = pn.pane.PNG(
                     buf,
                     sizing_mode="scale_width",
@@ -373,6 +500,20 @@ class DatasetPlot2(param.Parameterized):
                     margin=0,
                 )
             )
+
+        # Update the Min/Max boxes to show the actual range currently in
+        # effect. Only overwrite a box that's still in auto mode
+        # (cmap_min/cmap_max still None) — a box the user has explicitly
+        # fixed keeps showing exactly what they typed, untouched. Union
+        # across models (min of mins, max of maxes) so, in auto mode, the
+        # displayed range covers everything visible on screen.
+        if actual_mins and actual_maxs:
+            overall_min = min(actual_mins)
+            overall_max = max(actual_maxs)
+            if cmap_min is None:
+                self.controls._set_displayed_min(float(f"{overall_min:.4g}"))
+            if cmap_max is None:
+                self.controls._set_displayed_max(float(f"{overall_max:.4g}"))
 
         if len(panes) == 1:
             return panes[0]

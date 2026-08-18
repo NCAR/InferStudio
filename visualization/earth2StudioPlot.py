@@ -1,19 +1,13 @@
 """Plotting utilities for earth2studio-format model outputs (AIFS, Aurora,
-Pangu, and similar). Unlike ERA5 files, these datasets do not store
-pressure-level fields as a single 3D variable with a `level` dimension —
-each level is flattened into its own variable, e.g. `u100`, `u150`, ...,
-`u1000`. Surface/single-level fields (t2m, msl, sp, z500, ...) are stored
-as ordinary standalone variables.
+Pangu, and similar). See earth2StudioVars.py for the naming-convention
+parsing logic (kept separate so code that only needs parsing, not
+plotting, doesn't have to import matplotlib transitively).
 
-This module parses that naming convention so a "base variable + level"
-selection (e.g. base="u", level=850) can be resolved to the actual
-variable name (`u850`) in the file, and provides a plotting function
-that mirrors era5_plot.plot_png's interface closely enough to slot into
-DatasetPlot2 in place of dummy_model_plot.
+Provides a plotting function that mirrors era5_plot.plot_png's interface
+closely enough to slot into DatasetPlot2 in place of dummy_model_plot.
 """
 
 import io
-import re
 from pathlib import Path
 
 import numpy as np
@@ -22,80 +16,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dimensions import resolve_nc_glob
-
-# Same fallback names used elsewhere in the codebase (see app_layout._resolve_dim)
-LAT_NAMES = ("lat", "latitude")
-LON_NAMES = ("lon", "longitude")
-TIME_NAMES = ("time",)
-
-_LEVEL_VAR_RE = re.compile(r"^([a-zA-Z]+?)(\d+)$")
+from dimensions import resolve_nc_glob, PRES_NAME
+from visualization.earth2StudioVars import (
+    LAT_NAMES, LON_NAMES, TIME_NAMES,
+    _resolve_dim, parse_variable_groups, available_levels,
+    resolve_var_name, get_model_nc_path,
+)
 
 
-def _resolve_dim(ds, *candidates):
-    for name in candidates:
-        if name in ds.sizes:
-            return name
-    return None
-
-
-def parse_variable_groups(var_names):
-    """Split a flat list of variable names into:
-      - level_vars: {base_name: {level(int): full_var_name}}, e.g. {"u": {100: "u100", 850: "u850"}}
-      - surface_vars: [names with no trailing numeric level, e.g. "t2m", "msl", "sp"]
-
-    Note: t2m is NOT treated as a leveled variable — the regex requires the
-    string to END in digits, and "t2m" ends in "m", so it correctly falls
-    through to surface_vars.
-    """
-    level_vars = {}
-    surface_vars = []
-    for name in var_names:
-        m = _LEVEL_VAR_RE.match(name)
-        if m:
-            base, lev = m.group(1), int(m.group(2))
-            level_vars.setdefault(base, {})[lev] = name
-        else:
-            surface_vars.append(name)
-    return level_vars, surface_vars
-
-
-def available_levels(level_vars, base):
-    """Sorted list of integer levels available for a given base variable name."""
-    return sorted(level_vars.get(base, {}).keys())
-
-
-def resolve_var_name(level_vars, surface_vars, base_or_var, level=None):
-    """Resolve a (base, level) or plain surface variable name to the actual
-    variable name present in the dataset.
-
-    - If `base_or_var` is a known surface variable, `level` is ignored.
-    - If `base_or_var` is a known leveled base name, `level` must match one
-      of its available levels (nearest level is used if an exact match
-      isn't found, so a slider index off by one doesn't hard-crash).
-    """
-    if base_or_var in surface_vars:
-        return base_or_var
-
-    levels = level_vars.get(base_or_var)
-    if levels is None:
-        raise KeyError(f"Unknown variable/base: {base_or_var!r}")
-
-    if level in levels:
-        return levels[level]
-
-    # Fall back to nearest available level rather than raising
-    nearest = min(levels.keys(), key=lambda l: abs(l - (level if level is not None else 0)))
-    return levels[nearest]
-
-
-def get_model_nc_path(model_dir) -> Path:
-    """Return the model's output directory as a Path (xr.open_mfdataset glob
-    target). Each model writes one or more .nc files per model directory."""
-    return Path(model_dir)
-
-
-def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.BytesIO:
+def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis", vmin=None, vmax=None):
     """Open the model's NetCDF output and render a single lat/lon field.
 
     Parameters
@@ -109,6 +38,18 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
         Pressure level in hPa, used only when base_or_var is a leveled base.
     t : int
         Time index to select.
+    vmin, vmax : float or None
+        Fixed colorbar range. If either is None, it's computed from this
+        field's own actual data (matching matplotlib's default auto
+        behavior), but explicitly, so the actual value used can be
+        returned to the caller rather than staying hidden inside
+        matplotlib's own internals.
+
+    Returns
+    -------
+    (buf, vmin_used, vmax_used) : (io.BytesIO, float, float)
+        The rendered PNG, and the actual min/max values used for the
+        colorbar (whether passed in explicitly or auto-computed).
     """
     model_dir = Path(model_dir)
 
@@ -120,6 +61,17 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
         lon_dim = _resolve_dim(ds, *LON_NAMES)
 
         da = ds[var_name]
+
+        # CF-compliant files (post cf_convert.py) stack all pressure
+        # levels of a variable into one array with a real `pressure`
+        # dimension, rather than earth2studio's original flattened
+        # per-level variables (u100, u850, ...). If this variable has a
+        # real pressure dim, select the requested level from it directly
+        # here — resolve_var_name won't have done this, since for a CF
+        # file base_or_var already IS the actual variable name (no
+        # flattened-name lookup needed).
+        if PRES_NAME in da.dims and level is not None:
+            da = da.sel({PRES_NAME: level}, method="nearest")
 
         # Capture the init/cycle time (if present) before it potentially
         # gets squeezed out below as a singleton dim — needed to compute
@@ -173,8 +125,14 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
         lats = ds[lat_dim].values if lat_dim else np.arange(data.shape[0])
         lons = ds[lon_dim].values if lon_dim else np.arange(data.shape[1])
 
+    # Compute the actual min/max explicitly (rather than letting
+    # matplotlib silently do it internally) so the values actually used
+    # can be reported back to the caller for display.
+    vmin_used = float(np.nanmin(data)) if vmin is None else vmin
+    vmax_used = float(np.nanmax(data)) if vmax is None else vmax
+
     fig, ax = plt.subplots(figsize=(7, 3.8))
-    mesh = ax.pcolormesh(lons, lats, data, cmap=cmap, shading="auto")
+    mesh = ax.pcolormesh(lons, lats, data, cmap=cmap, shading="auto", vmin=vmin_used, vmax=vmax_used)
 
     if valid_time is not None and lead_hours is not None:
         valid_str = str(np.datetime64(valid_time, "s"))
@@ -194,4 +152,4 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis") -> io.Bytes
     fig.savefig(buf, format="png", dpi=130)
     plt.close(fig)
     buf.seek(0)
-    return buf
+    return buf, vmin_used, vmax_used

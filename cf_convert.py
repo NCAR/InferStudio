@@ -24,7 +24,7 @@ import xarray as xr
 # Reuse the SAME level-parsing/dim-resolution logic already used for
 # plotting, so this stays in sync automatically rather than duplicating
 # the flattened-variable-name regex or lat/lon-dimension detection.
-from visualization.earth2StudioPlot import parse_variable_groups, _resolve_dim, LAT_NAMES, LON_NAMES
+from visualization.earth2StudioVars import parse_variable_groups, _resolve_dim, LAT_NAMES, LON_NAMES
 
 # CF metadata for the base variables InferStudio actually runs. Extend
 # this if new base variables are added to MODEL_VAR_MAP in
