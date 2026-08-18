@@ -1,4 +1,5 @@
 # app_layout.py
+import os
 import warnings
 import xarray as xr
 import panel as pn
@@ -8,6 +9,7 @@ from visualization.datasetSelector2 import DatasetBrowser
 from visualization.metadata import DatasetMetadata
 from visualization.datasetPlot import DatasetPlot2, SharedPlotControls
 from visualization.forecastStatsPanel import ForecastStatsPanel
+from visualization.loadSuiteDialog import LoadSuiteDialog
 from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
 
@@ -195,6 +197,67 @@ def build_app(data_dir):
 
     inference_tab.param.watch(_on_new_output, 'outputDirectory')
 
+    # --- Load Existing Suite (Visualization tab) ---------------------- #
+    # Lets a user browse to and select a simulation suite directory from
+    # a PREVIOUS InferStudio session (rather than only ever seeing suites
+    # produced in the current session), reusing the exact same
+    # scan_simulation_suite/AIFS-Aurora-etc. scanning logic used for
+    # freshly-completed inference runs above.
+    def _on_load_existing_suite(path_str):
+        sim_dir = Path(path_str)
+
+        if not sim_dir.is_dir():
+            load_suite_dialog.report_error(f"{sim_dir} is not a directory.")
+            return
+
+        key = sim_dir.name
+        try:
+            dataset_metadata[key] = scan_simulation_suite(sim_dir)
+        except Exception as e:
+            # scan_simulation_suite raises RuntimeError specifically when
+            # no supported model (AIFS, Aurora, ...) output was found —
+            # this is also where any other scan failure surfaces (e.g.
+            # unreadable/corrupt files). Full detail (including the full
+            # path) goes in the dialog's own inline error; the toast
+            # notification is kept short deliberately, since Notyf-style
+            # toasts have a fixed size and don't wrap/expand for long
+            # text — putting the full path + exception text in the toast
+            # was getting visually clipped.
+            load_suite_dialog.report_error(
+                f"Could not load a simulation suite from {sim_dir}: {e}"
+            )
+            if pn.state.notifications:
+                pn.state.notifications.error(
+                    f"Could not load suite from {key} \u2014 see dialog for details.",
+                    duration=0,
+                )
+            return
+
+        for model, err in dataset_metadata[key].get("model_errors", {}).items():
+            if pn.state.notifications:
+                pn.state.notifications.error(f"Could not scan {key}/{model}: {err}", duration=0)
+
+        meta_panel.metadata = dict(dataset_metadata)
+        browser.add_datasets([key])
+        if browser.checked_items != [key]:
+            browser.checked_items = [key]
+        browser.active_dataset = key
+        load_suite_dialog.close()
+        if pn.state.notifications:
+            pn.state.notifications.info(f"Loaded suite: {key}", duration=0)
+
+    load_suite_dialog = LoadSuiteDialog(
+        start_path=Path(f"/glade/derecho/scratch/{os.environ['USER']}"),
+        on_select=_on_load_existing_suite,
+    )
+    # Match the Datasets checkbox panel's width exactly: that panel is
+    # sizing_mode="stretch_width" with margin=(0, 10, 0, 0) (a 10px right
+    # margin — see DatasetBrowser._column in datasetSelector2.py), so
+    # giving this button the identical sizing_mode + right margin makes
+    # both stretch to the exact same effective width within the sidebar.
+    load_suite_dialog.open_button.sizing_mode = "stretch_width"
+    load_suite_dialog.open_button.margin = (10, 10, 0, 0)
+
     @pn.depends(browser.param.checked_items)
     def plot_grid(datasets):
         if not datasets:
@@ -212,7 +275,8 @@ def build_app(data_dir):
     sidebar = pn.Column(
         pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
         browser.panel,
-        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Variable &amp; Level</h2>"),
+        load_suite_dialog.open_button,
+        load_suite_dialog.modal,
         controls.panel(),
         pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
         meta_panel.panel,
