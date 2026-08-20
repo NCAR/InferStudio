@@ -104,6 +104,7 @@ html_last_updated_fmt = "%Y-%m-%d"
 html_theme_options = {
     "light_logo": "wordmark_light.png",
     "dark_logo": "wordmark_dark.png",
+    "sidebar_hide_name": True,
     "source_repository": "https://github.com/NCAR/InferStudio/",
     "source_branch": "main",
     "source_directory": "docs/",
