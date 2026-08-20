@@ -24,21 +24,19 @@ _LOGO_DIR = _STATIC_DIR / "logo"
 
 _MIME = {".png": "image/png", ".ico": "image/x-icon", ".svg": "image/svg+xml"}
 
-
 @lru_cache(maxsize=None)
 def logo_uri(name: str) -> str:
     """Embed a file from static/logo as a data URI (proxy-prefix safe).
 
-    The BootstrapTemplate `favicon`/`logo` params want a URL. Behind the OOD
-    reverse proxy an absolute path like /static/favicon.ico resolves against
-    the OOD host rather than this app's prefix and 404s, so the bytes are
-    inlined instead. Keep inlined assets small — the 640px wordmark is ~133 KB
-    as base64, the full-resolution one is ~626 KB.
+    The trailing "#<filename>" fragment exists for Panel: its
+    _get_favicon_type() dispatches on the string suffix of the favicon
+    value and raises "favicon type not supported" for a bare data URI.
+    The fragment satisfies that check and is discarded by the browser
+    before the base64 payload is decoded.
     """
     path = _LOGO_DIR / name
     data = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{_MIME[path.suffix.lower()]};base64,{data}"
-
+    return f"data:{_MIME[path.suffix.lower()]};base64,{data}#{path.name}"
 
 def _resolve_dim(ds, *candidates):
     """Return the first candidate name that exists as a dimension in ds."""
