@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="static/logo/wordmark_dark_full.png">
+    <img alt="InferStudio" src="static/logo/wordmark_light_full.png" width="480">
+  </picture>
+</p>
+
 # InferStudio
 
 InferStudio is NSF NCAR's web application for running AI weather model

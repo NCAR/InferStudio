@@ -127,7 +127,8 @@ html_theme_options = {
     ],
 }
 
-# Uncomment once you add docs/_static/custom.css or a logo.
+html_logo = "_static/logo/wordmark_dark.png"
+html_favicon = "_static/logo/favicon_32.png"
 # html_css_files = ["custom.css"]
 # html_logo = "_static/inferstudio-logo.svg"
 # html_favicon = "_static/favicon.ico"
