@@ -5,6 +5,8 @@
   </picture>
 </p>
 
+[![Documentation](https://readthedocs.org/projects/inferstudio/badge/?version=latest)](https://inferstudio.readthedocs.io/en/latest/)
+
 # InferStudio
 
 InferStudio is NSF NCAR's web application for running AI weather model

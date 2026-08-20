@@ -343,8 +343,8 @@ def build_app(data_dir):
     template.header.append(
         pn.pane.PNG(
             str(_LOGO_DIR / "wordmark_dark.png"),
-            height=45,
-            width=113,
+            height=64,
+            width=161,
             sizing_mode="fixed",
             margin=(5, 0, 5, 10),
         )
@@ -353,6 +353,14 @@ def build_app(data_dir):
     busy_spinner = pn.indicators.LoadingSpinner(
         value=False, width=20, height=20, color="light",
         margin=(10, 10, 10, 0),
+    )
+    template.header.append(
+        pn.pane.HTML(
+            '<a href="https://inferstudio.readthedocs.io/" target="_blank" '
+            'rel="noopener" style="color:#7FE0DC;font-size:14px;'
+            'text-decoration:none;">Docs ↗</a>',
+            margin=(24, 16, 0, 0),
+        )
     )
     pn.state.sync_busy(busy_spinner)
     template.header.append(busy_spinner)
