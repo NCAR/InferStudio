@@ -1,10 +1,10 @@
 ---
 name: InferStudio
 category: Interactive Apps
-subcategory: Servers
+subcategory: Machine Learning
 role: batch_connect
 description: |
-  Launch [InferStudio], NSF NCAR's AI weather model inference and
-  visualization application, on the Casper cluster.
+  Run AI weather model inference (AIFS, Aurora, Pangu, FourCastNet 3)
+  and visualize the results — no environment setup or scripting required.
 
   [InferStudio]: https://github.com/NCAR/InferStudio

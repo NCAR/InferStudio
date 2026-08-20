@@ -1,0 +1,8 @@
+<%
+  logo = "/glade/work/#{ENV['USER']}/InferStudio/static/logo/wordmark_dark.png"
+%>
+<% if File.exist?(logo) %>
+  <img src="data:image/png;base64,<%= [File.binread(logo)].pack("m0") %>"
+       alt="InferStudio"
+       style="height:46px;margin-bottom:8px;">
+<% end %>
