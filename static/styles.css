@@ -2,6 +2,14 @@
   display: flex;
   height: 100vh;
 }*/
+.app-logo {
+    height: 42px !important;
+    width: auto !important;
+    margin: 0 0.75rem 0 0;
+}
+.title, .app-header .title {
+    display: none !important;
+}
 .sidebar {
   width: 250px;
   background: #f5f5f5;

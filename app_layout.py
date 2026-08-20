@@ -1,8 +1,10 @@
 # app_layout.py
 import os
+import base64
 import warnings
 import xarray as xr
 import panel as pn
+from functools import lru_cache
 from pathlib import Path
 from dimensions import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME, resolve_nc_glob
 from visualization.datasetSelector2 import DatasetBrowser
@@ -12,6 +14,31 @@ from visualization.forecastStatsPanel import ForecastStatsPanel
 from visualization.loadSuiteDialog import LoadSuiteDialog
 from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
+
+# --- Static asset locations ------------------------------------------------
+# Resolved relative to THIS module, not the process working directory, so the
+# paths hold regardless of where `panel serve` is launched from (OOD's
+# script.sh.erb does not necessarily cd into the repo root).
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_LOGO_DIR = _STATIC_DIR / "logo"
+
+_MIME = {".png": "image/png", ".ico": "image/x-icon", ".svg": "image/svg+xml"}
+
+
+@lru_cache(maxsize=None)
+def logo_uri(name: str) -> str:
+    """Embed a file from static/logo as a data URI (proxy-prefix safe).
+
+    The BootstrapTemplate `favicon`/`logo` params want a URL. Behind the OOD
+    reverse proxy an absolute path like /static/favicon.ico resolves against
+    the OOD host rather than this app's prefix and 404s, so the bytes are
+    inlined instead. Keep inlined assets small — the 640px wordmark is ~133 KB
+    as base64, the full-resolution one is ~626 KB.
+    """
+    path = _LOGO_DIR / name
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{_MIME[path.suffix.lower()]};base64,{data}"
+
 
 def _resolve_dim(ds, *candidates):
     """Return the first candidate name that exists as a dimension in ds."""
@@ -304,23 +331,27 @@ def build_app(data_dir):
             .bk-tabs-content { border: 1px solid #ccc; padding: 10px; }
         """],
     )
-    template = pn.template.BootstrapTemplate(title="", busy_indicator=None)
+    # `title` now only drives the browser tab text — the header title text is
+    # supplied by the wordmark image below, so it is no longer set to "".
+    template = pn.template.BootstrapTemplate(
+        title="InferStudio",
+        favicon=logo_uri("favicon.ico"),
+        header_background="#091422",
+        busy_indicator=None,
+    )
+    # InferStudio wordmark, replacing the plain-text HTML title pane. The
+    # HSpacer takes over the layout job the old pane's stretch_width was
+    # doing — pushing the spinner and NSF NCAR logo to the right edge.
     template.header.append(
-        pn.pane.HTML(
-            "InferStudio",
-            styles={
-                "font-size": "20px",
-                "font-weight": "600",
-                "color": "white",
-                "white-space": "nowrap",
-                "overflow": "hidden",
-                "text-overflow": "ellipsis",
-                "min-width": "0",
-                "padding-left": "10px",
-            },
-            sizing_mode="stretch_width",
+        pn.pane.PNG(
+            str(_LOGO_DIR / "wordmark_dark.png"),
+            height=45,
+            width=113,
+            sizing_mode="fixed",
+            margin=(5, 0, 5, 10),
         )
     )
+    template.header.append(pn.layout.HSpacer())
     busy_spinner = pn.indicators.LoadingSpinner(
         value=False, width=20, height=20, color="light",
         margin=(10, 10, 10, 0),
@@ -329,7 +360,7 @@ def build_app(data_dir):
     template.header.append(busy_spinner)
     template.header.append(
         pn.pane.PNG(
-            "static/nsf_ncar_logo_padded.png",
+            str(_STATIC_DIR / "nsf_ncar_logo_padded.png"),
             height=45,
             width=534,
             sizing_mode="fixed",
