@@ -354,12 +354,22 @@ def build_app(data_dir):
         value=False, width=20, height=20, color="light",
         margin=(10, 10, 10, 0),
     )
+    # Documentation link
     template.header.append(
         pn.pane.HTML(
             '<a href="https://inferstudio.readthedocs.io/" target="_blank" '
-            'rel="noopener" style="color:#7FE0DC;font-size:14px;'
-            'text-decoration:none;">Docs ↗</a>',
-            margin=(24, 16, 0, 0),
+            'rel="noopener" title="InferStudio documentation" '
+            'style="display:inline-flex;align-items:center;gap:7px;'
+            'color:#DFEFF6;font-size:14px;font-weight:500;'
+            'text-decoration:none;white-space:nowrap;">'
+            '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" '
+            'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" '
+            'stroke-linejoin="round" aria-hidden="true">'
+            '<path d="M2 2.5h4a2 2 0 0 1 2 2v9a1.5 1.5 0 0 0-1.5-1.5H2z"/>'
+            '<path d="M14 2.5h-4a2 2 0 0 0-2 2v9a1.5 1.5 0 0 1 1.5-1.5H14z"/>'
+            '</svg>Docs</a>',
+            styles={"display": "flex", "align-items": "center", "height": "100%"},
+            margin=(0, 40, 0, 0),
         )
     )
     pn.state.sync_busy(busy_spinner)
@@ -391,7 +401,7 @@ def build_app(data_dir):
                 "Welcome to InferStudio.<br><br>"
                 "You are currently viewing information from "
                 "an example dataset. To run your own AI weather model inference, go "
-                "to the Inference tab. Then select your desired parameters, click "
+                "to the Inference tab.<br><br> Then select your desired parameters, click "
                 "\"Run Inference,\" and your simulation suite will be viewable from here."
                 "<br><br><br>",
                 duration=0,

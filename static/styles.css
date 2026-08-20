@@ -164,9 +164,12 @@
 /* Force the notification toast's background directly, rather than
    relying on whatever Notyf's internal ripple-animation element is doing
    for its fill (which turned out to be unreliable once we stopped
-   overriding it). */
+   overriding it). Matches the app header's own background
+   (header_background="#091422" in app_layout.py's BootstrapTemplate)
+   so the notification reads as part of the same InferStudio palette
+   rather than a leftover unrelated blue. */
 .notyf__toast {
-  background-color: #0072b5 !important;
+  background-color: #091422 !important;
 }
 /* The ripple element actually provides the visible fill color (set via
    inline JS style, not a stylesheet rule) — but its SIZE collapses back
@@ -181,6 +184,7 @@
   border-radius: inherit !important;
   opacity: 1 !important;
   transform: none !important;
+  background-color: #091422 !important;
 }
 /* Bootstrap's navbar wraps header content in nested containers that may
    clip overflow, independent of actual browser width. That was clipping

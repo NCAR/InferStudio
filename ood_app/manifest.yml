@@ -1,7 +1,7 @@
 ---
 name: InferStudio
 category: Interactive Apps
-subcategory: Machine Learning
+subcategory: AI Weather Inference
 role: batch_connect
 description: |
   Run AI weather model inference (AIFS, Aurora, Pangu, FourCastNet 3)
