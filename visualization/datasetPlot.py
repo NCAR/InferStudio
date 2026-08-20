@@ -1,4 +1,5 @@
 # Step 1: Load datasets dynamically
+import os
 from pathlib import Path
 import panel as pn
 import param
@@ -6,6 +7,7 @@ import param
 from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
 from visualization.era5_plot import plot_png, NETCDF_FILE
 from visualization.earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
+from visualization.modelDiff import compute_model_difference
 
 pn.extension(raw_css=[Path("static/styles.css").read_text()])
 
@@ -418,13 +420,40 @@ class DatasetPlot2(param.Parameterized):
             self.models = [self.dataset]
             self.model_paths = {self.dataset: self.metadata["path"]}
 
-        # Reactive view bound to the *shared* controls' time_index/var_name/
-        # level_value/colormap/cmap_min/cmap_max — same pn.bind pattern
-        # used for the time label in SharedPlotControls itself. Since both
-        # models' plots read from these same shared params, they always
-        # get the exact same color range.
-        self.view = pn.bind(
-            self._render,
+        # Per-model reactive state. Built once here (not rebuilt on every
+        # variable/level/time change) so a model's "Compute Difference"
+        # dropdown selection survives ordinary control changes rather
+        # than resetting back to "no diff" on every render.
+        self._diff_selectors = {}       # model -> Select widget
+        self._diff_slots = {}           # model -> Column that holds the diff card (empty when none selected)
+
+        self._sections = pn.Column(sizing_mode="stretch_width")
+        for model in self.models:
+            self._sections.append(self._build_model_section(model))
+
+    def _model_label(self, text):
+        return pn.pane.HTML(
+            f"<div style='text-align:center; font-size:20px; font-weight:bold; margin:0; padding:0;'>{text}</div>",
+            sizing_mode="stretch_width",
+            margin=0,
+        )
+
+    def _build_model_section(self, model):
+        if model not in EARTH2STUDIO_FORMAT_MODELS:
+            return pn.Column(
+                self._model_label(model),
+                pn.pane.Markdown(f"*Plotting for {model} output format isn't wired up yet.*"),
+                align="center",
+                sizing_mode="stretch_width",
+                margin=0,
+                css_classes=["plot-container"],
+            )
+
+        # The model's own reactive plot, bound to the shared controls —
+        # same pn.bind pattern used for the time label in SharedPlotControls.
+        model_view = pn.bind(
+            self._render_model,
+            model,
             self.controls.param.var_name,
             self.controls.param.level_value,
             self.controls.param.time_index,
@@ -433,101 +462,182 @@ class DatasetPlot2(param.Parameterized):
             self.controls.param.cmap_max,
         )
 
-    def _render(self, var_name, level_value, time_index, colormap_name, cmap_min, cmap_max):
+        other_models = [m for m in self.models if m != model and m in EARTH2STUDIO_FORMAT_MODELS]
+        diff_options = ["\u2014"] + [f"{model} minus {other}" for other in other_models]
+        diff_selector = pn.widgets.Select(
+            name="Compute Difference",
+            options=diff_options,
+            value="\u2014",
+            width=220,
+        )
+        self._diff_selectors[model] = diff_selector
+
+        diff_slot = pn.Column(
+            sizing_mode="stretch_width",
+            styles={"min-width": "0"},
+        )  # empty until a diff is picked
+        self._diff_slots[model] = diff_slot
+
+        def _on_diff_change(event, model=model):
+            self._on_diff_selected(model, event.new)
+
+        diff_selector.param.watch(_on_diff_change, 'value')
+
+        model_card = pn.Column(
+            self._model_label(model),
+            pn.panel(model_view, sizing_mode="stretch_width"),
+            pn.Row(
+                pn.Spacer(sizing_mode="stretch_width"),
+                diff_selector,
+                sizing_mode="stretch_width",
+            ),
+            align="center",
+            sizing_mode="stretch_width",
+            margin=0,
+            css_classes=["plot-container"],
+            styles={"min-width": "0"},
+        )
+
+        return pn.Row(
+            model_card,
+            diff_slot,
+            sizing_mode="stretch_width",
+            styles={
+                "display": "grid",
+                "grid-template-columns": "1fr 1fr",
+                "gap": "10px",
+                "width": "100%",
+            },
+        )
+
+    def _render_model(self, model, var_name, level_value, time_index, colormap_name, cmap_min, cmap_max):
         if not var_name:
             return pn.pane.Markdown("*No variable selected*")
 
         cmap = self.controls._colormaps.get(colormap_name, "viridis")
+        model_path = self.model_paths.get(model)
 
-        panes = []
-        actual_mins = []
-        actual_maxs = []
-        for model in self.models:
-            model_path = self.model_paths.get(model)
-
-            if model not in EARTH2STUDIO_FORMAT_MODELS:
-                panes.append(
-                    pn.Column(
-                        pn.pane.HTML(
-                            f"<div style='text-align:center; font-size:20px; font-weight:bold; margin:0; padding:0;'>{model}</div>",
-                            sizing_mode="stretch_width",
-                            margin=0,
-                        ),
-                        pn.pane.Markdown(
-                            f"*Plotting for {model} output format isn't wired up yet.*"
-                        ),
-                        align="center",
-                        sizing_mode="stretch_width",
-                        margin=0,
-                    )
-                )
-                continue
-
-            try:
-                buf, vmin_used, vmax_used = plot_e2s_field(
-                    model_dir=model_path,
-                    base_or_var=var_name,
-                    level=level_value,
-                    t=time_index,
-                    cmap=cmap,
-                    vmin=cmap_min,
-                    vmax=cmap_max,
-                )
-                actual_mins.append(vmin_used)
-                actual_maxs.append(vmax_used)
-                pane = pn.pane.PNG(
-                    buf,
-                    sizing_mode="scale_width",
-                    align="center",
-                    height=None,
-                    min_height=None,
-                    max_height=None,
-                    margin=0,
-                )
-            except Exception as e:
-                pane = pn.pane.Markdown(f"*Error plotting {model}: {e}*")
-
-            panes.append(
-                pn.Column(
-                    pn.pane.HTML(
-                        f"<div style='text-align:center; font-size:20px; font-weight:bold; margin:0; padding:0;'>{model}</div>",
-                        sizing_mode="stretch_width",
-                        margin=0,
-                    ),
-                    pane,
-                    align="center",
-                    sizing_mode="stretch_width",
-                    margin=0,
-                )
+        try:
+            buf, vmin_used, vmax_used = plot_e2s_field(
+                model_dir=model_path,
+                base_or_var=var_name,
+                level=level_value,
+                t=time_index,
+                cmap=cmap,
+                vmin=cmap_min,
+                vmax=cmap_max,
             )
+            return pn.pane.PNG(
+                buf,
+                sizing_mode="scale_width",
+                align="center",
+                height=None,
+                min_height=None,
+                max_height=None,
+                margin=0,
+            )
+        except Exception as e:
+            return pn.pane.Markdown(f"*Error plotting {model}: {e}*")
 
-        # Update the Min/Max boxes to show the actual range currently in
-        # effect. Only overwrite a box that's still in auto mode
-        # (cmap_min/cmap_max still None) — a box the user has explicitly
-        # fixed keeps showing exactly what they typed, untouched. Union
-        # across models (min of mins, max of maxes) so, in auto mode, the
-        # displayed range covers everything visible on screen.
-        if actual_mins and actual_maxs:
-            overall_min = min(actual_mins)
-            overall_max = max(actual_maxs)
-            if cmap_min is None:
-                self.controls._set_displayed_min(float(f"{overall_min:.4g}"))
-            if cmap_max is None:
-                self.controls._set_displayed_max(float(f"{overall_max:.4g}"))
+    def _on_diff_selected(self, model, selected_option):
+        slot = self._diff_slots[model]
 
-        if len(panes) == 1:
-            return panes[0]
+        if selected_option == "\u2014":
+            slot.objects = []
+            return
 
-        return pn.Row(*panes, align="center", sizing_mode="stretch_width")
+        # "AIFS minus Aurora" -> other = "Aurora"
+        other = selected_option.split(" minus ", 1)[1]
+
+        slot.objects = [
+            pn.Column(
+                pn.indicators.LoadingSpinner(value=True, width=30, height=30, align="center"),
+                pn.pane.Markdown("*Computing difference...*", align="center"),
+                align="center",
+                sizing_mode="stretch_width",
+            )
+        ]
+
+        sim_dir = Path(self.metadata["path"])
+        # Deliberately NOT a sibling of sim_dir (e.g. sim_dir.parent /
+        # f"{sim_dir.name}_diffs") — that lands inside data_dir itself,
+        # which scan_datasets walks directly, so it would show up as a
+        # spurious extra dataset in the Datasets list. Using a dedicated,
+        # clearly-separate cache root avoids that class of bug entirely.
+        cache_dir = Path(f"/glade/derecho/scratch/{os.environ['USER']}/.inferstudio_diff_cache") / sim_dir.name
+
+        try:
+            diff_path = compute_model_difference(
+                self.model_paths[model], self.model_paths[other],
+                cache_dir, model, other,
+            )
+        except Exception as e:
+            slot.objects = [pn.pane.Markdown(f"*Error computing difference: {e}*")]
+            return
+
+        label = f"{model} minus {other}"
+        diff_view = pn.bind(
+            self._render_diff,
+            diff_path,
+            self.controls.param.var_name,
+            self.controls.param.level_value,
+            self.controls.param.time_index,
+        )
+        diff_card = pn.Column(
+            self._model_label(label),
+            pn.panel(diff_view, sizing_mode="stretch_width"),
+            align="center",
+            sizing_mode="stretch_width",
+            margin=0,
+            css_classes=["plot-container"],
+        )
+        slot.objects = [diff_card]
+
+    def _render_diff(self, diff_path, var_name, level_value, time_index):
+        if not var_name:
+            return pn.pane.Markdown("*No variable selected*")
+
+        try:
+            # First pass: auto-range, purely to discover the actual
+            # min/max of this difference field.
+            _, vmin_auto, vmax_auto = plot_e2s_field(
+                model_dir=diff_path,
+                base_or_var=var_name,
+                level=level_value,
+                t=time_index,
+                cmap="coolwarm",
+                vmin=None,
+                vmax=None,
+            )
+            # Second pass: symmetric range around zero, so the diverging
+            # colormap's center (white/neutral) actually lands on zero
+            # difference rather than on some arbitrary asymmetric midpoint.
+            max_abs = max(abs(vmin_auto), abs(vmax_auto))
+            buf, _, _ = plot_e2s_field(
+                model_dir=diff_path,
+                base_or_var=var_name,
+                level=level_value,
+                t=time_index,
+                cmap="coolwarm",
+                vmin=-max_abs,
+                vmax=max_abs,
+            )
+            return pn.pane.PNG(
+                buf,
+                sizing_mode="scale_width",
+                align="center",
+                height=None,
+                min_height=None,
+                max_height=None,
+                margin=0,
+            )
+        except Exception as e:
+            return pn.pane.Markdown(f"*Error plotting difference: {e}*")
 
     def panel(self):
         return pn.Column(
             pn.pane.Markdown(f"### {self.dataset}"),
-            pn.panel(self.view, sizing_mode="stretch_width"),
+            self._sections,
             align="center",
             sizing_mode="stretch_width",
-            height=None,
-            min_height=None,
-            max_height=None,
-            css_classes=["plot-container"],
         )
