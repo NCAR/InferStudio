@@ -64,7 +64,6 @@ import panel as pn
 import holoviews as hv
 from holoviews.operation.datashader import rasterize
 
-from visualization.earth2StudioPlot import load_e2s_field, field_range
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, CANON_LAT, CANON_LON)
 from visualization.modelDiff import (
@@ -94,9 +93,12 @@ COLORBAR_WIDTH = 12
 DEFAULT_CMAP = "viridis"
 DIFF_CMAP = "coolwarm"
 
-# Colormap for placeholder panels. Grey rather than a real colormap because
-# a placeholder carries no data - see _placeholder.
+# Colormaps for panels carrying no data. Grey for "nothing selected", a
+# tinted one for "computing" - the two states must not look alike, or a
+# panel waiting on a slow difference computation reads as broken. See
+# _placeholder.
 PLACEHOLDER_CMAP = "gray"
+COMPUTING_CMAP = "Blues"
 
 # Minimum seconds between readout updates. PointerXY fires on every mouse
 # move - without a gate that is hundreds of websocket messages per second of
@@ -278,6 +280,11 @@ class PlotGrid(param.Parameterized):
         self._diff_stream = hv.streams.Params(self.state, _DIFF_PARAMS)
         self._layout = None
 
+        # Set by diff_selectors; kept so teardown can unwatch. The state
+        # outlives every grid built against it, so a leaked watcher would
+        # keep firing on a dead grid and mutate widgets no longer on screen.
+        self._status_watcher = None
+
     # -- lifecycle ------------------------------------------------------
 
     def teardown(self):
@@ -291,6 +298,13 @@ class PlotGrid(param.Parameterized):
         racing the live grid to write the readout.
         """
         self._torn_down = True
+
+        if self._status_watcher is not None:
+            try:
+                self.state.param.unwatch(self._status_watcher)
+            except Exception:
+                pass
+            self._status_watcher = None
 
         for stream in (self._field_stream, self._diff_stream,
                        *self._pointer_streams):
@@ -392,59 +406,39 @@ class PlotGrid(param.Parameterized):
         return cls(da, kdims=[meta.lon_dim, meta.lat_dim]).opts(
             **self._panel_opts(title, cmap))
 
-    def _placeholder(self, title):
+    def _placeholder(self, title, computing=False):
         """Blank panel that preserves grid geometry, axis ranges, and plot
         structure - see _panel_opts on why the third of those matters.
 
         The kdims are NOT optional and NOT cosmetic. shared_axes links
-        panels by DIMENSION NAME, so a placeholder built from a bare array
-        gets HoloViews' default x/y names and lands in a different group
-        from the real panels on longitude/latitude. That is what split the
-        grid into two pairs: fields together, placeholders together.
+        panels by DIMENSION NAME, and a placeholder built from a bare array
+        would take HoloViews' default x/y names - landing it in a different
+        group from the real panels on longitude/latitude. That is exactly
+        what split the grid into two pairs (fields together, placeholders
+        together) and cost a long hunt to find. earth2StudioPlot
+        canonicalizes every real field to these same names, so reusing its
+        constants keeps the two in step.
 
         NaN rather than zeros: a placeholder carries a real colormap (it has
         to, for the structure to match), and zeros would render as a solid
         block of that colormap's low end. NaN renders transparent, which
         reads as empty.
+
+        `computing` gives the in-progress state its own appearance. Without
+        it a panel waiting on a multi-minute difference computation looks
+        identical to one with nothing selected, which reads as "broken"
+        rather than "working".
         """
         left, bottom, right, top = self._last_extent
+        cmap = COMPUTING_CMAP if computing else PLACEHOLDER_CMAP
+        opts = self._panel_opts(title, cmap)
+        if computing:
+            opts["title"] = f"\u27f3  {title}"
+            opts["fontsize"] = {"title": "13pt"}
         return hv.Image(
             np.full((2, 2), np.nan), bounds=(left, bottom, right, top),
-            kdims=[CANON_LON, CANON_LAT]
-        ).opts(**self._panel_opts(title, PLACEHOLDER_CMAP))
-
-    def dump_ranges(self, *_):
-        """Print which panels share axis ranges, grouped by title.
-
-        Two standalone repros failed to reproduce the pairwise split, so
-        this reads it out of the live app instead. The grouping tells us
-        what the split follows: rows (field with its own diff), columns
-        (fields together, diffs together), or something else.
-        """
-        pane = self._hv_pane
-        if pane is None:
-            print("dump_ranges: no pane", flush=True)
-            return
-        try:
-            from bokeh.models import Plot
-        except ImportError:
-            return
-        root = pane.get_root()
-        if root is None:
-            print("dump_ranges: no root", flush=True)
-            return
-        try:
-            figs = list(root.select({"type": Plot}))
-            groups = {}
-            for f in figs:
-                title = getattr(getattr(f, "title", None), "text", "?")
-                groups.setdefault(f.x_range.id, []).append(title)
-            print(f"dump_ranges: {len(figs)} figs, "
-                  f"{len(groups)} distinct x_ranges", flush=True)
-            for rid, titles in groups.items():
-                print(f"  {rid}: {titles}", flush=True)
-        except Exception:
-            traceback.print_exc()
+            kdims=[CANON_LON, CANON_LAT],
+        ).opts(**opts)
 
     # -- callbacks ------------------------------------------------------
 
@@ -492,7 +486,8 @@ class PlotGrid(param.Parameterized):
 
         status = self.state.diff_status.get(model, "")
         if status == "computing":
-            return self._placeholder(f"{model} minus {other} - computing...")
+            return self._placeholder(
+                f"{model} minus {other} - computing", computing=True)
         if status.startswith("error"):
             return self._placeholder(f"{model} minus {other} - {status}")
 
@@ -573,8 +568,14 @@ class PlotGrid(param.Parameterized):
         )
 
     @staticmethod
-    def _readout_html(stamp, left, right):
-        """Lay the readout out on a fixed grid.
+    def _readout_html(stamp, left, right, status=None):
+        """Lay the readout out on a fixed grid, with a banner when a
+        difference is being computed.
+
+        The banner exists because a difference over a full suite takes long
+        enough that silence reads as failure. The busy spinner in the
+        template header is too small and too far from where the user is
+        looking; this sits directly above the panel that is waiting.
 
         Alignment is the whole point. A plain inline run of spans reflows on
         every mouse move, because "0.0005791" and "-0.006" are different
@@ -585,6 +586,11 @@ class PlotGrid(param.Parameterized):
         a fixed-width column with tabular-nums and a monospace face, so
         decimal points and minus signs line up.
         """
+        computing = sorted(m for m, s in (status or {}).items()
+                           if s == "computing")
+        errored = sorted(m for m, s in (status or {}).items()
+                         if str(s).startswith("error"))
+
         left, right = list(left), list(right)
         n = max(len(left), len(right))
         left += [("", "")] * (n - len(left))
@@ -597,6 +603,21 @@ class PlotGrid(param.Parameterized):
                 f"<div class='rv'>{l_val}</div>"
                 f"<div class='rl'>{r_lab}{':' if r_lab else ''}</div>"
                 f"<div class='rv'>{r_val}</div>"
+            )
+
+        banner = ""
+        if computing:
+            banner = (
+                "<div class='readout-banner readout-busy'>"
+                "<span class='readout-spin'>\u27f3</span>"
+                f"Computing difference for {', '.join(computing)} - "
+                "a full suite can take a minute.</div>"
+            )
+        elif errored:
+            banner = (
+                "<div class='readout-banner readout-err'>"
+                f"Difference failed for {', '.join(errored)} - "
+                "see the panel title.</div>"
             )
 
         return (
@@ -623,7 +644,15 @@ class PlotGrid(param.Parameterized):
             "font-variant-numeric:tabular-nums;}"
             ".readout-hint{font-size:11px;color:#666;white-space:nowrap;"
             "align-self:flex-end;}"
+            ".readout-banner{font-size:12px;padding:5px 10px;"
+            "border-radius:4px;margin-bottom:6px;width:max-content;}"
+            ".readout-busy{background:#fff3cd;border:1px solid #ffc107;}"
+            ".readout-err{background:#f8d7da;border:1px solid #dc3545;}"
+            "@keyframes readout-spin{to{transform:rotate(360deg);}}"
+            ".readout-spin{display:inline-block;animation:"
+            "readout-spin 1.1s linear infinite;margin-right:6px;}"
             "</style>"
+            f"{banner}"
             "<div class='readout-wrap'>"
             f"<div class='readout-time'>{stamp}</div>"
             f"<div class='readout'>{''.join(cells)}</div>"
@@ -702,27 +731,25 @@ class PlotGrid(param.Parameterized):
 
     def panel(self):
         """Valid time and cursor readout above the grid."""
-        # Bound to BOTH the timestamp and the rows, so a slider tick
-        # refreshes the time even though the cursor hasn't moved, and a
-        # cursor move refreshes the values without dropping the time. Before
-        # the cursor first enters a panel, readout_rows is empty and this
-        # renders the timestamp and the navigation hint alone.
+        # Bound to the timestamp, the rows AND diff_status, so a slider tick
+        # refreshes the time even though the cursor hasn't moved, a cursor
+        # move refreshes the values without dropping the time, and a
+        # difference computation starting or finishing raises or clears the
+        # banner without waiting for either. Before the cursor first enters
+        # a panel, readout_rows is empty and this renders the timestamp and
+        # the navigation hint alone.
         readout = pn.pane.HTML(
-            pn.bind(lambda stamp, rows: self._readout_html(
-                        stamp, rows[0], rows[1]),
+            pn.bind(lambda stamp, rows, status: self._readout_html(
+                        stamp, rows[0], rows[1], status),
                     self.state.param.header_text,
-                    self.state.param.readout_rows),
+                    self.state.param.readout_rows,
+                    self.state.param.diff_status),
             margin=(4, 0, 8, 12),
             # Reserves the readout's rows so the plots below don't shift
             # down the first time the cursor enters a panel.
             min_height=64,
             sizing_mode="stretch_width",
         )
-
-        try:
-            pn.state.onload(self.dump_ranges)
-        except Exception:
-            pass
 
         self._hv_pane = pn.pane.HoloViews(
             self.layout(), sizing_mode="stretch_width")
@@ -764,8 +791,22 @@ class PlotGrid(param.Parameterized):
                 if b:
                     self._ensure_diff_async(a, b)
 
+        def on_status(event):
+            """Reflect computation state on the control the user just used.
+
+            Disabling is not only a signal: it also stops a second pair
+            being queued while the first is still running, which would put
+            two multi-gigabyte diffs on the box at once.
+            """
+            for model, w in widgets.items():
+                busy = event.new.get(model) == "computing"
+                w.disabled = busy
+                w.name = (f"{model} minus  (computing\u2026)" if busy
+                          else f"{model} minus")
+
         for w in widgets.values():
             w.param.watch(sync, "value")
+        self._status_watcher = self.state.param.watch(on_status, "diff_status")
         sync()
 
         self._diff_widgets = widgets

@@ -54,7 +54,12 @@ class LoadSuiteDialog:
         self.status = pn.pane.Markdown("", margin=(5, 0, 0, 0))
 
         self.dialog = pn.Column(
-            "### 📁 Select a Simulation Suite Directory",
+            "### 📁 Select the root directory of a previously-run simulation suite.<br><br>"
+            "This is the top-level folder that contains one "
+            "subdirectory per AI model that was part of the suite "
+            "(e.g. AIFS, Aurora, WXFormer). "
+            "By default, it will be in your scratch directory on glade, and be named something "
+            "like InferStudio_Aurora_Pangu_2026_08_28_11:19:57",
             self.currentPathDisplay,
             self.list_container,
             self.select_button,
@@ -84,11 +89,12 @@ class LoadSuiteDialog:
         if event.new:  # modal just opened
             if pn.state.notifications:
                 self._instruction_notification = pn.state.notifications.info(
-                    "Select the root directory of a previously-run simulation "
-                    "suite.<br><br>"
+                    "### 📁 Select the root directory of a previously-run simulation suite.<br><br>"
                     "This is the top-level folder that contains one "
                     "subdirectory per AI model that was part of the suite "
-                    "(e.g. AIFS, Aurora, WXFormer).",
+                    "(e.g. AIFS, Aurora, WXFormer). "
+                    "By default, it will be in your scratch directory on glade, and be named something "
+                    "like InferStudio_Aurora_Pangu_2026_08_28_11:19:57",
                     duration=0,
                 )
         else:
