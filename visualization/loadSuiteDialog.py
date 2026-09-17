@@ -3,6 +3,19 @@ from pathlib import Path
 
 import panel as pn
 
+# Directory names recognized as supported model-output subdirectories,
+# mirroring inference/inferenceTab.py's MILES_CREDIT_MODEL_LIST +
+# EARTH2STUDIO_MODEL_LIST. Duplicated rather than imported -- like
+# datasetPlot.py's EARTH2STUDIO_FORMAT_MODELS, this is only a UI hint for
+# the directory browser, not the source of truth for what's runnable.
+SUPPORTED_MODEL_DIRS = frozenset({"WXFormer", "AIFS", "Aurora", "Pangu", "FourCastNet3"})
+
+# Deliberately darker than the ✅/⚠️ emoji glyphs' own bright green/yellow,
+# so each icon keeps a visible edge against the button's fill rather than
+# blending into a same-toned background.
+_VALID_SUITE_COLOR = "#1b5e20"    # dark green
+_INVALID_SUITE_COLOR = "#8a6d00"  # dark amber
+
 
 class LoadSuiteDialog:
     """A 'Load Existing Suite' button + directory-browser modal for the
@@ -26,7 +39,6 @@ class LoadSuiteDialog:
     def __init__(self, start_path, on_select, width=400):
         self.current_path_val = str(Path(start_path).expanduser().resolve())
         self._on_select_callback = on_select
-        self._instruction_notification = None
 
         self.currentPathDisplay = pn.widgets.TextInput(
             value=self.current_path_val,
@@ -34,18 +46,36 @@ class LoadSuiteDialog:
             sizing_mode="stretch_width",
         )
 
+        # Re-lists the currently viewed directory without navigating away
+        # from it -- useful for a suite that's still being written by a
+        # running inference job, where a subdirectory (e.g. a model that
+        # just started) wouldn't otherwise show up until the dialog is
+        # reopened.
+        self.refresh_button = pn.widgets.Button(
+            name="🔄",
+            width=40,
+            margin=(5, 0, 5, 5),
+        )
+        self.refresh_button.on_click(lambda e: self._refresh())
+
         self.list_container = pn.Column(
             height=350,
             scroll=True,
             styles={"border": "1px solid #ccc", "background": "white"},
         )
 
+        # Name and background are both kept in sync with the valid/invalid
+        # check in _refresh() -- see there for the actual values.
         self.select_button = pn.widgets.Button(
-            name="Confirm Selection ✅",
-            button_type="success",
+            name="Confirm Selection",
             sizing_mode="stretch_width",
         )
         self.select_button.on_click(self._select)
+
+        # Set by _refresh() to tell the user, below the button they'd click
+        # to proceed, whether the currently viewed directory's contents are
+        # entirely recognized model subdirectories or not.
+        self.suite_indicator = pn.pane.Markdown("", margin=(5, 0, 0, 0))
 
         # Inline status/error message shown inside the dialog itself, so
         # a failed scan (e.g. no supported model output found) is visible
@@ -57,12 +87,13 @@ class LoadSuiteDialog:
             "### 📁 Select the root directory of a previously-run simulation suite.<br><br>"
             "This is the top-level folder that contains one "
             "subdirectory per AI model that was part of the suite "
-            "(e.g. AIFS, Aurora, WXFormer). "
+            "(e.g. AIFS, Aurora, WXFormer).<br>"
             "By default, it will be in your scratch directory on glade, and be named something "
             "like InferStudio_Aurora_Pangu_2026_08_28_11:19:57",
-            self.currentPathDisplay,
+            pn.Row(self.currentPathDisplay, self.refresh_button, sizing_mode="stretch_width"),
             self.list_container,
             self.select_button,
+            self.suite_indicator,
             self.status,
             width=width,
         )
@@ -75,34 +106,7 @@ class LoadSuiteDialog:
             sizing_mode="stretch_width",
         )
 
-        # Show an instructional notification whenever the modal opens
-        # (not just once at app launch), explaining what kind of
-        # directory to pick. Dismissible manually by the user (a normal
-        # duration=0 notification always is), and also dismissed
-        # automatically the moment "Confirm Selection" is clicked — see
-        # _select below.
-        self.modal.param.watch(self._on_modal_toggle, 'open')
-
         self._refresh()
-
-    def _on_modal_toggle(self, event):
-        if event.new:  # modal just opened
-            if pn.state.notifications:
-                self._instruction_notification = pn.state.notifications.info(
-                    "### 📁 Select the root directory of a previously-run simulation suite.<br><br>"
-                    "This is the top-level folder that contains one "
-                    "subdirectory per AI model that was part of the suite "
-                    "(e.g. AIFS, Aurora, WXFormer). "
-                    "By default, it will be in your scratch directory on glade, and be named something "
-                    "like InferStudio_Aurora_Pangu_2026_08_28_11:19:57",
-                    duration=0,
-                )
-        else:
-            # Modal closed some other way (e.g. the dialog's own X
-            # button) without confirming a selection — clear our
-            # reference so we don't try to destroy an already-gone
-            # notification later.
-            self._instruction_notification = None
 
     def _refresh(self):
         self.currentPathDisplay.value = self.current_path_val
@@ -110,8 +114,9 @@ class LoadSuiteDialog:
         try:
             entries = os.listdir(self.current_path_val)
             dirs = sorted(
-                d for d in entries
-                if os.path.isdir(os.path.join(self.current_path_val, d))
+                (d for d in entries
+                 if os.path.isdir(os.path.join(self.current_path_val, d))),
+                key=str.lower,
             )
 
             options = [".."] + dirs
@@ -133,10 +138,33 @@ class LoadSuiteDialog:
 
             self.list_container.objects = buttons
 
+            # Only every entry (directories AND stray files alike) being a
+            # recognized model name counts as a match -- anything else in
+            # the directory means it isn't the suite root, even if it also
+            # happens to contain a real model subdirectory.
+            if entries and all(e in SUPPORTED_MODEL_DIRS for e in entries):
+                self.select_button.name = "Confirm Selection ✅"
+                self.select_button.styles = {
+                    "background": _VALID_SUITE_COLOR, "color": "white"}
+                self.suite_indicator.object = (
+                    "✅ **This looks like a valid simulation suite.**"
+                )
+            else:
+                self.select_button.name = "Confirm Selection ⚠️"
+                self.select_button.styles = {
+                    "background": _INVALID_SUITE_COLOR, "color": "white"}
+                self.suite_indicator.object = (
+                    "⚠️ **This does not look like a valid simulation suite.**"
+                )
+
         except Exception as e:
             self.list_container.objects = [
                 pn.pane.Markdown(f"**Error:** {e}")
             ]
+            self.select_button.name = "Confirm Selection ⚠️"
+            self.select_button.styles = {
+                "background": _INVALID_SUITE_COLOR, "color": "white"}
+            self.suite_indicator.object = ""
 
     def _navigate(self, folder):
         # Navigating clears any previous error, since the user is
@@ -155,16 +183,12 @@ class LoadSuiteDialog:
             self._refresh()
 
     def _select(self, _):
-        # Dismiss the instructional notification the moment the user
-        # confirms a selection, regardless of whether that selection
-        # turns out to be valid.
-        if self._instruction_notification is not None:
-            try:
-                self._instruction_notification.destroy()
-            except Exception:
-                pass  # already dismissed manually by the user — fine
-            self._instruction_notification = None
-
+        # Scanning a full suite can take a moment; disabling and relabeling
+        # the button both prevents a double-submit and makes clear that the
+        # click registered while the caller does that work (report_error /
+        # close below are what eventually restore or dismiss this).
+        self.select_button.disabled = True
+        self.select_button.name = "Loading..."
         self._on_select_callback(self.current_path_val)
 
     def report_error(self, message: str):
@@ -172,8 +196,15 @@ class LoadSuiteDialog:
         a failed scan) without closing the modal, so the user can
         navigate to a different directory and try again."""
         self.status.object = f"**Error:** {message}"
+        self.select_button.disabled = False
+        # The directory itself hasn't changed, so this just restores the
+        # button's icon/color/label from "Loading..." back to whatever
+        # _select overwrote it from.
+        self._refresh()
 
     def close(self):
         """Close the modal (called by the caller after a successful
         scan)."""
+        self.select_button.disabled = False
+        self._refresh()
         self.modal.hide()

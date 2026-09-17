@@ -15,7 +15,7 @@ from visualization.datasetPlot import DatasetPlot2, SharedPlotControls
 from visualization.forecastStatsPanel import ForecastStatsPanel
 from visualization.loadSuiteDialog import LoadSuiteDialog
 from visualization.videoExport import VideoExportPanel
-from visualization.plotGrid import PlotGrid, PlotGridState
+from visualization.plotGrid import PlotGrid, PlotGridState, CLIM_UNSET
 from visualization.earth2StudioPlot import close_dataset_cache
 
 from inference.commandRunner import CommandRunner
@@ -295,6 +295,30 @@ def build_app(data_dir):
     grid_state = PlotGridState()
     link_controls(controls, grid_state)
 
+    def _reflect_field_clim(event):
+        """Push the suite grid's auto-computed colour range back onto the
+        sidebar's Min/Max boxes.
+
+        link_controls only wires controls -> state, so PlotGrid's own
+        auto-scaling (refresh_clims, run when the variable/level/dataset
+        changes) never reaches the boxes the other direction - they'd sit
+        at their initial 0.0 forever regardless of what the grid is
+        actually plotting. Skipped once the user has typed an explicit
+        value: controls.cmap_min/cmap_max are None until then (see
+        SharedPlotControls), and that explicit value is what field_clim
+        itself was computed from in that case (_refresh_field_clim), so
+        overwriting it here would just be echoing it back.
+        """
+        if controls.cmap_min is not None or controls.cmap_max is not None:
+            return
+        lo, hi = event.new
+        if (lo, hi) == CLIM_UNSET:
+            return
+        controls._set_displayed_min(lo)
+        controls._set_displayed_max(hi)
+
+    grid_state.param.watch(_reflect_field_clim, "field_clim")
+
     def sync_active(event):
         meta_panel.active_key = event.new
 
@@ -330,19 +354,35 @@ def build_app(data_dir):
             with open('/tmp/debug.log', 'a') as f:
                 f.write(f"scan_simulation_suite failed for {key}: {e}\n")
             return
-        with open('/tmp/debug.log', 'a') as f:
-            f.write(f"scanned {key}: vars2d={dataset_metadata[key]['vars2d']} vars3d={dataset_metadata[key]['vars3d']} models={list(dataset_metadata[key].get('models', {}).keys())}\n")
         for model, err in dataset_metadata[key].get("model_errors", {}).items():
             if pn.state.notifications:
                 pn.state.notifications.error(f"Could not scan {key}/{model}: {err}", duration=0)
-        meta_panel.metadata = dict(dataset_metadata)
-        browser.add_datasets([key])
-        if browser.checked_items != [key]:
-            browser.checked_items = [key]
-        browser.active_dataset = key
-        tabs.active = 0
-        if pn.state.notifications:
-            pn.state.notifications.info(f"browser now has: {browser.datasets}", duration=0)
+
+        try:
+            meta_panel.metadata = dict(dataset_metadata)
+            browser.add_datasets([key])
+            if browser.checked_items != [key]:
+                browser.checked_items = [key]
+            browser.active_dataset = key
+            tabs.active = 0
+            if pn.state.notifications:
+                pn.state.notifications.success(
+                    f"Simulation suite '{key}' has finished and was added "
+                    "to the Visualization tab.",
+                    duration=0,
+                )
+        except Exception as e:
+            # A failure anywhere in here (dataset-browser wiring, the plot
+            # grid rebuild it triggers, ...) must not propagate back out of
+            # this watcher: it's invoked synchronously from the Inference
+            # tab's own completion callback, and an uncaught exception here
+            # would abort that callback partway through, leaving the Run/
+            # Cancel buttons and spinner stuck as if the run were still going.
+            if pn.state.notifications:
+                pn.state.notifications.error(
+                    f"Scanned {key}, but couldn't load it into the "
+                    f"Visualization tab: {e}", duration=0,
+                )
 
     inference_tab.param.watch(_on_new_output, 'outputDirectory')
 
@@ -511,27 +551,79 @@ def build_app(data_dir):
         pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
         meta_panel.panel,
         width=250,
+        # Its own bounded scrollbar too - same reasoning as vis/main below:
+        # sizing_mode stays default (Bokeh doesn't fight the height here
+        # since nothing asks it to manage that axis), height:100% resolves
+        # against vis's real box, and this is what keeps a long dataset
+        # list from pushing vis's own content past its box (which vis's
+        # overflow:hidden would otherwise just clip invisibly instead of
+        # making reachable via a scrollbar).
+        styles={"height": "100%", "overflow-y": "auto"},
     )
     main = pn.Column(
         pn.panel(plot_grid, sizing_mode="stretch_width"),
         pn.panel(stats_panel, sizing_mode="stretch_width"),
         sizing_mode="stretch_width",
         css_classes=["main-content"],
+        # height/overflow set here directly, not just via the .main-content
+        # class: Bokeh 3 renders each layout model (this Column included)
+        # inside its own shadow root, and raw_css (how static/styles.css
+        # gets loaded) is injected as one global <style> tag in the page's
+        # light-DOM <head> - it never crosses into a shadow root, so
+        # .main-content's height/overflow rules were silently inert here
+        # (confirmed empirically: computed overflow-y stayed "visible").
+        # `styles=` instead sets a genuine inline style on this element's
+        # own node, immune to that boundary - same fix already applied to
+        # vis/inference/sidebar/tabs above.
+        styles={"height": "100%", "overflow-y": "auto"},
     )
-    vis = pn.Row(sidebar, main, sizing_mode="stretch_both", styles={"height": "100vh"})
+    # height:100% here, NOT 100vh - and sizing_mode="stretch_width" NOT
+    # stretch_both/stretch_height. That second part matters as much as the
+    # first: "stretch_both" hands height control to Bokeh's own JS layout
+    # solver, which computes each LayoutDOM's height from its CHILDREN's
+    # natural content size (it has no way to see #main's actual box, which
+    # is a plain templated div, not something Bokeh's resize machinery
+    # tracks) - measured via Playwright, a stretch_both wrapper here came
+    # out at a JS-computed 1260px tall against an 810px-tall #main, because
+    # Bokeh's layout pass sets an explicit inline `style.height` on every
+    # pass, silently clobbering whatever percentage we'd set via `styles=`
+    # on that same element. stretch_width leaves the height axis alone, so
+    # our own CSS height:100% is what actually applies - the same pattern
+    # `.main-content` (below) already used successfully.
+    #
+    # With that, #main's real box (see bootstrap.html/bootstrap.css:
+    # #container is vh-100 + overflow-hidden, #content and #main are
+    # height:100%, #main additionally has its own overflow-y:auto) finally
+    # reaches these panes correctly: 100% now resolves to #main's true
+    # height instead of an oversized intrinsic one, so the tab bar (a
+    # sibling within that same non-scrolling chain) never gets carried off
+    # by an internal scroll, and each pane's own overflow-y:auto is what
+    # scrolls - not #main, and not the page.
+    vis = pn.Row(sidebar, main, sizing_mode="stretch_width",
+                 styles={"height": "100%", "overflow": "hidden"})
     inference = pn.Column(
         inference_tab.panel(),
-        sizing_mode="stretch_both",
-        styles={"height": "100vh", "overflow": "auto"},
+        sizing_mode="stretch_width",
+        styles={"height": "100%", "overflow-y": "auto"},
     )
     tabs = pn.Tabs(
         ("Visualization", vis),
         ("Inference", inference),
+        # stretch_width, not stretch_both - see the comment above. Height
+        # comes from the .bk-tabs-content rule below instead.
+        sizing_mode="stretch_width",
+        styles={"height": "100%", "overflow": "hidden"},
         stylesheets=["""
-            .bk-tab { background: #f0f0f0; border-radius: 4px 4px 0 0; font-size: 14px; padding: 8px 16px; }
-            .bk-tab.bk-active { background: white; border-top: 2px solid #007bff; font-weight: bold; }
-            .bk-tabs-header { background: #e8e8e8; }
-            .bk-tabs-content { border: 1px solid #ccc; padding: 10px; }
+            .bk-tab {
+                background: #f0f0f0; border-radius: 4px 4px 0 0;
+                font-size: 18px; font-weight: 600; padding: 12px 24px;
+            }
+            .bk-tab.bk-active { background: white; border-top: 3px solid #007bff; font-weight: 700; }
+            .bk-tabs-header { background: #e8e8e8; flex: 0 0 auto; }
+            .bk-tabs-content {
+                border: 1px solid #ccc; padding: 10px; box-sizing: border-box;
+                flex: 1 1 auto; min-height: 0; overflow: hidden;
+            }
         """],
     )
     # `title` now only drives the browser tab text - the header title text is
@@ -588,7 +680,13 @@ def build_app(data_dir):
             margin=(5, 0, 5, 0),
         )
     )
-    template.main[:] = [pn.Column(tabs, sizing_mode="stretch_both")]
+    # stretch_width + explicit CSS height:100%, not stretch_both - see the
+    # comment above vis/inference/tabs for why stretch_both silently
+    # breaks this exact chain.
+    template.main[:] = [pn.Column(
+        tabs, sizing_mode="stretch_width",
+        styles={"height": "100%", "overflow": "hidden"},
+    )]
 
     # Deferred via pn.state.onload rather than called directly here:
     # pn.state.notifications requires the browser session to be fully

@@ -152,8 +152,23 @@
   white-space: nowrap;
 }
 .main-content {
+  /* height:100% (of the Visualization tab's own pane), not 100vh - the
+     surrounding pane is already sized to exactly the space available below
+     the app header and the tab bar (see app_layout.py's vis/inference
+     comment), so 100vh here would make this taller than that box and,
+     since nothing scrolls above the tab bar to compensate, push it out of
+     view instead of just growing this pane's own scrollbar.
+
+     height/overflow here are belt-and-suspenders only, not what actually
+     fixes the scrolling: this stylesheet is injected once as a global
+     <style> tag (Panel's raw_css), and Bokeh 3 renders this Column inside
+     its own shadow root, which that global tag can't cross - confirmed via
+     Playwright, the computed overflow-y here stayed "visible" regardless
+     of this rule. The real fix is the matching `styles={...}` passed
+     directly to this Column in app_layout.py (a genuine inline style,
+     immune to the shadow boundary); keep these two in sync if changed. */
   overflow: auto !important;
-  height: 100vh !important;
+  height: 100% !important;
   width: 100% !important;
   display: block !important;
   background: #ccc;

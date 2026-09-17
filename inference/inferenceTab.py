@@ -5,6 +5,7 @@ import threading
 import os
 import time
 import signal
+import traceback
 
 from datetime import datetime, timedelta
 from functools import partial
@@ -138,6 +139,7 @@ class InferenceTab(param.Parameterized):
         self._log_widgets = {}      # model -> TextAreaInput
         self._spinners = {}         # model -> LoadingSpinner
         self._status_widgets = {}   # model -> HTML pane
+        self._failed_models = []    # models that errored out this run
         self._timer_running = False
         self._active_count = 0
         self._active_lock = threading.Lock()
@@ -181,12 +183,6 @@ class InferenceTab(param.Parameterized):
     # ------------------------------------------------------------------ #
 
     def _on_run_click(self, event):
-        # Fresh debug log each run
-        try:
-            open('/tmp/debug.log', 'w').close()
-        except Exception:
-            pass
-
         runners = self._get_runners()
 
         if not runners:
@@ -210,6 +206,7 @@ class InferenceTab(param.Parameterized):
         self._spinners = {}
         self._status_widgets = {}
         self._processes = {}
+        self._failed_models = []
         self.outputTabs.objects = []
         self.statusRow.objects = []
 
@@ -254,31 +251,89 @@ class InferenceTab(param.Parameterized):
             self._active_count = len(runners)
 
         def _all_done():
-            with open('/tmp/debug.log', 'a') as f:
-                f.write("_all_done called\n")
             elapsed = time.time() - overall_start
             mins, secs = divmod(int(elapsed), 60)
 
             sim_dir = Path(self.outputParams.pathDisplay.value) / self.outputParams.simulationNamePicker.value_input
 
             def _finish():
+                if self._cancel_event.is_set():
+                    # _on_cancel_click already reset the button/spinner
+                    # the moment Cancel was clicked -- this run never
+                    # completed, so don't overwrite that with a
+                    # misleading "Files written to ..." success message
+                    # once the killed subprocess(es) finally exit and
+                    # this callback runs.
+                    return
                 try:
-                    with open('/tmp/debug.log', 'a') as f:
-                        f.write("_finish running on doc thread\n")
                     if self._periodic_cb is not None:
                         self._periodic_cb.stop()
                     self.elapsedLabel.value = f"{mins}m {secs}s"
-                    self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self.completionPathLabel.value = f"Files written to {sim_dir}"
-                    self.outputDirectory = str(sim_dir)
-                    self.param.trigger('outputDirectory')
+                    if self._failed_models:
+                        self.completionLabel.value = "Completed with errors"
+                        self.completionPathLabel.value = (
+                            f"Failed: {', '.join(self._failed_models)} "
+                            "— see that model's log tab for details."
+                        )
+                    else:
+                        self.completionLabel.value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        self.completionPathLabel.value = f"Files written to {sim_dir}"
+                except Exception:
+                    traceback.print_exc()
+                finally:
+                    # Always reset the Run/Cancel controls, no matter what
+                    # happens below -- setting outputDirectory synchronously
+                    # runs the Visualization tab's dataset-loading watcher
+                    # (scan_simulation_suite, dataset-browser wiring, the tab
+                    # switch), and a failure there must not leave the
+                    # inference tab itself looking like it's still running.
                     self.spinner.value = False
                     self.spinner.visible = False
                     self.inferenceButton.disabled = False
                     self.cancelButton.disabled = True
-                except Exception as e:
-                    with open('/tmp/debug.log', 'a') as f:
-                        f.write(f"_finish died: {e!r}\n")
+
+                if self._failed_models:
+                    # At least one model failed outright -- stay on the
+                    # Inference tab (skip the outputDirectory trigger below,
+                    # so app_layout's Visualization-tab switch never runs)
+                    # and make sure the failure is impossible to miss rather
+                    # than only visible as a red status icon on that model's
+                    # tab. The suite can still be picked up later via "Load
+                    # Existing Suite" if a partial result is worth keeping.
+                    if pn.state.notifications:
+                        plural = "s" if len(self._failed_models) > 1 else ""
+                        pn.state.notifications.error(
+                            f"Inference failed for model{plural}: "
+                            f"{', '.join(self._failed_models)}. See that "
+                            "model's log tab for details.",
+                            duration=0,
+                        )
+                    return
+
+                try:
+                    # A plain assignment only fires the outputDirectory
+                    # watcher (app_layout._on_new_output) when the value
+                    # actually changes -- which covers the normal case of a
+                    # fresh simulation_name. Re-running the exact same
+                    # simulation_name back-to-back would otherwise silently
+                    # not reload it, so that one case falls back to an
+                    # explicit trigger() instead. Doing BOTH unconditionally
+                    # (the previous code) fired the watcher twice per run --
+                    # duplicating the scan and posting the completion
+                    # notification twice.
+                    new_dir = str(sim_dir)
+                    if new_dir == self.outputDirectory:
+                        self.param.trigger('outputDirectory')
+                    else:
+                        self.outputDirectory = new_dir
+                except Exception:
+                    traceback.print_exc()
+                    if pn.state.notifications:
+                        pn.state.notifications.error(
+                            f"Inference finished, but failed to load {sim_dir} "
+                            "into the Visualization tab. See server log for details.",
+                            duration=0,
+                        )
 
             if self._doc is not None:
                 self._doc.add_next_tick_callback(_finish)
@@ -305,7 +360,6 @@ class InferenceTab(param.Parameterized):
                     self._run_model(model, runner, lambda: None)
                 _all_done()
             except Exception:
-                import traceback
                 tb = traceback.format_exc()
 
                 def _report():
@@ -329,7 +383,20 @@ class InferenceTab(param.Parameterized):
                 except Exception:
                     proc.terminate()
                 self._append_log(model, "\n\nCancelled by user.")
+
+        # Reset the shared Run/Cancel controls right away, rather than
+        # waiting on _all_done() -- that only fires once every killed
+        # subprocess has actually exited and _run_all_sequential's loop
+        # falls through, which can lag well behind the SIGTERM above (or
+        # never happen at all for a process that ignores it).
+        if self._periodic_cb is not None:
+            self._periodic_cb.stop()
+        self.spinner.value = False
+        self.spinner.visible = False
+        self.inferenceButton.disabled = False
         self.cancelButton.disabled = True
+        self.completionLabel.value = "Cancelled"
+        self.completionPathLabel.value = ""
 
     # ------------------------------------------------------------------ #
     #  Per-model execution                                                 #
@@ -382,6 +449,7 @@ class InferenceTab(param.Parameterized):
             cmd = runner.build_cmd(config)
         except Exception as e:
             self._append_log(model, f"Error during setup: {e}\n")
+            self._failed_models.append(model)
             def _update_setup_error():
                 pane = self._status_widgets.get(model)
                 if pane is not None:
@@ -441,6 +509,8 @@ class InferenceTab(param.Parameterized):
                 state = "done" if proc.returncode == 0 else "error"
             except Exception:
                 state = "error"
+            if state == "error":
+                self._failed_models.append(model)
 
             def _update_finish(state=state):
                 spinner = self._spinners.get(model)

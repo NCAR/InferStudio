@@ -1,5 +1,7 @@
 # Step 1: Load datasets dynamically
 import os
+import threading
+from functools import partial
 from pathlib import Path
 import panel as pn
 import param
@@ -17,6 +19,24 @@ pn.extension(raw_css=[Path("static/styles.css").read_text()])
 # dimension and isn't handled by plot_e2s_field yet — it still needs its
 # own branch here (probably routing back through era5_plot.plot_png).
 EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu"}
+
+
+def _schedule(fn):
+    """Run fn on the Bokeh document's event loop.
+
+    Param/widget mutations made from a worker thread must not be applied
+    directly: Panel needs the document lock to push the resulting change to
+    the browser. pn.state.execute handles that when a server session
+    exists, and falls through to a direct call in scripts and tests. See
+    plotGrid._schedule, which this mirrors.
+    """
+    try:
+        if pn.state.curdoc is not None:
+            pn.state.execute(fn)
+            return
+    except Exception:
+        pass
+    fn()
 
 
 import matplotlib.colors as mcolors
@@ -532,6 +552,15 @@ class DatasetPlot2(param.Parameterized):
                 vmin=cmap_min,
                 vmax=cmap_max,
             )
+            # Reflect the range actually used back into the Min/Max boxes.
+            # When cmap_min/cmap_max are None, plot_e2s_field auto-scaled
+            # from this variable's own data and vmin_used/vmax_used are the
+            # only place that range exists - without this the boxes just
+            # sit at their initial 0.0 forever, regardless of the variable
+            # plotted. Guarded via _set_displayed_min/max so this write
+            # isn't mistaken for the user fixing an explicit range.
+            self.controls._set_displayed_min(vmin_used)
+            self.controls._set_displayed_max(vmax_used)
             return pn.pane.PNG(
                 buf,
                 sizing_mode="scale_width",
@@ -555,12 +584,22 @@ class DatasetPlot2(param.Parameterized):
         # "AIFS minus Aurora" -> other = "Aurora"
         other = selected_option.split(" minus ", 1)[1]
 
+        selector = self._diff_selectors[model]
+        selector.disabled = True
         slot.objects = [
             pn.Column(
-                pn.indicators.LoadingSpinner(value=True, width=30, height=30, align="center"),
-                pn.pane.Markdown("*Computing difference...*", align="center"),
+                pn.layout.VSpacer(),
+                pn.indicators.LoadingSpinner(
+                    value=True, width=120, height=120, align="center"),
+                pn.pane.Markdown(
+                    "**Computing difference \u2014 a full suite can take a "
+                    "minute.**",
+                    align="center",
+                ),
+                pn.layout.VSpacer(),
                 align="center",
                 sizing_mode="stretch_width",
+                min_height=420,
             )
         ]
 
@@ -572,15 +611,48 @@ class DatasetPlot2(param.Parameterized):
         # clearly-separate cache root avoids that class of bug entirely.
         cache_dir = Path(f"/glade/derecho/scratch/{os.environ['USER']}/.inferstudio_diff_cache") / sim_dir.name
 
-        try:
-            diff_path = compute_model_difference(
-                self.model_paths[model], self.model_paths[other],
-                cache_dir, model, other,
-            )
-        except Exception as e:
-            slot.objects = [pn.pane.Markdown(f"*Error computing difference: {e}*")]
-            self._diff_paths.pop(model, None)   # nothing renderable to export
-            return
+        # Off the Bokeh callback thread: compute_model_difference over a
+        # full suite can take minutes, and running it inline here would
+        # block this callback's return - which is also when Panel flushes
+        # pending changes to the browser. The spinner set above would never
+        # reach the client; the UI would just freeze with no sign anything
+        # was happening until the diff card popped in at the very end. See
+        # plotGrid.py's _ensure_diff_async, which has the same shape for
+        # the same reason.
+        def work():
+            try:
+                diff_path = compute_model_difference(
+                    self.model_paths[model], self.model_paths[other],
+                    cache_dir, model, other,
+                )
+            except Exception as e:
+                _schedule(partial(self._finish_diff_error, model,
+                                  selected_option, e))
+                return
+            _schedule(partial(self._finish_diff_ready, model,
+                              selected_option, other, diff_path))
+
+        threading.Thread(
+            target=work, daemon=True,
+            name=f"diff-{model}-minus-{other}").start()
+
+    def _stale_diff(self, model, selected_option):
+        """True if the user picked a different pair while this one ran."""
+        return self._diff_selectors[model].value != selected_option
+
+    def _finish_diff_error(self, model, selected_option, exc):
+        self._diff_selectors[model].disabled = False
+        if self._stale_diff(model, selected_option):
+            return   # a newer selection is already showing/computing
+        self._diff_paths.pop(model, None)   # nothing renderable to export
+        self._diff_slots[model].objects = [
+            pn.pane.Markdown(f"*Error computing difference: {exc}*")
+        ]
+
+    def _finish_diff_ready(self, model, selected_option, other, diff_path):
+        self._diff_selectors[model].disabled = False
+        if self._stale_diff(model, selected_option):
+            return   # a newer selection is already showing/computing
 
         self._diff_paths[model] = diff_path
 
@@ -600,7 +672,7 @@ class DatasetPlot2(param.Parameterized):
             margin=0,
             css_classes=["plot-container"],
         )
-        slot.objects = [diff_card]
+        self._diff_slots[model].objects = [diff_card]
 
     def _render_diff(self, diff_path, var_name, level_value, time_index):
         if not var_name:

@@ -275,6 +275,8 @@ class PlotGrid(param.Parameterized):
         self._torn_down = False
 
         self._hv_pane = None
+        self._busy_pane = None
+        self._plot_area = None
 
         self._field_stream = hv.streams.Params(self.state, _FIELD_PARAMS)
         self._diff_stream = hv.streams.Params(self.state, _DIFF_PARAMS)
@@ -284,6 +286,18 @@ class PlotGrid(param.Parameterized):
         # outlives every grid built against it, so a leaked watcher would
         # keep firing on a dead grid and mutate widgets no longer on screen.
         self._status_watcher = None
+
+        # Set by panel(); kept so teardown can unwatch, same reasoning as
+        # _status_watcher above.
+        self._busy_watcher = None
+
+        # Recompute colour limits whenever the user picks a different
+        # variable or level. Without this, field_clim/diff_clim are only
+        # ever set at grid construction (app_layout's refresh_clims_async)
+        # and when a difference finishes computing, so switching variables
+        # left the scale stuck at whatever the previous variable needed.
+        self._clim_watcher = self.state.param.watch(
+            lambda event: self.refresh_clims_async(), ["variable", "level"])
 
     # -- lifecycle ------------------------------------------------------
 
@@ -306,6 +320,20 @@ class PlotGrid(param.Parameterized):
                 pass
             self._status_watcher = None
 
+        if self._clim_watcher is not None:
+            try:
+                self.state.param.unwatch(self._clim_watcher)
+            except Exception:
+                pass
+            self._clim_watcher = None
+
+        if self._busy_watcher is not None:
+            try:
+                self.state.param.unwatch(self._busy_watcher)
+            except Exception:
+                pass
+            self._busy_watcher = None
+
         for stream in (self._field_stream, self._diff_stream,
                        *self._pointer_streams):
             try:
@@ -321,6 +349,8 @@ class PlotGrid(param.Parameterized):
             self._fields.clear()
         self._layout = None
         self._hv_pane = None
+        self._busy_pane = None
+        self._plot_area = None
 
     # -- element construction ------------------------------------------
 
@@ -753,11 +783,56 @@ class PlotGrid(param.Parameterized):
 
         self._hv_pane = pn.pane.HoloViews(
             self.layout(), sizing_mode="stretch_width")
+        self._busy_pane = self._busy_overlay()
+
+        # The small tinted placeholder cell (_placeholder(computing=True))
+        # plus the readout banner were the previous signal that a
+        # difference was computing, and both were easy to miss sitting
+        # alongside the rest of the linked grid. Swapping the WHOLE plot
+        # area out for a big spinner while any pair is computing is far
+        # harder to miss - a full-suite difference can take a minute, so
+        # something has to fill that time obviously.
+        busy = any(s == "computing" for s in self.state.diff_status.values())
+        self._plot_area = pn.Column(
+            self._busy_pane if busy else self._hv_pane,
+            sizing_mode="stretch_width",
+        )
+
+        def _toggle_busy(event):
+            busy = any(s == "computing" for s in (event.new or {}).values())
+            self._plot_area.objects = [
+                self._busy_pane if busy else self._hv_pane]
+
+        self._busy_watcher = self.state.param.watch(_toggle_busy, "diff_status")
 
         return pn.Column(
             readout,
-            self._hv_pane,
+            self._plot_area,
             sizing_mode="stretch_width",
+        )
+
+    def _busy_overlay(self):
+        """Large, centered stand-in for the grid while a difference computes."""
+        return pn.Column(
+            pn.layout.VSpacer(),
+            pn.Row(
+                pn.layout.HSpacer(),
+                pn.indicators.LoadingSpinner(
+                    value=True, width=120, height=120, color="primary"),
+                pn.layout.HSpacer(),
+            ),
+            pn.Row(
+                pn.layout.HSpacer(),
+                pn.pane.Markdown(
+                    "**Computing difference — a full suite can take "
+                    "a minute.**",
+                    align="center",
+                ),
+                pn.layout.HSpacer(),
+            ),
+            pn.layout.VSpacer(),
+            sizing_mode="stretch_width",
+            min_height=420,
         )
 
     def card(self, title="Forecast fields", **kwargs):

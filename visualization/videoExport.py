@@ -36,8 +36,23 @@ from visualization.earth2StudioPlot import plot_e2s_field
 DEFAULT_RENDERINGS_PER_SECOND = 2.0
 MP4_FRAME_RATE = 30
 
-RANGE_GLOBAL = "Global (scan all steps)"
-RANGE_FIRST = "First step only (faster)"
+# The composited frame's own size depends entirely on the current layout --
+# panel count, rows, colorbar tick-label width -- and rarely lands anywhere
+# near a standard video resolution or aspect ratio on its own. Scaling to a
+# named target (letterboxed to preserve the frame's aspect ratio -- see
+# _worker) makes the output predictable to share/embed regardless of what's
+# on screen. 1080p is kept as the default: it's still the most universally
+# expected resolution for a shared MP4, even though the source frame is
+# usually a wider aspect ratio than 16:9 and ends up letterboxed top/bottom.
+RESOLUTION_SOURCE = "Source resolution (no scaling)"
+RESOLUTIONS = {
+    "720p (1280×720)": (1280, 720),
+    "1080p (1920×1080)": (1920, 1080),
+    "1440p (2560×1440)": (2560, 1440),
+    "4K / 2160p (3840×2160)": (3840, 2160),
+    RESOLUTION_SOURCE: None,
+}
+DEFAULT_RESOLUTION = "1080p (1920×1080)"
 
 _PAD = 10
 _LABEL_H = 30
@@ -135,21 +150,24 @@ class _Tile:
     Mirrors one card of the on-screen grid: either a model's field or a
     model-minus-model difference. The interactive plot re-derives its range
     on every step, which is fine when scrubbing but makes a video's colorbar
-    breathe and its field flicker, so the range is resolved once up front
-    (see scan/finalize) and then held.
+    breathe and its field flicker, so the range is resolved once up front and
+    then held.
+
+    Field panels arrive with vmin/vmax already fixed -- the exact range the
+    GUI is currently showing (frame_spec()'s clim for a PlotGrid, or the
+    Colormap Min/Max boxes for a flat dataset), so there is nothing left to
+    scan for. Difference panels have no such GUI-visible range to copy (the
+    on-screen diff recomputes a fresh auto range every time step), so vmin/
+    vmax start as None and get resolved by scan()/finalize() below.
     """
 
-    def __init__(self, label, model_dir, is_diff, user_vmin=None, user_vmax=None):
+    def __init__(self, label, model_dir, is_diff, cmap, vmin=None, vmax=None):
         self.label = label
         self.model_dir = model_dir
         self.is_diff = is_diff
-        # A range the user typed into Colormap Min/Max, or None for auto.
-        # Never applies to difference tiles -- those have their own
-        # symmetric-about-zero scale, exactly as _render_diff does on screen.
-        self.user_vmin = None if is_diff else user_vmin
-        self.user_vmax = None if is_diff else user_vmax
-        self.vmin = None
-        self.vmax = None
+        self.cmap = cmap
+        self.vmin = vmin
+        self.vmax = vmax
         self._scan_lo = None
         self._scan_hi = None
         self.size = None      # fixed at the first rendered frame; libx264
@@ -157,13 +175,10 @@ class _Tile:
 
     @property
     def needs_scan(self):
-        """False only when the user pinned both ends of a non-diff range."""
-        return self.user_vmin is None or self.user_vmax is None
+        """True for a range that hasn't already been resolved elsewhere."""
+        return self.vmin is None or self.vmax is None
 
-    def _cmap_for(self, cmap):
-        return "coolwarm" if self.is_diff else cmap
-
-    def scan(self, var_name, level, t, cmap):
+    def scan(self, var_name, level, t):
         """Record this step's data extrema without keeping the image.
 
         plot_e2s_field reports the range it actually used, so an auto-ranged
@@ -172,39 +187,44 @@ class _Tile:
         """
         _, lo, hi = plot_e2s_field(
             model_dir=self.model_dir, base_or_var=var_name, level=level, t=t,
-            cmap=self._cmap_for(cmap), vmin=None, vmax=None,
+            cmap=self.cmap, vmin=None, vmax=None,
         )
         self._scan_lo = lo if self._scan_lo is None else min(self._scan_lo, lo)
         self._scan_hi = hi if self._scan_hi is None else max(self._scan_hi, hi)
 
     def finalize(self):
-        """Resolve the fixed range from whatever scanning found."""
-        if self.is_diff:
-            # Symmetric about zero so coolwarm's neutral midpoint lands on
-            # zero difference -- same reasoning as DatasetPlot2._render_diff.
-            #
-            # Scanning the FULL series matters most here. At t=0 both models
-            # start from the same analysis, so the difference is nothing but
-            # floating-point noise (~1e-10). Locking that as the range makes
-            # every later step -- where genuine divergence is many orders of
-            # magnitude larger -- saturate to solid red and blue.
+        """Resolve the fixed range from whatever scanning found.
+
+        No-op for a tile that already arrived with a fixed range. Scanning
+        the FULL series matters most for a difference tile: at t=0 both
+        models start from the same analysis, so the difference is nothing
+        but floating-point noise (~1e-10). Locking that as the range makes
+        every later step -- where genuine divergence is many orders of
+        magnitude larger -- saturate to solid red and blue.
+        """
+        if self.vmin is None or self.vmax is None:
             lo = self._scan_lo if self._scan_lo is not None else 0.0
             hi = self._scan_hi if self._scan_hi is not None else 0.0
-            max_abs = max(abs(lo), abs(hi))
-            if max_abs == 0.0:
-                max_abs = 1e-12    # a degenerate all-zero field: avoid vmin==vmax
-            self.vmin, self.vmax = -max_abs, max_abs
-        else:
-            self.vmin = self.user_vmin if self.user_vmin is not None else self._scan_lo
-            self.vmax = self.user_vmax if self.user_vmax is not None else self._scan_hi
-            if self.vmin is not None and self.vmin == self.vmax:
-                self.vmin, self.vmax = self.vmin - 1e-12, self.vmax + 1e-12
+            if self.is_diff:
+                # Symmetric about zero so coolwarm's neutral midpoint lands
+                # on zero difference -- same reasoning as
+                # DatasetPlot2._render_diff.
+                max_abs = max(abs(lo), abs(hi))
+                if max_abs == 0.0:
+                    max_abs = 1e-12   # a degenerate all-zero field: avoid vmin==vmax
+                self.vmin, self.vmax = -max_abs, max_abs
+            else:
+                self.vmin, self.vmax = lo, hi
+        if self.vmin == self.vmax:
+            # A pinned or GUI-displayed range can arrive already degenerate
+            # (e.g. both boxes at 0.0) -- nudge it too, not just a scanned one.
+            self.vmin, self.vmax = self.vmin - 1e-12, self.vmax + 1e-12
 
-    def render(self, var_name, level, t, cmap):
+    def render(self, var_name, level, t):
         """Return a PIL image of this panel at time step t."""
         buf, _, _ = plot_e2s_field(
             model_dir=self.model_dir, base_or_var=var_name, level=level, t=t,
-            cmap=self._cmap_for(cmap), vmin=self.vmin, vmax=self.vmax,
+            cmap=self.cmap, vmin=self.vmin, vmax=self.vmax,
         )
         img = Image.open(buf).convert("RGB")
         if self.size is None:
@@ -270,10 +290,13 @@ class VideoExportPanel(param.Parameterized):
         doc="How many forecast time steps are shown per second of playback.",
     )
 
-    color_range = param.Selector(
-        default=RANGE_GLOBAL,
-        objects=[RANGE_GLOBAL, RANGE_FIRST],
-        label="Color range",
+    resolution = param.Selector(
+        default=DEFAULT_RESOLUTION,
+        objects=list(RESOLUTIONS),
+        label="Output resolution",
+        doc="Target MP4 resolution. The composited frame is letterboxed to "
+            "fit -- its own aspect ratio depends on the current layout and "
+            "rarely matches the target's.",
     )
 
     def __init__(self, controls, active_plot_fn, output_dir=_EXPORT_DIR, **params):
@@ -287,7 +310,7 @@ class VideoExportPanel(param.Parameterized):
         # Sized/margined to match load_suite_dialog.open_button exactly, so
         # both stretch to the same effective width inside the 250px sidebar.
         self.open_button = pn.widgets.Button(
-            name="Export Video",
+            name="Download Video",
             button_type="primary",
             sizing_mode="stretch_width",
             margin=(10, 10, 0, 0),
@@ -297,16 +320,8 @@ class VideoExportPanel(param.Parameterized):
         self._rps = pn.widgets.FloatSlider.from_param(
             self.param.renderings_per_second, sizing_mode="stretch_width",
         )
-        self._range = pn.widgets.RadioBoxGroup.from_param(
-            self.param.color_range, inline=False,
-        )
-        self._range_help = pn.pane.Markdown(
-            "_Global scans every step first so the colorbar stays fixed and "
-            "nothing clips. Difference panels need this: at the initial time "
-            "both models share the same analysis, so their difference is "
-            "numerical noise._",
-            styles={"font-size": "12px"},
-            sizing_mode="stretch_width",
+        self._resolution = pn.widgets.Select.from_param(
+            self.param.resolution, sizing_mode="stretch_width",
         )
         self._summary = pn.pane.Markdown("", sizing_mode="stretch_width")
         self._progress = pn.indicators.Progress(
@@ -315,7 +330,7 @@ class VideoExportPanel(param.Parameterized):
         self._status = pn.pane.Markdown("", sizing_mode="stretch_width")
         self._download = pn.widgets.FileDownload(
             label="Download MP4", button_type="success",
-            visible=False, sizing_mode="stretch_width",
+            disabled=True, sizing_mode="stretch_width",
         )
         self._export_btn = pn.widgets.Button(name="Export", button_type="primary", width=110)
         self._cancel_btn = pn.widgets.Button(
@@ -333,9 +348,7 @@ class VideoExportPanel(param.Parameterized):
                 ),
                 pn.layout.Divider(),
                 self._rps,
-                pn.pane.Markdown("**Color range**", margin=(10, 0, 0, 0)),
-                self._range,
-                self._range_help,
+                self._resolution,
                 self._summary,
                 pn.layout.Divider(),
                 pn.Row(self._export_btn, self._cancel_btn),
@@ -361,13 +374,67 @@ class VideoExportPanel(param.Parameterized):
         """
         return int(self.controls.time_slider.end) + 1
 
-    def _rows(self):
-        """What the Visualization tab is currently rendering, or None."""
+    def _grid_spec(self, plot):
+        """Row spec for a PlotGrid, from its purpose-built frame_spec().
+
+        frame_spec() already resolves cmap and colour range exactly as the
+        GUI currently shows them (the sidebar's Colormap Min/Max when set,
+        else the grid's own auto-scan) -- there is nothing left for the
+        exporter to compute for a field panel. A difference panel's clim may
+        still be the not-yet-resolved sentinel if its background scan hasn't
+        landed yet; that shows up as (None, None) and _Tile scans for itself.
+        """
+        panels = plot.frame_spec()["panels"]
+        rows = []
+        for p in panels:
+            vmin, vmax = p["clim"]
+            entry = (p["title"], p["dir"], p["kind"] == "diff", p["cmap"], vmin, vmax)
+            if p["kind"] == "field":
+                rows.append([entry])
+            else:
+                rows[-1].append(entry)
+        return rows or None
+
+    def _dataset_spec(self, plot):
+        """Row spec for a flat single-dataset DatasetPlot2.
+
+        Field panels take the exact range currently displayed in the
+        Colormap Min/Max boxes -- the default auto-computed value if the
+        user never typed one, or their explicit value otherwise. Difference
+        panels have no such GUI-visible range (the on-screen diff recomputes
+        a fresh auto range every time step), so they're left unresolved for
+        _Tile to scan.
+        """
+        raw_rows = plot.export_panels()
+        if not raw_rows:
+            return None
+        cmap = self.controls._colormaps.get(self.controls.colormap, "viridis")
+        vmin = self.controls.cmap_min_input.value
+        vmax = self.controls.cmap_max_input.value
+        return [
+            [
+                (label, path, is_diff, "coolwarm", None, None) if is_diff
+                else (label, path, is_diff, cmap, vmin, vmax)
+                for label, path, is_diff in row
+            ]
+            for row in raw_rows
+        ]
+
+    def _panel_spec(self):
+        """What the Visualization tab is currently rendering, or None.
+
+        A list of rows, each a list of (label, model_dir, is_diff, cmap,
+        vmin, vmax) tuples, mirroring the on-screen layout -- one row per
+        model, with its difference card alongside when active.
+        """
         plot = self._active_plot_fn()
         if plot is None or not self.controls.var_name:
             return None
         try:
-            rows = plot.export_panels()
+            if hasattr(plot, "frame_spec"):
+                rows = self._grid_spec(plot)
+            else:
+                rows = self._dataset_spec(plot)
         except Exception:
             return None
         return rows or None
@@ -375,27 +442,39 @@ class VideoExportPanel(param.Parameterized):
     # -- callbacks ---------------------------------------------------------
 
     def _open(self, _event=None):
-        self._download.visible = False
+        self._download.disabled = True
         self._status.object = ""
         self._progress.visible = False
         self._refresh_summary()
         self.modal.open = True
 
-    @param.depends("renderings_per_second", "color_range", watch=True)
+    @param.depends("renderings_per_second", "resolution", watch=True)
     def _refresh_summary(self):
-        rows = self._rows()
+        if not self._download.disabled:
+            # A completed video's download link reflects whatever settings
+            # were in effect when Export was clicked. Changing a setting
+            # without re-exporting must not leave that stale link sitting
+            # there looking current -- _open() already disables it when the
+            # modal is freshly opened, but that doesn't cover changing a
+            # setting again while it's still open from a previous export.
+            self._download.disabled = True
+            self._status.object = (
+                "_Settings changed — click Export again to regenerate "
+                "the video._"
+            )
+        rows = self._panel_spec()
         if rows is None or self.controls.time_slider.disabled:
             self._summary.object = "_Nothing rendered to export._"
             self._export_btn.disabled = True
             return
         n = self._nframes()
         npanels = sum(len(r) for r in rows)
-        extra = " Scanning roughly doubles render time." \
-            if self.color_range == RANGE_GLOBAL else ""
+        target = RESOLUTIONS[self.resolution]
+        res_txt = f"{target[0]}\u00d7{target[1]}" if target else "source resolution"
         self._summary.object = (
             f"**{n}** time steps \u00d7 **{npanels}** panel(s) \u2192 "
             f"**{n / self.renderings_per_second:.1f} s** of video "
-            f"at {MP4_FRAME_RATE} fps.{extra}"
+            f"at {MP4_FRAME_RATE} fps, {res_txt}."
         )
         self._export_btn.disabled = False
 
@@ -406,7 +485,7 @@ class VideoExportPanel(param.Parameterized):
     def _start(self, _event=None):
         if self._thread and self._thread.is_alive():
             return
-        rows = self._rows()
+        rows = self._panel_spec()
         if rows is None:
             self._status.object = "**Nothing to export** \u2014 render something first."
             return
@@ -418,18 +497,15 @@ class VideoExportPanel(param.Parameterized):
         snapshot = dict(
             var_name=self.controls.var_name,
             level=self.controls.level_value,
-            cmap=self.controls._colormaps.get(self.controls.colormap, "viridis"),
-            vmin=self.controls.cmap_min,
-            vmax=self.controls.cmap_max,
             nframes=self._nframes(),
             rps=self.renderings_per_second,
-            scan_all=(self.color_range == RANGE_GLOBAL),
+            resolution=RESOLUTIONS[self.resolution],
         )
 
         self._cancel.clear()
         self._export_btn.disabled = True
         self._cancel_btn.disabled = False
-        self._download.visible = False
+        self._download.disabled = True
         self._progress.value = 0
         self._progress.visible = True
         self._status.object = "_Starting\u2026_"
@@ -445,32 +521,34 @@ class VideoExportPanel(param.Parameterized):
         try:
             exe = _ffmpeg_exe()
 
-            tiles = [[_Tile(label, path, is_diff,
-                            user_vmin=snap["vmin"], user_vmax=snap["vmax"])
-                      for label, path, is_diff in row]
+            tiles = [[_Tile(label, path, is_diff, cmap, vmin, vmax)
+                      for label, path, is_diff, cmap, vmin, vmax in row]
                      for row in rows]
             flat = [t for row in tiles for t in row]
 
             total = snap["nframes"]
-            var, level, cmap = snap["var_name"], snap["level"], snap["cmap"]
+            var, level = snap["var_name"], snap["level"]
 
-            # --- pass 1: resolve color ranges --------------------------------
-            scan_steps = range(total) if snap["scan_all"] else [0]
+            # --- pass 1: resolve any still-unset (difference) colour ranges --
+            # Field panels already carry the GUI's current range and never
+            # land here; only a difference panel -- which has no single
+            # GUI-visible range to copy -- needs the full sweep scanned.
             scanning = [t for t in flat if t.needs_scan]
             if scanning:
-                nscan = len(list(scan_steps))
-                for i, t in enumerate(scan_steps):
+                for i in range(total):
                     if self._cancel.is_set():
                         _ui(setattr, self._status, "object", "**Export cancelled.**")
                         return
                     with _RENDER_LOCK:
                         for tile in scanning:
-                            tile.scan(var, level, t, cmap)
-                    _ui(setattr, self._progress, "value", int(45 * (i + 1) / nscan))
+                            tile.scan(var, level, i)
+                    _ui(setattr, self._progress, "value", int(45 * (i + 1) / total))
                     _ui(setattr, self._status, "object",
-                        f"_Scanning color range {i + 1}/{nscan}_")
+                        f"_Scanning color range {i + 1}/{total}_")
             for tile in flat:
                 tile.finalize()
+
+            render_base, render_span = (45, 45) if scanning else (0, 90)
 
             # --- pass 2: render frames ---------------------------------------
             self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -487,7 +565,7 @@ class VideoExportPanel(param.Parameterized):
 
                     with _RENDER_LOCK:
                         composed = [
-                            [(tile.label, tile.render(var, level, t, cmap))
+                            [(tile.label, tile.render(var, level, t))
                              for tile in row]
                             for row in tiles
                         ]
@@ -496,16 +574,32 @@ class VideoExportPanel(param.Parameterized):
                     _compose(composed, header).save(tmpdir / f"frame_{t:05d}.png")
 
                     _ui(setattr, self._progress, "value",
-                        45 + int(45 * (t + 1) / total))
+                        render_base + int(render_span * (t + 1) / total))
                     _ui(setattr, self._status, "object", f"_Rendered {t + 1}/{total}_")
 
                 # --- pass 3: encode -------------------------------------------
                 _ui(setattr, self._status, "object", "_Encoding with ffmpeg\u2026_")
+
+                vf = []
+                if snap["resolution"] is not None:
+                    w, h = snap["resolution"]
+                    # The composited frame's own aspect ratio depends on the
+                    # current layout (panel count/rows) and rarely matches
+                    # the target's, so scale to fit within it and letterbox
+                    # the rest -- padded in the same white _BG _compose()
+                    # already uses, so the bars blend with the frame rather
+                    # than showing as a stark black border.
+                    vf.append(
+                        f"scale=w={w}:h={h}:force_original_aspect_ratio=decrease,"
+                        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=white"
+                    )
+                vf.append("format=yuv420p")   # broad player compatibility
+
                 cmd = [
                     exe, "-y",
                     "-framerate", f"{snap['rps']:g}",   # input rate = renderings/s
                     "-i", str(tmpdir / "frame_%05d.png"),
-                    "-vf", "format=yuv420p",            # broad player compatibility
+                    "-vf", ",".join(vf),
                     "-c:v", "libx264",
                     "-preset", "medium",
                     "-crf", "18",
@@ -523,7 +617,7 @@ class VideoExportPanel(param.Parameterized):
             _ui(setattr, self._status, "object",
                 f"**Done** \u2014 {total} renderings, {mb:.1f} MB\n\n`{out_path}`")
             _ui(self._download.param.update,
-                file=str(out_path), filename=out_path.name, visible=True)
+                file=str(out_path), filename=out_path.name, disabled=False)
 
         except Exception as exc:
             _ui(setattr, self._status, "object", f"**Export failed:** {exc}")
