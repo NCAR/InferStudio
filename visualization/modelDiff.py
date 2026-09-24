@@ -156,14 +156,30 @@ def compute_model_difference(model_a_dir, model_b_dir, cache_dir,
                         # Grids don't line up (e.g. AIFS's 721-point latitude
                         # grid vs Aurora's 720-point grid). Interpolate ONLY
                         # the specific dimensions that actually mismatch, by
-                        # name - NOT a blanket da_b.interp_like(da_a), which
-                        # tries to interpolate every matching coordinate
-                        # (including size-1 dims like "time"). Scipy's linear
+                        # name - NOT a blanket .interp_like(), which tries to
+                        # interpolate every matching coordinate (including
+                        # size-1 dims like "time"). Scipy's linear
                         # interpolator needs >=2 points to compute a slope; a
                         # size-1 axis hits an exact 0/0 division, and that
                         # single NaN then propagates through the ENTIRE array
                         # via broadcasting - silently turning a minor,
                         # legitimate lat-grid mismatch into 100% NaN output.
+                        #
+                        # The target grid is picked by NAME (alphabetically
+                        # first of model_a_name/model_b_name), not by
+                        # position (always "a"). Picking by position meant
+                        # compute_model_difference(Aurora, Pangu) regridded
+                        # onto Aurora's grid while the (Pangu, Aurora) call
+                        # regridded onto Pangu's grid - two independently
+                        # interpolated fields that only approximately
+                        # mirrored each other. Picking by name is the same
+                        # regardless of which one is passed as "a", so both
+                        # directions land on the identical target grid and
+                        # diff(A, B) == -diff(B, A) exactly, not just
+                        # approximately.
+                        a_is_target = model_a_name <= model_b_name
+                        target_da = da_a if a_is_target else da_b
+
                         lat_dim = _resolve_dim(da_a, *LAT_NAMES)
                         lon_dim = _resolve_dim(da_a, *LON_NAMES)
                         interp_kwargs = {}
@@ -178,9 +194,12 @@ def compute_model_difference(model_a_dir, model_b_dir, cache_dir,
                                         da_a[dim].values, da_b[dim].values)
                                 )
                             ):
-                                interp_kwargs[dim] = da_a[dim]
+                                interp_kwargs[dim] = target_da[dim]
                         if interp_kwargs:
-                            da_b = da_b.interp(**interp_kwargs)
+                            if a_is_target:
+                                da_b = da_b.interp(**interp_kwargs)
+                            else:
+                                da_a = da_a.interp(**interp_kwargs)
                     diff = da_a - da_b
                     diff.attrs = dict(da_a.attrs)
                     diff_vars[var] = diff

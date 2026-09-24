@@ -490,7 +490,12 @@ def build_app(data_dir):
         grid = PlotGrid(
             models=list(model_dirs),
             model_dirs=model_dirs,
-            diff_cache_dir=DIFF_CACHE_DIR,
+            # Scoped per suite (ds is the suite's own directory name) --
+            # otherwise a diff cached under "<A>_minus_<B>" for one suite
+            # gets silently reused for any other suite that happens to
+            # reuse the same model names, comparing two unrelated runs
+            # against each other.
+            diff_cache_dir=DIFF_CACHE_DIR / ds,
             state=grid_state,
         )
         # ntime already came out of the scan, so the forecast length is set
