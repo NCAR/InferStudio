@@ -285,6 +285,24 @@ def build_app(data_dir):
     browser = DatasetBrowser(datasets=datasets)
     meta_panel = DatasetMetadata(metadata=dataset_metadata)
 
+    # The Statistics tab gets its own dataset browser widget (a Panel
+    # component can't be embedded in two tabs' layouts at once), mirrored
+    # two-way with `browser` so dataset selection is genuinely shared
+    # between the Visualization and Statistics tabs rather than two
+    # independent selections.
+    stats_browser = DatasetBrowser(datasets=datasets)
+
+    def _mirror(dst, attr):
+        def _watcher(event):
+            if getattr(dst, attr) != event.new:
+                setattr(dst, attr, event.new)
+        return _watcher
+
+    browser.param.watch(_mirror(stats_browser, "checked_items"), "checked_items")
+    browser.param.watch(_mirror(stats_browser, "active_dataset"), "active_dataset")
+    stats_browser.param.watch(_mirror(browser, "checked_items"), "checked_items")
+    stats_browser.param.watch(_mirror(browser, "active_dataset"), "active_dataset")
+
     controls = SharedPlotControls()
     controls.update_choices(browser.checked_items, dataset_metadata)
 
@@ -361,6 +379,7 @@ def build_app(data_dir):
         try:
             meta_panel.metadata = dict(dataset_metadata)
             browser.add_datasets([key])
+            stats_browser.add_datasets([key])
             if browser.checked_items != [key]:
                 browser.checked_items = [key]
             browser.active_dataset = key
@@ -392,11 +411,16 @@ def build_app(data_dir):
     # produced in the current session), reusing the exact same
     # scan_simulation_suite/AIFS-Aurora-etc. scanning logic used for
     # freshly-completed inference runs above.
-    def _on_load_existing_suite(path_str):
+    def _scan_and_register_suite(path_str, dialog):
+        """Shared scan+register logic for a "Load Existing Suite" dialog on
+        either the Visualization or the Statistics tab. Both tabs' dataset
+        browsers mirror each other (see _mirror above), so registering the
+        new suite against `browser` here is enough for it to also appear,
+        selected, on whichever tab's dialog wasn't used."""
         sim_dir = Path(path_str)
 
         if not sim_dir.is_dir():
-            load_suite_dialog.report_error(f"{sim_dir} is not a directory.")
+            dialog.report_error(f"{sim_dir} is not a directory.")
             return
 
         key = sim_dir.name
@@ -412,7 +436,7 @@ def build_app(data_dir):
             # toasts have a fixed size and don't wrap/expand for long
             # text - putting the full path + exception text in the toast
             # was getting visually clipped.
-            load_suite_dialog.report_error(
+            dialog.report_error(
                 f"Could not load a simulation suite from {sim_dir}: {e}"
             )
             if pn.state.notifications:
@@ -428,16 +452,17 @@ def build_app(data_dir):
 
         meta_panel.metadata = dict(dataset_metadata)
         browser.add_datasets([key])
+        stats_browser.add_datasets([key])
         if browser.checked_items != [key]:
             browser.checked_items = [key]
         browser.active_dataset = key
-        load_suite_dialog.close()
+        dialog.close()
         if pn.state.notifications:
             pn.state.notifications.info(f"Loaded suite: {key}", duration=0)
 
     load_suite_dialog = LoadSuiteDialog(
         start_path=Path(f"/glade/derecho/scratch/{os.environ['USER']}"),
-        on_select=_on_load_existing_suite,
+        on_select=lambda path_str: _scan_and_register_suite(path_str, load_suite_dialog),
     )
     # Match the Datasets checkbox panel's width exactly: that panel is
     # sizing_mode="stretch_width" with margin=(0, 10, 0, 0) (a 10px right
@@ -446,6 +471,13 @@ def build_app(data_dir):
     # both stretch to the exact same effective width within the sidebar.
     load_suite_dialog.open_button.sizing_mode = "stretch_width"
     load_suite_dialog.open_button.margin = (10, 10, 0, 0)
+
+    stats_load_suite_dialog = LoadSuiteDialog(
+        start_path=Path(f"/glade/derecho/scratch/{os.environ['USER']}"),
+        on_select=lambda path_str: _scan_and_register_suite(path_str, stats_load_suite_dialog),
+    )
+    stats_load_suite_dialog.open_button.sizing_mode = "stretch_width"
+    stats_load_suite_dialog.open_button.margin = (10, 10, 0, 0)
 
     # Holds whatever is currently on screen - a PlotGrid for a simulation
     # suite, or a DatasetPlot2 for a flat single dataset. A dict rather than
@@ -507,33 +539,13 @@ def build_app(data_dir):
         return grid.card(title=ds)
 
     @pn.depends(browser.param.checked_items)
-    def stats_panel(datasets):
+    def stats_reactive(datasets):
         if not datasets:
-            return pn.pane.Markdown("")
+            return pn.pane.Markdown("### Select one or more datasets")
         ds = datasets[0]
-
-        # Collapsed by default now that the plot grid above is a single tall
-        # card. Both the ForecastStatsPanel construction and its .panel() are
-        # deferred to first expand: Bokeh plots built inside a collapsed
-        # container come out with zero width and height, since the container
-        # reports no size at render time - and deferring only .panel() would
-        # still pay the constructor's data loading up front.
-        card = pn.Card(
-            pn.pane.Markdown("_Expand to compute verification statistics._"),
-            title="Forecast Verification Statistics",
-            collapsed=True,
-            sizing_mode="stretch_width",
-        )
-
-        def _populate(event):
-            if not event.new and not getattr(card, "_populated", False):
-                card._populated = True
-                stats = ForecastStatsPanel(
-                    controls=controls, dataset_key=ds, metadata=dataset_metadata)
-                card.objects = [stats.panel()]
-
-        card.param.watch(_populate, "collapsed")
-        return card
+        stats = ForecastStatsPanel(
+            controls=controls, dataset_key=ds, metadata=dataset_metadata)
+        return stats.panel()
 
     # Export Video - sweeps the shared time index across the full forecast
     # and encodes the current rendering to MP4 with ffmpeg.
@@ -567,7 +579,6 @@ def build_app(data_dir):
     )
     main = pn.Column(
         pn.panel(plot_grid, sizing_mode="stretch_width"),
-        pn.panel(stats_panel, sizing_mode="stretch_width"),
         sizing_mode="stretch_width",
         css_classes=["main-content"],
         # height/overflow set here directly, not just via the .main-content
@@ -611,9 +622,30 @@ def build_app(data_dir):
         sizing_mode="stretch_width",
         styles={"height": "100%", "overflow-y": "auto"},
     )
+
+    statistics_sidebar = pn.Column(
+        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
+        stats_browser.panel,
+        stats_load_suite_dialog.open_button,
+        stats_load_suite_dialog.modal,
+        width=250,
+        styles={"height": "100%", "overflow-y": "auto"},
+    )
+    statistics_main = pn.Column(
+        pn.panel(stats_reactive, sizing_mode="stretch_width"),
+        sizing_mode="stretch_width",
+        css_classes=["main-content"],
+        styles={"height": "100%", "overflow-y": "auto"},
+    )
+    statistics = pn.Row(
+        statistics_sidebar, statistics_main, sizing_mode="stretch_width",
+        styles={"height": "100%", "overflow": "hidden"},
+    )
+
     tabs = pn.Tabs(
         ("Visualization", vis),
         ("Inference", inference),
+        ("Statistics", statistics),
         # stretch_width, not stretch_both - see the comment above. Height
         # comes from the .bk-tabs-content rule below instead.
         sizing_mode="stretch_width",

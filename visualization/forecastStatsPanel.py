@@ -210,6 +210,11 @@ class ForecastStatsPanel(param.Parameterized):
         )
         self.plot_pane = pn.pane.Matplotlib(sizing_mode="stretch_width", tight=True)
 
+        # Populated on a successful compute, below.
+        self.results = None
+        self.last_var_name = None
+        self.last_level = None
+
     def _on_compute_click(self, event):
         self.compute_button.disabled = True
         self.spinner.value = True
@@ -280,6 +285,10 @@ class ForecastStatsPanel(param.Parameterized):
 
                 self.plot_pane.object = fig
                 plt.close(fig)
+
+                self.results = results
+                self.last_var_name = var_name
+                self.last_level = level_value
 
                 msg = f"Computed stats for: {', '.join(results.keys())}."
                 if errors:
