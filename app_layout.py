@@ -591,7 +591,10 @@ def build_app(data_dir):
         # `styles=` instead sets a genuine inline style on this element's
         # own node, immune to that boundary - same fix already applied to
         # vis/inference/sidebar/tabs above.
-        styles={"height": "100%", "overflow-y": "auto"},
+        #
+        # overflow-x too: the plot grid is fixed-size (see PlotGrid), so a
+        # narrow window scrolls it sideways here instead of clipping it.
+        styles={"height": "100%", "overflow-y": "auto", "overflow-x": "auto"},
     )
     # height:100% here, NOT 100vh - and sizing_mode="stretch_width" NOT
     # stretch_both/stretch_height. That second part matters as much as the

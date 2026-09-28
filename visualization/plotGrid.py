@@ -26,8 +26,8 @@ objects server-side, and CustomJS callbacks client-side - both failed, so
 the partial linking stands for now. See the standalone repro script if
 picking this up again.
 
-Panels are RESPONSIVE: they fill whatever width the browser window gives
-them, at a fixed 2:1 aspect.
+Panels are FIXED-SIZE (see PANEL_FRAME_WIDTH): a narrow browser window
+scrolls the grid horizontally rather than shrinking the maps.
 
 Instead of Bokeh's per-panel hover tooltip, a single readout above the grid
 reports every model's value at the cursor position simultaneously - which is
@@ -79,15 +79,21 @@ hv.extension("bokeh")
 
 # Panel geometry.
 #
-# Panels are responsive rather than fixed-size: width comes from the browser
-# window, height follows from ASPECT.
+# Panels are fixed-size rather than responsive. Responsive panels shrank to
+# whatever width the window left over after the sidebar, which made the maps
+# tiny and - because Bokeh sizes the colorbar and axis labels OUTSIDE the
+# responsive box - clipped the colorbar annotations and the right-hand
+# column. Fixed frames keep the maps legible; the main area scrolls
+# horizontally (see app_layout's `main`) when they don't fit.
 #
-# ASPECT is `aspect`, NOT `data_aspect`. data_aspect constrains the axis
-# RANGES to preserve a ratio, which fights zooming into any region that
-# isn't 2:1; aspect constrains the plot's rendered shape and leaves the
-# ranges alone.
+# frame_width/frame_height size the data area only, so the colorbar, its
+# label and the axes are added around it at their natural size and are
+# never squeezed. The 2:1 ratio matches GLOBAL_EXTENT. This sets the
+# plot's rendered shape, not data_aspect, which would constrain the axis
+# RANGES and fight zooming into any region that isn't 2:1.
 ASPECT = 2.0
-MIN_PANEL_WIDTH = 340
+PANEL_FRAME_WIDTH = 560
+PANEL_FRAME_HEIGHT = int(PANEL_FRAME_WIDTH / ASPECT)
 COLORBAR_WIDTH = 12
 
 DEFAULT_CMAP = "viridis"
@@ -354,16 +360,15 @@ class PlotGrid(param.Parameterized):
 
     # -- element construction ------------------------------------------
 
-    def _responsive_opts(self):
+    def _sizing_opts(self):
         """Sizing opts shared by real and placeholder panels.
 
-        responsive=True and frame_width are mutually exclusive in Bokeh, so
-        this is an either/or with a fixed-frame approach, not an addition.
+        Fixed frame, not responsive=True: the two are mutually exclusive in
+        Bokeh. See PANEL_FRAME_WIDTH for why fixed won.
         """
         return dict(
-            responsive=True,
-            aspect=ASPECT,
-            min_width=MIN_PANEL_WIDTH,
+            frame_width=PANEL_FRAME_WIDTH,
+            frame_height=PANEL_FRAME_HEIGHT,
         )
 
     def _panel_opts(self, title, cmap):
@@ -405,7 +410,7 @@ class PlotGrid(param.Parameterized):
             shared_axes=True,
             xlabel="longitude",
             ylabel="latitude",
-            **self._responsive_opts(),
+            **self._sizing_opts(),
         )
 
     def _element(self, da, meta, title, cmap=DEFAULT_CMAP):
@@ -749,13 +754,13 @@ class PlotGrid(param.Parameterized):
         # shared_axes is what links the panels. It links them PAIRWISE, not
         # all-to-all - see the module docstring.
         #
-        # sizing_mode is the third of three places responsive sizing has to
-        # be declared: hv.Layout renders as a Bokeh gridplot, and a gridplot
-        # does not propagate responsive sizing to its children on its own.
+        # No sizing_mode: the panels are fixed-size, so the gridplot takes
+        # its natural width from them. stretch_width here would clamp it to
+        # the window again and reintroduce the clipping PANEL_FRAME_WIDTH
+        # exists to avoid.
         self._layout = hv.Layout(panels).cols(2).opts(
             shared_axes=True,
             toolbar=None,
-            sizing_mode="stretch_width",
         )
         return self._layout
 
@@ -778,11 +783,9 @@ class PlotGrid(param.Parameterized):
             # Reserves the readout's rows so the plots below don't shift
             # down the first time the cursor enters a panel.
             min_height=64,
-            sizing_mode="stretch_width",
         )
 
-        self._hv_pane = pn.pane.HoloViews(
-            self.layout(), sizing_mode="stretch_width")
+        self._hv_pane = pn.pane.HoloViews(self.layout())
         self._busy_pane = self._busy_overlay()
 
         # The small tinted placeholder cell (_placeholder(computing=True))
@@ -793,9 +796,10 @@ class PlotGrid(param.Parameterized):
         # harder to miss - a full-suite difference can take a minute, so
         # something has to fill that time obviously.
         busy = any(s == "computing" for s in self.state.diff_status.values())
+        # fixed, not stretch_width - see card().
         self._plot_area = pn.Column(
             self._busy_pane if busy else self._hv_pane,
-            sizing_mode="stretch_width",
+            sizing_mode="fixed",
         )
 
         def _toggle_busy(event):
@@ -808,7 +812,7 @@ class PlotGrid(param.Parameterized):
         return pn.Column(
             readout,
             self._plot_area,
-            sizing_mode="stretch_width",
+            sizing_mode="fixed",
         )
 
     def _busy_overlay(self):
@@ -831,12 +835,30 @@ class PlotGrid(param.Parameterized):
                 pn.layout.HSpacer(),
             ),
             pn.layout.VSpacer(),
-            sizing_mode="stretch_width",
+            # Fixed at roughly the grid's own footprint so the card doesn't
+            # collapse to spinner width while a difference computes.
+            width=2 * PANEL_FRAME_WIDTH + 300,
+            # Explicit, or Panel infers stretch_width from the spacers and
+            # drops the width.
+            sizing_mode="fixed",
             min_height=420,
         )
 
     def card(self, title="Forecast fields", **kwargs):
-        opts = dict(collapsible=False, sizing_mode="stretch_width")
+        # Sized to its content, not stretched to the window: the grid inside
+        # is fixed-size, and a window-width card squeezes the gridplot's CSS
+        # grid columns below the figures' width, clipping each map and its
+        # colorbar inside its cell. That means sizing_mode="fixed" here AND
+        # on every layout between this and the grid (see panel()) - Panel
+        # infers stretch_width on a parent from any stretch_width child, so
+        # one stretched descendant is enough to undo it. min-width keeps the
+        # card filling the main area when the grid is the narrower of the two.
+        #
+        # width:max-content is what actually sizes it. sizing_mode="fixed"
+        # with no width leaves the width to the browser, and Chrome (unlike
+        # Firefox) resolves that to the container's width, not the grid's.
+        opts = dict(collapsible=False, sizing_mode="fixed",
+                    styles={"width": "max-content", "min-width": "100%"})
         opts.update(kwargs)
         return pn.Card(self.panel(), title=title, **opts)
 
