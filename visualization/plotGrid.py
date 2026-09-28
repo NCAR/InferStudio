@@ -14,7 +14,10 @@ Layout is (model, model-minus-other) per row:
     +----------------+  +--------------------------+
 
 Navigation: scroll to zoom (over the map - scrolling over an axis does not
-zoom that axis alone), drag to pan, double-click to reset. All three
+zoom that axis alone), drag to pan, double-click to reset. Dragging a value
+on a colorbar rescales that column's colour range - see
+_COLORBAR_DRAG_JS - and double-clicking a colorbar resets that range, where
+double-clicking the map resets only the zoom. The first three
 are permanently on and there is no toolbar to switch them off - the tools
 are declared in _panel_opts and the toolbar is suppressed in layout(), two
 different places for the reason the comment in layout() explains.
@@ -64,7 +67,9 @@ import param
 import panel as pn
 import holoviews as hv
 from holoviews.operation.datashader import rasterize
-from bokeh.models import CustomJS, WheelZoomTool
+from bokeh.models import (
+    ColumnDataSource, CustomJS, CustomJSTickFormatter, FixedTicker,
+    WheelZoomTool)
 
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, CANON_LAT, CANON_LON)
@@ -148,7 +153,11 @@ if (range.start !== start) { range.start = start }
 if (range.end !== end) { range.end = end }
 """
 
-# Double-click reset. Bokeh's ResetTool only fires from its toolbar button,
+# Double-click reset of the map view. Only a double-click ON the map counts:
+# a double-click on a colorbar resets that column's colour range instead
+# (see _COLORBAR_DRAG_JS), and must not also throw away the zoom.
+#
+# Bokeh's ResetTool only fires from its toolbar button,
 # and the toolbar is suppressed (see layout()), so double-click has to be
 # wired up by hand. Resets EVERY panel, not just the clicked one - see
 # _wire_dblclick_reset.
@@ -164,6 +173,8 @@ if (range.end !== end) { range.end = end }
 # hold the very figures it's attached to is a circular reference Bokeh
 # refuses to serialize.
 _RESET_JS = """
+const origin_view = Bokeh.index.find_one(cb_obj.origin)
+if (origin_view == null || !origin_view.frame.bbox.contains(cb_obj.sx, cb_obj.sy)) { return }
 for (const m of cb_obj.origin.document.all_models) {
   const cbs = (m.js_event_callbacks || {}).doubletap || []
   if (!cbs.some(c => c.args && c.args.token === token)) { continue }
@@ -171,6 +182,245 @@ for (const m of cb_obj.origin.document.all_models) {
   if (view != null) { view.reset() }
 }
 """
+
+# Colorbar tick layout - see _colorbar_ticks. The colorbar's ends are
+# always ticked, so the exact min/max are readable, plus TICK_BAND "nice"
+# interior ticks. Interior ticks closer than END_TICK_CLEARANCE (as a
+# fraction of the range) to an end are dropped so their labels don't
+# overlap the end labels.
+#
+# The step is whichever candidate lands the interior count inside
+# TICK_BAND, roundest first (TICK_MANTISSAS is in order of preference).
+# A plain 1/2/5 ladder can't do that: as a drag stretches the range it
+# swings between 2 and 6 interior ticks, jumping by up to 3 in one mouse
+# move where the step flips. The in-between steps (2.5, 4, 3, 1.5, 6, 8)
+# are what hold the count to the band. Simulated over 20k random ranges
+# the count stays within the band in all but ~0.6% (one tick over), and a
+# continuous drag never changes it by more than one tick at a time.
+TICK_BAND = (4, 5)
+TICK_MANTISSAS = (1, 2, 5, 2.5, 4, 3, 1.5, 6, 8)
+END_TICK_CLEARANCE = 0.07
+
+# JS twin of _colorbar_ticks, used to re-tick while a drag is in progress.
+# Keep the two in step.
+_TICKS_JS = """
+function endTicks(lo, hi) {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) { return [] }
+  const [b0, b1] = %s
+  const mantissas = %s
+  const clear = %r * (hi - lo)
+  const e = Math.floor(Math.log10(hi - lo))
+  let best = null
+  for (let k = e - 2; k <= e; k++) {
+    mantissas.forEach((m, rank) => {
+      const step = m * Math.pow(10, k)
+      const inner = []
+      for (let j = Math.ceil(lo / step); j * step <= hi; j++) {
+        const t = j * step
+        if (t - lo > clear && hi - t > clear) { inner.push(t) }
+      }
+      const n = inner.length
+      const d = n < b0 ? b0 - n : n > b1 ? n - b1 : 0
+      if (best == null || d < best.d || (d === best.d && (rank < best.rank ||
+          (rank === best.rank && k > best.k)))) {
+        best = {d, rank, k, inner}
+      }
+    })
+  }
+  return [lo, ...best.inner, hi]
+}
+""" % (list(TICK_BAND), list(TICK_MANTISSAS), END_TICK_CLEARANCE)
+
+# Tick labels: interior ticks get as many decimals as their spacing needs.
+# The end ticks (arbitrary values like 222.339996) get one more, and at
+# least two significant digits so a small end like -0.000074 doesn't round
+# to a misleading -0.0001 - capped at three extra so a near-zero end can't
+# grow a long string of decimals. Bokeh's default would instead format
+# every label to the precision of the least-round one.
+_TICK_FORMAT_JS = """
+const n = ticks.length
+const step = n >= 4 ? Math.abs(ticks[2] - ticks[1]) : Math.abs(ticks[n - 1] - ticks[0])
+const end = index === 0 || index === n - 1
+if (!(step > 0)) { return tick.toPrecision(4) }
+if (Math.abs(tick) < step * 1e-9) { return "0" }
+if (step < 1e-4 || Math.abs(tick) >= 1e6) { return tick.toExponential(end ? 2 : 1) }
+let dec = Math.max(0, -Math.floor(Math.log10(step) + 1e-9))
+// A 2.5 or 1.5 step needs a decimal more than its magnitude suggests.
+while (dec < 12 && Math.abs(step * 10 ** dec - Math.round(step * 10 ** dec)) > 1e-6) { dec++ }
+if (end) {
+  const sig = tick === 0 ? 0 : 1 - Math.floor(Math.log10(Math.abs(tick)))
+  dec = Math.min(Math.max(dec + 1, sig), dec + 3)
+}
+return tick.toFixed(dec)
+"""
+
+# Colorbar drag-to-rescale and cursor feedback - see _wire_colorbar_drag.
+#
+# Grab a value on the bar and drag it: grabbed in the upper half, the
+# bottom end stays put and the top stretches so the grabbed value stays
+# under the cursor (drag 250 up to the top and the range becomes lo..250);
+# lower half is the mirror image. Values outside the new range saturate at
+# the end colours, which is Bokeh's LinearColorMapper default.
+#
+# Runs entirely in the browser while dragging, updating the colour mapper
+# and ticks of every colorbar in the same column (tagged with `token`) so
+# the column rescales together without a server round trip per mouse move.
+# On release it writes the final range to `commit`, a ColumnDataSource used
+# purely as a browser -> Python channel - see _on_colorbar_commit. Its `n`
+# column is a nonce, so repeating an identical message still registers as
+# a change. Double-clicking a colorbar sends a "reset" the same way. (A custom
+# Bokeh DataModel would read better, but BokehJS can't resolve one that
+# first appears in a document after the page has loaded.)
+#
+# f is clamped away from 0 so dragging the grabbed value right down to the
+# fixed end can't divide by zero or flip the range. The release commits the
+# range from the last drag move, not from the release event's own position:
+# BokehJS can emit a stray panend carrying a bogus position (seen right
+# after a synthetic double-click), which would otherwise commit a wrong
+# range.
+#
+# Cursor: ns-resize over and while dragging the colorbar, grab over the map,
+# grabbing while panning it, and zoom-in/zoom-out briefly on a wheel zoom.
+# Bokeh itself only shows a cursor for the active *move* tool, which here is
+# none. It resets the cursor on every mouse move before emitting the
+# figure's MouseMove event, so setting it from that event sticks.
+_COLORBAR_DRAG_JS = _TICKS_JS + """
+const fig = cb_obj.origin
+const pv = Bokeh.index.find_one(fig)
+if (pv == null) { return }
+const st = pv.__cbar_drag || (pv.__cbar_drag = {active: false, panning: false})
+const ev = cb_obj.event_name
+const sx = cb_obj.sx
+const sy = cb_obj.sy
+const setCursor = c => pv.canvas_view.ui_event_bus.set_cursor(c)
+
+function barAt(sx, sy) {
+  const panels = [...fig.left, ...fig.right, ...fig.above, ...fig.below, ...fig.center]
+  const cbar = panels.find(m => (m.tags || []).includes(token))
+  if (cbar == null || cbar.orientation === "horizontal") { return null }
+  const cbv = Bokeh.index.find_one(cbar)
+  if (cbv == null || cbv._inner_layout == null) { return null }
+  const lo = cbar.color_mapper.low
+  const hi = cbar.color_mapper.high
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) { return null }
+  const bar = cbv._inner_layout.center_panel.bbox
+  if (!cbv._inner_layout.bbox.contains(sx, sy)) { return null }
+  if (sy < bar.top - 6 || sy > bar.bottom + 6) { return null }
+  return {lo, hi, bar}
+}
+function hoverCursor() {
+  if (barAt(sx, sy) != null) { return "ns-resize" }
+  if (pv.frame.bbox.contains(sx, sy)) { return "grab" }
+  return null
+}
+
+if (ev === "mousemove") {
+  setCursor(st.active ? "ns-resize" : st.panning ? "grabbing" : hoverCursor())
+  return
+}
+if (ev === "doubletap") {
+  if (barAt(sx, sy) != null) {
+    commit.data = {kind: [kind], action: ["reset"], low: [0], high: [0], n: [Date.now()]}
+  }
+  return
+}
+if (ev === "wheel") {
+  if (!pv.frame.bbox.contains(sx, sy)) { return }
+  setCursor(cb_obj.delta > 0 ? "zoom-in" : "zoom-out")
+  clearTimeout(st.wheel_timer)
+  st.wheel_timer = setTimeout(() => setCursor(hoverCursor()), 300)
+  return
+}
+if (ev === "panstart") {
+  st.active = false
+  st.panning = false
+  const hit = barAt(sx, sy)
+  if (hit == null) {
+    if (pv.frame.bbox.contains(sx, sy)) {
+      st.panning = true
+      setCursor("grabbing")
+    }
+    return
+  }
+  const {lo, hi, bar} = hit
+  const f0 = Math.min(Math.max((bar.bottom - sy) / bar.height, 0), 1)
+  const peers = []
+  for (const m of fig.document.all_models) {
+    if ((m.tags || []).includes(token) && m.color_mapper != null) { peers.push(m) }
+  }
+  Object.assign(st, {active: true, lo, hi, bottom: bar.bottom,
+    height: bar.height, v: lo + f0 * (hi - lo), upper: f0 >= 0.5, peers,
+    last: [lo, hi]})
+  setCursor("ns-resize")
+  return
+}
+if (st.panning) {
+  if (ev === "panend") {
+    st.panning = false
+    setCursor(hoverCursor())
+  } else {
+    setCursor("grabbing")
+  }
+  return
+}
+if (!st.active) { return }
+
+if (ev === "panend") {
+  st.active = false
+  commit.data = {kind: [kind], action: ["set"], low: [st.last[0]],
+    high: [st.last[1]], n: [Date.now()]}
+  setCursor(hoverCursor())
+  return
+}
+
+const f = (st.bottom - sy) / st.height
+let lo = st.lo
+let hi = st.hi
+if (st.upper) {
+  hi = st.lo + (st.v - st.lo) / Math.min(Math.max(f, 0.05), 20)
+} else {
+  lo = st.hi - (st.hi - st.v) / Math.min(Math.max(1 - f, 0.05), 20)
+}
+const ticks = endTicks(lo, hi)
+for (const cb of st.peers) {
+  cb.color_mapper.setv({low: lo, high: hi})
+  if (cb.ticker != null && cb.ticker.constructor.__name__ === "FixedTicker") {
+    cb.ticker.ticks = ticks
+  }
+}
+st.last = [lo, hi]
+setCursor("ns-resize")
+"""
+
+
+def _colorbar_ticks(lo, hi):
+    """Tick positions for a colorbar spanning lo..hi: both ends, plus the
+    interior ticks chosen as described at TICK_BAND. Python twin of
+    _TICKS_JS - keep the two in step."""
+    try:
+        lo, hi = float(lo), float(hi)
+    except (TypeError, ValueError):
+        return []
+    if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+        return []
+    b0, b1 = TICK_BAND
+    clear = END_TICK_CLEARANCE * (hi - lo)
+    e = int(np.floor(np.log10(hi - lo)))
+    best = None
+    for k in range(e - 2, e + 1):
+        for rank, m in enumerate(TICK_MANTISSAS):
+            step = m * 10.0 ** k
+            inner = [float(j * step)
+                     for j in range(int(np.ceil(lo / step)),
+                                    int(np.floor(hi / step)) + 1)]
+            inner = [t for t in inner if t - lo > clear and hi - t > clear]
+            n = len(inner)
+            d = b0 - n if n < b0 else n - b1 if n > b1 else 0
+            key = (d, rank, -k)
+            if best is None or key < best[0]:
+                best = (key, inner)
+    return [lo, *best[1], hi]
+
 
 # Value-dimension name for placeholder panels, so _sync_colorbar_title can
 # tell them apart from real fields - a real field can't be told apart by
@@ -356,6 +606,27 @@ class PlotGrid(param.Parameterized):
             args=dict(token=f"plotgrid-{id(self)}"), code=_RESET_JS)
         self._reset_figs = set()
 
+        # Colorbar drag: one CustomJS per column kind ("field"/"diff"),
+        # each with its own token so dragging one column's colorbar never
+        # rescales the other. Both report back through the same commit
+        # model - see _wire_colorbar_drag.
+        self._cbar_commit = ColumnDataSource(
+            data=dict(kind=[], action=[], low=[], high=[], n=[]))
+        self._cbar_commit.on_change("data", self._on_colorbar_commit)
+        self._cbar_drag_customjs = {
+            kind: CustomJS(
+                args=dict(token=self._cbar_token(kind), kind=kind,
+                          commit=self._cbar_commit),
+                code=_COLORBAR_DRAG_JS)
+            for kind in ("field", "diff")
+        }
+        self._cbar_drag_figs = set()
+
+        # kind -> (key, clim) for the last automatically computed range, so
+        # a colorbar double-click can restore it without re-reading data -
+        # see _reset_clim.
+        self._auto_clims = {}
+
         self._field_stream = hv.streams.Params(self.state, _FIELD_PARAMS)
         self._diff_stream = hv.streams.Params(self.state, _DIFF_PARAMS)
         self._layout = None
@@ -427,6 +698,7 @@ class PlotGrid(param.Parameterized):
             self._fields.clear()
         self._zoom_customjs.clear()
         self._reset_figs.clear()
+        self._cbar_drag_figs.clear()
         self._layout = None
         self._hv_pane = None
         self._busy_pane = None
@@ -532,6 +804,106 @@ class PlotGrid(param.Parameterized):
             fig.js_on_event("doubletap", self._reset_customjs)
             self._reset_figs.add(id(fig))
 
+    def _cbar_token(self, kind):
+        return f"plotgrid-{id(self)}-cbar-{kind}"
+
+    def _wire_colorbar_drag(self, kind, plot, element):
+        """Bokeh hook (see _panel_opts): drag a value on the colorbar to
+        rescale that column's colour range. See _COLORBAR_DRAG_JS.
+
+        The colorbar is tagged with its column's token, which is how the
+        JS finds the colorbar under the cursor and every peer that has to
+        rescale with it. Re-tagged on every call in case HoloViews rebuilt
+        the colorbar; the drag callback itself is attached once per figure.
+        """
+        colorbar = plot.handles.get("colorbar")
+        if colorbar is None:
+            return
+        token = self._cbar_token(kind)
+        if token not in colorbar.tags:
+            colorbar.tags = [*colorbar.tags, token]
+        fig = plot.state
+        if id(fig) not in self._cbar_drag_figs:
+            for event in ("panstart", "pan", "panend", "mousemove", "wheel",
+                          "doubletap"):
+                fig.js_on_event(event, self._cbar_drag_customjs[kind])
+            self._cbar_drag_figs.add(id(fig))
+
+    def _tick_colorbar_ends(self, plot, element):
+        """Bokeh hook (see _panel_opts): tick the colorbar's exact min and
+        max as well as the usual round values. See _colorbar_ticks.
+
+        Recomputed on every render, since the range changes with the
+        variable, the sidebar or a colorbar drag; during a drag the JS
+        re-ticks in step (_COLORBAR_DRAG_JS). The ticker and formatter are
+        swapped in once per colorbar and only their ticks updated after.
+        """
+        colorbar = plot.handles.get("colorbar")
+        if colorbar is None:
+            return
+        cm = colorbar.color_mapper
+        ticks = _colorbar_ticks(cm.low, cm.high)
+        if not isinstance(colorbar.ticker, FixedTicker):
+            colorbar.ticker = FixedTicker(ticks=ticks, minor_ticks=[])
+            colorbar.formatter = CustomJSTickFormatter(code=_TICK_FORMAT_JS)
+        elif list(colorbar.ticker.ticks) != ticks:
+            colorbar.ticker.ticks = ticks
+
+    def _on_colorbar_commit(self, attr, old, new):
+        """A colorbar drag finished, or a colorbar was double-clicked.
+
+        A drag ("set") makes its range the column's clim. Writing the clim
+        param, rather than leaving the browser-side mapper change in place,
+        is what makes the range survive re-renders and time-slider ticks,
+        and lets app_layout reflect it into the sidebar. A double-click
+        ("reset") puts back the automatic range - see _reset_clim. The next
+        variable/level change recomputes it either way.
+        """
+        if self._torn_down:
+            return
+        try:
+            kind, action = new["kind"][0], new["action"][0]
+            lo, hi = float(new["low"][0]), float(new["high"][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        if action == "reset":
+            self._reset_clim(kind)
+            return
+        if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+            return
+        name = "diff_clim" if kind == "diff" else "field_clim"
+        setattr(self.state, name, (lo, hi))
+
+    def _field_clim_key(self):
+        return (self.state.variable, self.state.level)
+
+    def _diff_clim_key(self):
+        return (self.state.variable, self.state.level,
+                tuple(sorted(self.state.diff_pairs.items())))
+
+    def _reset_clim(self, kind):
+        """Put a column's automatic colour range back after a colorbar drag.
+
+        Uses the range the last refresh computed when it's still for the
+        variable/level (and, for differences, pairs) on screen, so the reset
+        is immediate; otherwise recomputes it in the background as a
+        variable change would. An explicit sidebar Min/Max still wins for
+        the field column, as it does in _refresh_field_clim.
+        """
+        if kind == "diff":
+            cached = self._auto_clims.get("diff")
+            if cached is not None and cached[0] == self._diff_clim_key():
+                self.state.diff_clim = cached[1]
+            else:
+                self.refresh_diff_clim_async()
+            return
+        explicit = self.state.cmap_min != 0.0 or self.state.cmap_max != 0.0
+        cached = self._auto_clims.get("field")
+        if not explicit and cached is not None and cached[0] == self._field_clim_key():
+            self.state.field_clim = cached[1]
+        else:
+            self.refresh_field_clim_async()
+
     def _sync_colorbar_title(self, plot, element):
         """Bokeh hook (see _panel_opts): keep the colorbar label in step with
         the variable on screen.
@@ -550,7 +922,7 @@ class PlotGrid(param.Parameterized):
         if colorbar.title != title:
             colorbar.title = title
 
-    def _panel_opts(self, title, cmap):
+    def _panel_opts(self, title, cmap, kind):
         """Every option that defines a panel's STRUCTURE.
 
         _element and _placeholder must both go through here, and the result
@@ -574,6 +946,10 @@ class PlotGrid(param.Parameterized):
         Note there is no `toolbar` key: toolbar is a Layout-level option in
         HoloViews. Setting it on an element does not suppress the strip and
         does interfere with tool activation. See layout().
+
+        `kind` ("field" or "diff") says which column the panel belongs to,
+        so a colorbar drag rescales only that column - see
+        _wire_colorbar_drag.
         """
         return dict(
             title=title,
@@ -591,11 +967,12 @@ class PlotGrid(param.Parameterized):
             ylabel="latitude",
             hooks=[self._clamp_zoom_pan, self._disable_axis_zoom,
                    self._wire_dblclick_reset,
-                   self._sync_colorbar_title],
+                   self._sync_colorbar_title, self._tick_colorbar_ends,
+                   partial(self._wire_colorbar_drag, kind)],
             **self._sizing_opts(),
         )
 
-    def _element(self, da, meta, title, cmap=DEFAULT_CMAP):
+    def _element(self, da, meta, title, cmap=DEFAULT_CMAP, kind="field"):
         """Wrap a loaded field as the appropriate HoloViews element.
 
         The field panels' colormap comes from the .apply.opts() chain in
@@ -621,9 +998,9 @@ class PlotGrid(param.Parameterized):
         cls = hv.Image if meta.regular_grid else hv.QuadMesh
 
         return cls(da, kdims=[meta.lon_dim, meta.lat_dim]).opts(
-            **self._panel_opts(title, cmap))
+            **self._panel_opts(title, cmap, kind))
 
-    def _placeholder(self, title, computing=False):
+    def _placeholder(self, title, computing=False, kind="field"):
         """Blank panel that preserves grid geometry, axis ranges, and plot
         structure - see _panel_opts on why the third of those matters.
 
@@ -648,7 +1025,7 @@ class PlotGrid(param.Parameterized):
         """
         left, bottom, right, top = self._last_extent
         cmap = COMPUTING_CMAP if computing else PLACEHOLDER_CMAP
-        opts = self._panel_opts(title, cmap)
+        opts = self._panel_opts(title, cmap, kind)
         if computing:
             opts["title"] = f"\u27f3  {title}"
             opts["fontsize"] = {"title": "13pt"}
@@ -693,20 +1070,23 @@ class PlotGrid(param.Parameterized):
 
     def _diff_cb(self, model, **_):
         if self._torn_down:
-            return self._placeholder(model)
+            return self._placeholder(model, kind="diff")
 
         other = self.state.diff_pairs.get(model)
         if not other:
             with self._fields_lock:
                 self._fields.pop(("diff", model), None)
-            return self._placeholder(f"{model} - no difference selected")
+            return self._placeholder(f"{model} - no difference selected",
+                                     kind="diff")
 
         status = self.state.diff_status.get(model, "")
         if status == "computing":
             return self._placeholder(
-                f"{model} minus {other} - computing", computing=True)
+                f"{model} minus {other} - computing", computing=True,
+                kind="diff")
         if status.startswith("error"):
-            return self._placeholder(f"{model} minus {other} - {status}")
+            return self._placeholder(f"{model} minus {other} - {status}",
+                                     kind="diff")
 
         try:
             da, meta = load_diff_field(
@@ -724,13 +1104,14 @@ class PlotGrid(param.Parameterized):
             with self._fields_lock:
                 self._fields.pop(("diff", model), None)
             return self._placeholder(
-                f"{model} minus {other} - {type(exc).__name__}: {exc}")
+                f"{model} minus {other} - {type(exc).__name__}: {exc}",
+                kind="diff")
 
         with self._fields_lock:
             self._fields[("diff", model)] = (da, meta)
 
         return self._element(da, meta, title=f"{model} minus {other}",
-                             cmap=DIFF_CMAP)
+                             cmap=DIFF_CMAP, kind="diff")
 
     # -- cursor readout --------------------------------------------------
 
@@ -859,8 +1240,17 @@ class PlotGrid(param.Parameterized):
             "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
             ".readout-time{font-size:13px;font-weight:600;white-space:nowrap;"
             "font-variant-numeric:tabular-nums;}"
-            ".readout-hint{font-size:11px;color:#666;white-space:nowrap;"
-            "align-self:flex-end;}"
+            # Three rows - title, map, colorbar - so it sits beside the
+            # three-row readout without making the header any taller. The
+            # line-height matches the readout's row pitch so the rows line
+            # up, and text-align is explicit for the same reason as .rl.
+            ".readout-hint{display:grid;grid-template-columns:max-content "
+            "max-content;column-gap:8px;row-gap:1px;font-size:11px;"
+            "line-height:18.5px;color:#666;white-space:nowrap;"
+            "text-align:left;}"
+            ".readout-hint .hint-title{grid-column:1/3;font-weight:600;"
+            "color:#444;}"
+            ".readout-hint .hint-label{font-weight:600;}"
             ".readout-banner{font-size:12px;padding:5px 10px;"
             "border-radius:4px;margin-bottom:6px;width:max-content;}"
             ".readout-busy{background:#fff3cd;border:1px solid #ffc107;}"
@@ -873,8 +1263,14 @@ class PlotGrid(param.Parameterized):
             "<div class='readout-wrap'>"
             f"<div class='readout-time'>{stamp}</div>"
             f"<div class='readout'>{''.join(cells)}</div>"
-            "<div class='readout-hint'>scroll to zoom &middot; "
-            "drag to pan &middot; double-click to reset</div>"
+            "<div class='readout-hint'>"
+            "<div class='hint-title'>Mouse Controls</div>"
+            "<div class='hint-label'>Map:</div>"
+            "<div>scroll to zoom &middot; drag to pan &middot; "
+            "double-click to reset</div>"
+            "<div class='hint-label'>Colorbar:</div>"
+            "<div>drag to rescale &middot; double-click to reset</div>"
+            "</div>"
             "</div>"
         )
 
@@ -1167,6 +1563,7 @@ class PlotGrid(param.Parameterized):
                               (self.state.cmap_min, self.state.cmap_max)))
             return
 
+        key = self._field_clim_key()
         lo, hi = np.inf, -np.inf
         for model in self.models:
             try:
@@ -1178,12 +1575,14 @@ class PlotGrid(param.Parameterized):
             lo, hi = min(lo, a), max(hi, b)
 
         if np.isfinite(lo) and np.isfinite(hi) and not self._torn_down:
+            self._auto_clims["field"] = (key, (lo, hi))
             _schedule(partial(setattr, self.state, "field_clim", (lo, hi)))
 
     def _refresh_diff_clim(self, sample_steps=3):
         if self._torn_down:
             return
 
+        key = self._diff_clim_key()
         m = 0.0
         for a, b in self.state.diff_pairs.items():
             if not b or not self._diff_exists(a, b):
@@ -1204,6 +1603,8 @@ class PlotGrid(param.Parameterized):
         # at zero. With an asymmetric range an unbiased field reads as
         # biased, which is actively misleading on a difference plot.
         clim = (-m, m) if m > 0 else CLIM_UNSET
+        if m > 0:
+            self._auto_clims["diff"] = (key, clim)
         if not self._torn_down:
             _schedule(partial(setattr, self.state, "diff_clim", clim))
 
@@ -1211,6 +1612,11 @@ class PlotGrid(param.Parameterized):
         threading.Thread(
             target=self.refresh_clims, args=(sample_steps,),
             daemon=True, name="clim-refresh").start()
+
+    def refresh_field_clim_async(self, sample_steps=3):
+        threading.Thread(
+            target=self._refresh_field_clim, args=(sample_steps,),
+            daemon=True, name="field-clim-refresh").start()
 
     def refresh_diff_clim_async(self, sample_steps=3):
         threading.Thread(

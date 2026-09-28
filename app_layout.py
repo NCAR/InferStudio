@@ -314,21 +314,20 @@ def build_app(data_dir):
     link_controls(controls, grid_state)
 
     def _reflect_field_clim(event):
-        """Push the suite grid's auto-computed colour range back onto the
-        sidebar's Min/Max boxes.
+        """Push the suite grid's colour range back onto the sidebar's
+        Min/Max boxes.
 
         link_controls only wires controls -> state, so PlotGrid's own
         auto-scaling (refresh_clims, run when the variable/level/dataset
-        changes) never reaches the boxes the other direction - they'd sit
-        at their initial 0.0 forever regardless of what the grid is
-        actually plotting. Skipped once the user has typed an explicit
-        value: controls.cmap_min/cmap_max are None until then (see
-        SharedPlotControls), and that explicit value is what field_clim
-        itself was computed from in that case (_refresh_field_clim), so
-        overwriting it here would just be echoing it back.
+        changes) and colorbar drags never reach the boxes the other
+        direction - they'd sit at their initial 0.0 forever regardless of
+        what the grid is actually plotting.
+
+        Display-only (_set_displayed_*), so this never marks the range as
+        user-fixed. It used to be skipped once the user had typed an
+        explicit value, but a colorbar drag can now move the range away
+        from that value, and the boxes should show what's on screen.
         """
-        if controls.cmap_min is not None or controls.cmap_max is not None:
-            return
         lo, hi = event.new
         if (lo, hi) == CLIM_UNSET:
             return
