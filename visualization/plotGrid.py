@@ -13,7 +13,8 @@ Layout is (model, model-minus-other) per row:
     | Aurora         |  | Aurora minus Pangu       |
     +----------------+  +--------------------------+
 
-Navigation: scroll to zoom, drag to pan, double-click to reset. All three
+Navigation: scroll to zoom (over the map - scrolling over an axis does not
+zoom that axis alone), drag to pan, double-click to reset. All three
 are permanently on and there is no toolbar to switch them off - the tools
 are declared in _panel_opts and the toolbar is suppressed in layout(), two
 different places for the reason the comment in layout() explains.
@@ -63,6 +64,7 @@ import param
 import panel as pn
 import holoviews as hv
 from holoviews.operation.datashader import rasterize
+from bokeh.models import CustomJS, WheelZoomTool
 
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, CANON_LAT, CANON_LON)
@@ -118,6 +120,62 @@ POINTER_MIN_INTERVAL = 0.04
 # axes are linked. __init__ seeds _last_extent from a real field, so this is
 # only a fallback if that read fails.
 GLOBAL_EXTENT = (0.0, -90.0, 360.0, 90.0)
+
+# Tightest window a panel's wheel-zoom is allowed to reach, in degrees - a
+# floor on how far in a user can scroll before the field turns into a few
+# blocky rasterized pixels. Kept at the same 2:1 ratio as ASPECT/
+# GLOBAL_EXTENT so the minimum view isn't a differently-shaped sliver of the
+# full-map aspect.
+MIN_LON_SPAN = 10.0
+MIN_LAT_SPAN = 5.0
+
+# Pan-only clamp: translates (never resizes) [start, end] back inside
+# [lo, hi] if a drag has pushed it past either edge. Deliberately does NOT
+# also enforce min_span here - recomputing an exact recenter on every
+# start/end change fought WheelZoomTool's own incremental zoom math once the
+# range was already at the floor, and float rounding across repeated
+# corrections made both zoom and pan flicker/stick at that point. The span
+# floor/ceiling is left entirely to Range1d.min_interval/max_interval (see
+# _apply_zoom_clamp) instead, which isn't implicated in the bug below.
+_PAN_CLAMP_JS = """
+let start = range.start
+let end = range.end
+if (start < lo) { end += (lo - start); start = lo }
+if (end > hi) { start -= (end - hi); end = hi }
+start = Math.max(start, lo)
+end = Math.min(end, hi)
+if (range.start !== start) { range.start = start }
+if (range.end !== end) { range.end = end }
+"""
+
+# Double-click reset. Bokeh's ResetTool only fires from its toolbar button,
+# and the toolbar is suppressed (see layout()), so double-click has to be
+# wired up by hand. Resets EVERY panel, not just the clicked one - see
+# _wire_dblclick_reset.
+#
+# This calls each plot VIEW's reset() - what ResetTool itself does - rather
+# than setting range start/end directly. Setting the ranges does move the
+# axes, but doesn't emit Bokeh's RangesUpdate event, which is the only thing
+# HoloViews' RangeXY stream listens to. rasterize() then never re-aggregates,
+# and the "reset" view shows just the patch rasterized for the old zoom.
+#
+# The figures to reset are found in the document by `token` (see
+# _wire_dblclick_reset) rather than passed in as args: a callback whose args
+# hold the very figures it's attached to is a circular reference Bokeh
+# refuses to serialize.
+_RESET_JS = """
+for (const m of cb_obj.origin.document.all_models) {
+  const cbs = (m.js_event_callbacks || {}).doubletap || []
+  if (!cbs.some(c => c.args && c.args.token === token)) { continue }
+  const view = Bokeh.index.find_one(m)
+  if (view != null) { view.reset() }
+}
+"""
+
+# Value-dimension name for placeholder panels, so _sync_colorbar_title can
+# tell them apart from real fields - a real field can't be told apart by
+# HoloViews' default "z", because z (geopotential) is a real variable.
+PLACEHOLDER_VDIM = "__placeholder__"
 
 # "No explicit colour limits" - HoloViews reads (None, None) as autoscale
 # from the data.
@@ -284,6 +342,20 @@ class PlotGrid(param.Parameterized):
         self._busy_pane = None
         self._plot_area = None
 
+        # id(Range1d) -> CustomJS enforcing that range's zoom/pan limits -
+        # see _apply_zoom_clamp. Cleared in teardown() so a torn-down grid
+        # doesn't keep these ranges (and the fields captured in their
+        # CustomJS args) alive.
+        self._zoom_customjs = {}
+
+        # Double-click reset: one CustomJS shared by every panel, and the
+        # ids of the figures it's already attached to - see
+        # _wire_dblclick_reset. The token is unique per grid, so a stale
+        # grid's figures can't be reset along with this one's.
+        self._reset_customjs = CustomJS(
+            args=dict(token=f"plotgrid-{id(self)}"), code=_RESET_JS)
+        self._reset_figs = set()
+
         self._field_stream = hv.streams.Params(self.state, _FIELD_PARAMS)
         self._diff_stream = hv.streams.Params(self.state, _DIFF_PARAMS)
         self._layout = None
@@ -353,6 +425,8 @@ class PlotGrid(param.Parameterized):
         self._pointer_streams = []
         with self._fields_lock:
             self._fields.clear()
+        self._zoom_customjs.clear()
+        self._reset_figs.clear()
         self._layout = None
         self._hv_pane = None
         self._busy_pane = None
@@ -370,6 +444,111 @@ class PlotGrid(param.Parameterized):
             frame_width=PANEL_FRAME_WIDTH,
             frame_height=PANEL_FRAME_HEIGHT,
         )
+
+    def _clamp_zoom_pan(self, plot, element):
+        """Bokeh hook (see _panel_opts) that caps how far a panel can be
+        zoomed/panned, on the actual rendered figure rather than through
+        HoloViews' xlim/ylim - those only set the initial view, not a hard
+        limit, and the underlying Range1d is what wheel_zoom/pan act on.
+
+        Split across two mechanisms rather than one - see _apply_zoom_clamp
+        and _PAN_CLAMP_JS for why.
+
+        Deliberately reads bounds from self._last_extent, NOT from
+        `element.range(...)`. This hook re-fires on every zoom/pan, because
+        rasterize() re-aggregates dynamically over whatever the current
+        viewport is - so the `element` handed to a hook after a zoom/pan
+        describes that just-zoomed window, not the full field. Using its
+        range here fed each zoom/pan back in as the new "full extent",
+        freezing max_interval at whatever size you'd just zoomed to and
+        collapsing the pan bounds to that same window - the exact "can't
+        zoom out, pan snaps back" loop this replaced. self._last_extent
+        comes from the source DataArray's own coordinate array (see
+        _element), which doesn't change with the current view.
+
+        Bounds come from the current field's real lon/lat range rather than
+        an arbitrary global one - a model writing lon on 0..360 gets bounds
+        on 0..360, not -180..180. min_span caps zooming in below a window
+        that would leave only a handful of rasterized blocks on screen.
+        """
+        lon0, lat0, lon1, lat1 = self._last_extent
+        fig = plot.state
+        self._apply_zoom_clamp(fig.x_range, lon0, lon1, MIN_LON_SPAN)
+        self._apply_zoom_clamp(fig.y_range, lat0, lat1, MIN_LAT_SPAN)
+
+    def _apply_zoom_clamp(self, rng, lo, hi, min_span):
+        """Cap `rng` at [lo, hi] and no tighter than min_span, via two
+        independent mechanisms:
+
+        - min_interval/max_interval, Bokeh's own native span limit - NOT
+          Range1d.bounds. Every report of WheelZoomTool getting stuck and
+          unable to zoom back out (bokeh/bokeh#6950, #8118, #10440, #11294)
+          is specifically about `.bounds`; min/max_interval alone is the
+          documented, working mechanism for this and isn't implicated.
+        - a CustomJS pan-only clamp (_PAN_CLAMP_JS) for the case `.bounds`
+          would otherwise cover: a drag pushing the (already span-limited)
+          window past lo/hi. Registering a new callback on every hook call
+          (this runs on every re-render) would pile up duplicate listeners
+          on the same range, so an existing callback's `args` is mutated in
+          place instead of adding another.
+        """
+        rng.min_interval = min(min_span, hi - lo)
+        rng.max_interval = hi - lo
+
+        cb = self._zoom_customjs.get(id(rng))
+        if cb is None:
+            cb = CustomJS(args=dict(range=rng, lo=lo, hi=hi), code=_PAN_CLAMP_JS)
+            rng.js_on_change("start", cb)
+            rng.js_on_change("end", cb)
+            self._zoom_customjs[id(rng)] = cb
+        else:
+            cb.args = dict(range=rng, lo=lo, hi=hi)
+
+    def _disable_axis_zoom(self, plot, element):
+        """Bokeh hook (see _panel_opts): scrolling over an axis zooms the
+        whole map, not just that one axis.
+
+        WheelZoomTool's zoom_on_axis (on by default) makes a scroll over the
+        lon or lat axis stretch only that dimension, distorting the map's
+        aspect. Set on the rendered tool rather than by passing a
+        WheelZoomTool instance in `tools`, which would hand one Bokeh model
+        to every panel's figure.
+        """
+        for tool in plot.state.tools:
+            if isinstance(tool, WheelZoomTool) and tool.zoom_on_axis:
+                tool.zoom_on_axis = False
+
+    def _wire_dblclick_reset(self, plot, element):
+        """Bokeh hook (see _panel_opts): double-click resets every panel.
+        See _RESET_JS.
+
+        Every panel, not just the clicked one: shared_axes only links
+        pairwise (see the module docstring), so resetting one panel could
+        leave the other pair zoomed in. The hook runs on every re-render,
+        so the shared callback is attached once per figure, not per call.
+        """
+        fig = plot.state
+        if id(fig) not in self._reset_figs:
+            fig.js_on_event("doubletap", self._reset_customjs)
+            self._reset_figs.add(id(fig))
+
+    def _sync_colorbar_title(self, plot, element):
+        """Bokeh hook (see _panel_opts): keep the colorbar label in step with
+        the variable on screen.
+
+        HoloViews titles the colorbar once, from the FIRST element a
+        DynamicMap yields, and only swaps the data after that (the same
+        first-element rule _panel_opts describes). Without this, switching
+        variable left the colorbar reading the first variable's name and
+        units. Placeholders get no label rather than a meaningless one.
+        """
+        colorbar = plot.handles.get("colorbar")
+        if colorbar is None or not element.vdims:
+            return
+        vdim = element.vdims[0]
+        title = "" if vdim.name == PLACEHOLDER_VDIM else vdim.pprint_label
+        if colorbar.title != title:
+            colorbar.title = title
 
     def _panel_opts(self, title, cmap):
         """Every option that defines a panel's STRUCTURE.
@@ -410,6 +589,9 @@ class PlotGrid(param.Parameterized):
             shared_axes=True,
             xlabel="longitude",
             ylabel="latitude",
+            hooks=[self._clamp_zoom_pan, self._disable_axis_zoom,
+                   self._wire_dblclick_reset,
+                   self._sync_colorbar_title],
             **self._sizing_opts(),
         )
 
@@ -472,7 +654,7 @@ class PlotGrid(param.Parameterized):
             opts["fontsize"] = {"title": "13pt"}
         return hv.Image(
             np.full((2, 2), np.nan), bounds=(left, bottom, right, top),
-            kdims=[CANON_LON, CANON_LAT],
+            kdims=[CANON_LON, CANON_LAT], vdims=[PLACEHOLDER_VDIM],
         ).opts(**opts)
 
     # -- callbacks ------------------------------------------------------
