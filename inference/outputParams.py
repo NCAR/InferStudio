@@ -26,30 +26,32 @@ class OutputParams:
         self.browse_button = self.modal.create_button("toggle", name="Output Directory", button_type="primary")
 
         self.surfaceVars = pn.widgets.CheckButtonGroup(
-            name="Surface Variables",
+            name="2D Variables",
             #value=['SP'],
-            value=['SP','t2m','V500','U500','T500','Z500','Q500'],
-            options=['SP','t2m','V500','U500','T500','Z500','Q500'],
+            value=['SP','t2m'],
+            options=['SP','t2m'],
             button_type='primary',
             button_style='outline',
+            description="Selected variables are saved to disk",
             #disabled=True
         )
         self.surfaceVarsGroup = pn.Row(
-            pn.pane.Markdown("Surface Variables"),
+            pn.pane.Markdown("2D Variables"),
             self.surfaceVars
         )
 
         self.UAVars = pn.widgets.CheckButtonGroup(
-            name="Upper Air Variables",
+            name="3D Variables",
             #value=['U'],
             value=['U','V','T','Q'],
             options=['U','V','T','Q'],
             button_type='primary',
             button_style='outline',
+            description="Selected variables are saved to disk",
             #disabled=True
         )
         self.UAVarsGroup = pn.Row(
-            pn.pane.Markdown("Upper Air Variables"),
+            pn.pane.Markdown("3D Variables"),
             self.UAVars
         )
 

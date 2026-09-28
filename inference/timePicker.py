@@ -24,7 +24,7 @@ class TimePicker(param.Parameterized):
         )
         self.startDatePicker.param.watch(self._snap_start, 'value')
 
-        self.incrementLabel = pn.pane.Markdown("Time Step Increment", margin=(0, 0, -5, 0))
+        self.incrementLabel = pn.pane.Markdown("Saved Output Frequency", margin=(0, 0, -5, 0))
         self.incrementButtons = pn.widgets.RadioButtonGroup(
             name="",
             options={'1 hour': '1h', '6 hour': '6h', '12 hour': '12h', '24 hour': '24h'},

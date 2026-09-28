@@ -647,8 +647,8 @@ def build_app(data_dir):
 
     tabs = pn.Tabs(
         ("Visualization", vis),
-        ("Inference", inference),
         ("Statistics", statistics),
+        ("Inference", inference),
         # stretch_width, not stretch_both - see the comment above. Height
         # comes from the .bk-tabs-content rule below instead.
         sizing_mode="stretch_width",
