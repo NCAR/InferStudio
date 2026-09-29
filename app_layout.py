@@ -690,21 +690,49 @@ def build_app(data_dir):
         value=False, width=20, height=20, color="light",
         margin=(10, 10, 10, 0),
     )
-    # Documentation link
+    # Documentation and GitHub Discussions links. Both live in one pane with
+    # an explicit width: Panel sizes an HTML pane's box independently of its
+    # text, so separate panes let the longer label spill over its
+    # neighbours instead of pushing them aside.
+    _link_style = (
+        'style="display:inline-flex;align-items:center;gap:7px;'
+        'color:#DFEFF6;font-size:14px;font-weight:500;'
+        'text-decoration:none;white-space:nowrap;"'
+    )
+    _icon_attrs = (
+        'width="16" height="16" viewBox="0 0 16 16" fill="none" '
+        'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" '
+        'stroke-linejoin="round" aria-hidden="true"'
+    )
     template.header.append(
         pn.pane.HTML(
+            '<div style="display:flex;align-items:center;'
+            'justify-content:flex-end;gap:24px;">'
             '<a href="https://inferstudio.readthedocs.io/" target="_blank" '
-            'rel="noopener" title="InferStudio documentation" '
-            'style="display:inline-flex;align-items:center;gap:7px;'
-            'color:#DFEFF6;font-size:14px;font-weight:500;'
-            'text-decoration:none;white-space:nowrap;">'
-            '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" '
-            'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" '
-            'stroke-linejoin="round" aria-hidden="true">'
+            f'rel="noopener" title="InferStudio documentation" {_link_style}>'
+            f'<svg {_icon_attrs}>'
             '<path d="M2 2.5h4a2 2 0 0 1 2 2v9a1.5 1.5 0 0 0-1.5-1.5H2z"/>'
             '<path d="M14 2.5h-4a2 2 0 0 0-2 2v9a1.5 1.5 0 0 1 1.5-1.5H14z"/>'
-            '</svg>Docs</a>',
-            styles={"display": "flex", "align-items": "center", "height": "100%"},
+            '</svg>Docs</a>'
+            '<a href="https://github.com/NCAR/InferStudio/discussions" '
+            'target="_blank" rel="noopener" '
+            'title="Ask questions and share feedback on GitHub Discussions" '
+            f'{_link_style}>'
+            f'<svg {_icon_attrs}>'
+            '<path d="M2.5 3h11a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7l-3 2.5v-2.5'
+            'H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>'
+            '</svg>Questions &amp; Feedback</a>'
+            '</div>',
+            width=280,
+            sizing_mode="fixed",
+            # The header row is a non-wrapping flex row whose items all
+            # default to flex-shrink:1, so on narrower windows the browser
+            # squeezed this pane below its content and the labels ran under
+            # the spinner and logos. Pin it at its full width.
+            styles={
+                "display": "flex", "align-items": "center", "height": "100%",
+                "flex-shrink": "0", "min-width": "280px",
+            },
             margin=(0, 40, 0, 0),
         )
     )
