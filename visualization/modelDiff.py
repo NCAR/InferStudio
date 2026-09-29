@@ -35,6 +35,7 @@ import xarray as xr
 from dimensions import resolve_nc_glob
 from visualization.earth2StudioVars import _resolve_dim, LAT_NAMES, LON_NAMES
 from visualization.earth2StudioPlot import invalidate_dataset, load_e2s_field
+from visualization.ncJobLock import NC_JOB_LOCK
 
 
 # One lock per pair name. The HoloViews grid can fire several panel
@@ -134,7 +135,11 @@ def compute_model_difference(model_a_dir, model_b_dir, cache_dir,
         # The leading dot also keeps the temp file out of the *.nc glob.
         tmp_path = pair_dir / f".{name}.nc.tmp"
 
-        with xr.open_mfdataset(resolve_nc_glob(model_a_dir), engine="netcdf4",
+        # NC_JOB_LOCK first, so a Statistics run reading the suite waits
+        # for this whole open/compute/write rather than interleaving HDF5
+        # calls with it - see ncJobLock.py.
+        with NC_JOB_LOCK, \
+             xr.open_mfdataset(resolve_nc_glob(model_a_dir), engine="netcdf4",
                                data_vars="all", chunks={}) as ds_a, \
              xr.open_mfdataset(resolve_nc_glob(model_b_dir), engine="netcdf4",
                                data_vars="all", chunks={}) as ds_b:

@@ -46,6 +46,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dimensions import resolve_nc_glob
+from visualization.ncJobLock import NC_JOB_LOCK
 from visualization.earth2StudioVars import parse_variable_groups, resolve_var_name, _resolve_dim, LAT_NAMES, LON_NAMES
 
 # Same set used in datasetPlot.py — models whose output this verification
@@ -239,16 +240,35 @@ class ForecastStatsPanel(param.Parameterized):
         # the browser before we'd otherwise flip it back off.
         doc = pn.state.curdoc
 
+        def _set_status(text):
+            def apply():
+                self.status.object = text
+            if doc is not None:
+                doc.add_next_tick_callback(apply)
+            else:
+                apply()
+
         def _do_compute():
             results = {}
             errors = {}
-            for model in self.models:
-                if model not in EARTH2STUDIO_FORMAT_MODELS:
-                    continue
-                try:
-                    results[model] = compute_model_stats(self.model_paths[model], var_name, level_value)
-                except Exception as e:
-                    errors[model] = str(e)
+            # Take turns with difference computation - see ncJobLock.py.
+            # Non-blocking first, only to tell the user why nothing is
+            # happening yet; a difference can hold this for minutes.
+            if not NC_JOB_LOCK.acquire(blocking=False):
+                _set_status("*Waiting for a difference computation on the "
+                            "Visualization tab to finish before starting...*")
+                NC_JOB_LOCK.acquire()
+                _set_status("*Computing...*")
+            try:
+                for model in self.models:
+                    if model not in EARTH2STUDIO_FORMAT_MODELS:
+                        continue
+                    try:
+                        results[model] = compute_model_stats(self.model_paths[model], var_name, level_value)
+                    except Exception as e:
+                        errors[model] = str(e)
+            finally:
+                NC_JOB_LOCK.release()
 
             def _finish():
                 if not results:
