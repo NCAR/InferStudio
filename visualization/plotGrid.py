@@ -73,6 +73,9 @@ from bokeh.models import (
 
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, CANON_LAT, CANON_LON)
+from visualization.boundaries import (
+    boundary_lines, NONE as BOUNDARIES_NONE, BOUNDARY_COLOR, BOUNDARY_WIDTH,
+    BOUNDARY_HALO_COLOR, BOUNDARY_HALO_WIDTH, BOUNDARY_HALO_ALPHA)
 from visualization.modelDiff import (
     load_diff_field,
     compute_model_difference,
@@ -474,6 +477,11 @@ class PlotGridState(param.Parameterized):
     # field panel is nominated first.
     header_text = param.String(default="")
 
+    # A visualization.boundaries.BOUNDARY_OPTIONS label. In neither stream
+    # list below: the lines live in their own data sources (see
+    # PlotGrid._draw_boundaries), so changing them re-renders nothing.
+    boundaries = param.String(default=BOUNDARIES_NONE)
+
     # Cursor readout rows, as (label, value) pairs in two columns:
     # (left_pairs, right_pairs). Empty until the cursor first enters a
     # panel. Stored as data rather than rendered HTML so that a time-slider
@@ -642,6 +650,20 @@ class PlotGrid(param.Parameterized):
         self._clim_watcher = self.state.param.watch(
             lambda event: self.refresh_clims_async(), ["variable", "level"])
 
+        # Boundary lines: one data source per longitude convention (False
+        # for -180..180 maps, True for 0..360), each shared by every panel
+        # drawn in that convention. _boundary_used says which conventions
+        # have panels, so only those get the line data sent to the browser.
+        self._boundary_sources = {
+            lon360: ColumnDataSource(data=dict(x=np.empty(0, np.float32),
+                                               y=np.empty(0, np.float32)))
+            for lon360 in (False, True)
+        }
+        self._boundary_used = set()
+        self._boundary_figs = set()
+        self._boundary_watcher = self.state.param.watch(
+            lambda event: self._update_boundaries(), "boundaries")
+
     # -- lifecycle ------------------------------------------------------
 
     def teardown(self):
@@ -670,6 +692,13 @@ class PlotGrid(param.Parameterized):
                 pass
             self._clim_watcher = None
 
+        if self._boundary_watcher is not None:
+            try:
+                self.state.param.unwatch(self._boundary_watcher)
+            except Exception:
+                pass
+            self._boundary_watcher = None
+
         for stream in (self._field_stream, self._diff_stream,
                        *self._pointer_streams):
             try:
@@ -686,6 +715,7 @@ class PlotGrid(param.Parameterized):
         self._zoom_customjs.clear()
         self._reset_figs.clear()
         self._cbar_drag_figs.clear()
+        self._boundary_figs.clear()
         self._layout = None
         self._hv_pane = None
 
@@ -795,6 +825,44 @@ class PlotGrid(param.Parameterized):
         if id(fig) not in self._reset_figs:
             fig.js_on_event("doubletap", self._reset_customjs)
             self._reset_figs.add(id(fig))
+
+    def _draw_boundaries(self, plot, element):
+        """Bokeh hook (see _panel_opts): draw the selected Natural Earth
+        boundaries over the map.
+
+        A plain Bokeh line glyph added to the figure, rather than a
+        HoloViews Path overlaid on the field: the lines then sit outside
+        HoloViews' rendering entirely, so changing them never re-renders or
+        re-rasterizes a panel, and they can't disturb the ranges, zoom
+        clamp or colorbar wiring the other hooks set up. The data source is
+        shared, so every panel updates at once. Attached once per figure;
+        added last, so it draws on top of the field.
+        """
+        fig = plot.state
+        if id(fig) in self._boundary_figs:
+            return
+        try:
+            lon360 = float(element.range(0)[1]) > 180
+        except Exception:
+            lon360 = self._last_extent[2] > 180
+        source = self._boundary_sources[lon360]
+        fig.line("x", "y", source=source, line_color=BOUNDARY_HALO_COLOR,
+                 line_width=BOUNDARY_HALO_WIDTH,
+                 line_alpha=BOUNDARY_HALO_ALPHA)
+        fig.line("x", "y", source=source, line_color=BOUNDARY_COLOR,
+                 line_width=BOUNDARY_WIDTH)
+        self._boundary_figs.add(id(fig))
+        if lon360 not in self._boundary_used:
+            self._boundary_used.add(lon360)
+            self._update_boundaries(only=lon360)
+
+    def _update_boundaries(self, only=None):
+        """Load the selected boundaries into the data sources in use."""
+        for lon360 in self._boundary_used:
+            if only is not None and lon360 != only:
+                continue
+            x, y = boundary_lines(self.state.boundaries, lon360)
+            self._boundary_sources[lon360].data = dict(x=x, y=y)
 
     def _cbar_token(self, kind):
         return f"plotgrid-{id(self)}-cbar-{kind}"
@@ -960,7 +1028,8 @@ class PlotGrid(param.Parameterized):
             hooks=[self._clamp_zoom_pan, self._disable_axis_zoom,
                    self._wire_dblclick_reset,
                    self._sync_colorbar_title, self._tick_colorbar_ends,
-                   partial(self._wire_colorbar_drag, kind)],
+                   partial(self._wire_colorbar_drag, kind),
+                   self._draw_boundaries],
             **self._sizing_opts(),
         )
 
@@ -1629,4 +1698,5 @@ class PlotGrid(param.Parameterized):
             "level": self.state.level,
             "n_steps": self.n_steps,
             "ncols": 2,
+            "boundaries": self.state.boundaries,
         }

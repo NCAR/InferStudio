@@ -29,6 +29,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from dimensions import resolve_nc_glob, PRES_NAME
+from visualization.boundaries import (
+    boundary_lines, NONE as BOUNDARIES_NONE, BOUNDARY_COLOR,
+    BOUNDARY_HALO_COLOR, BOUNDARY_HALO_ALPHA, MPL_BOUNDARY_WIDTH,
+    MPL_BOUNDARY_HALO_WIDTH)
 from visualization.earth2StudioVars import (
     LAT_NAMES, LON_NAMES, TIME_NAMES,
     _resolve_dim, parse_variable_groups, available_levels,
@@ -381,11 +385,13 @@ def field_range(model_dir, base_or_var, level, sample_steps=3):
 # ---------------------------------------------------------------------------
 
 def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis",
-                   vmin=None, vmax=None):
+                   vmin=None, vmax=None, boundaries=None):
     """Render a single lat/lon field to a PNG.
 
-    Signature and return value are unchanged from the pre-HoloViews version,
-    so existing callers (Export Video) need no edits.
+    Return value is unchanged from the pre-HoloViews version. `boundaries`
+    is a visualization.boundaries.BOUNDARY_OPTIONS label to draw over the
+    field, styled like the plot grid's (see PlotGrid._draw_boundaries);
+    None or "None" draws none.
 
     Returns
     -------
@@ -408,6 +414,17 @@ def plot_e2s_field(model_dir, base_or_var, level, t, cmap="viridis",
     fig, ax = plt.subplots(figsize=(7, 3.8))
     mesh = ax.pcolormesh(lons, lats, data, cmap=cmap, shading="auto",
                          vmin=vmin_used, vmax=vmax_used)
+
+    if boundaries and boundaries != BOUNDARIES_NONE and meta.lon_dim:
+        # Held at the field's own extent: the lines reach -180..180 or
+        # 0..360 in full and would otherwise widen the view past the data.
+        xlim, ylim = ax.get_xlim(), ax.get_ylim()
+        bx, by = boundary_lines(boundaries, float(np.nanmax(lons)) > 180)
+        ax.plot(bx, by, color=BOUNDARY_HALO_COLOR, alpha=BOUNDARY_HALO_ALPHA,
+                linewidth=MPL_BOUNDARY_HALO_WIDTH)
+        ax.plot(bx, by, color=BOUNDARY_COLOR, linewidth=MPL_BOUNDARY_WIDTH)
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
 
     ax.set_title(meta.title(), fontsize=14)
     ax.set_xticks([])

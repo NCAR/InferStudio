@@ -10,6 +10,7 @@ from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, LAT_NAME, LON_N
 from visualization.era5_plot import plot_png, NETCDF_FILE
 from visualization.earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
 from visualization.modelDiff import compute_model_difference
+from visualization.boundaries import BOUNDARY_OPTIONS, NONE as BOUNDARIES_NONE
 
 pn.extension(raw_css=[Path("static/styles.css").read_text()])
 
@@ -108,6 +109,8 @@ class SharedPlotControls(param.Parameterized):
     # render.
     cmap_min = param.Number(default=None, allow_None=True)
     cmap_max = param.Number(default=None, allow_None=True)
+    # A visualization.boundaries.BOUNDARY_OPTIONS label.
+    boundaries = param.String(default=BOUNDARIES_NONE)
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -241,6 +244,16 @@ class SharedPlotControls(param.Parameterized):
         self.cmap_min_input.param.watch(_on_cmap_min_input, 'value')
         self.cmap_max_input.param.watch(_on_cmap_max_input, 'value')
 
+        # Natural Earth lines drawn over the maps - see PlotGrid's
+        # _draw_boundaries. Label above rather than beside, like Colormap:
+        # the option names are too long for the narrow half-row selects.
+        self.boundaries_selector = pn.widgets.Select(
+            options=list(BOUNDARY_OPTIONS),
+            value=self.boundaries,
+            sizing_mode="stretch_width",
+        )
+        self.boundaries_selector.link(self, value="boundaries")
+
         self._row = pn.Column(
             pn.Row(
                 self._time_display,
@@ -305,6 +318,15 @@ class SharedPlotControls(param.Parameterized):
                 align="start",
                 sizing_mode="stretch_width",
                 css_classes=["widget-row"],
+            ),
+            pn.Column(
+                pn.pane.HTML(
+                    "<b>Boundaries</b>",
+                    styles={'line-height': '20px', 'font-size': '14px', 'white-space': 'nowrap'},
+                    margin=0,
+                ),
+                self.boundaries_selector,
+                sizing_mode="stretch_width",
             ),
             sizing_mode="stretch_width",
         )

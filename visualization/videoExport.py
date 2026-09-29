@@ -161,8 +161,10 @@ class _Tile:
     vmax start as None and get resolved by scan()/finalize() below.
     """
 
-    def __init__(self, label, model_dir, is_diff, cmap, vmin=None, vmax=None):
+    def __init__(self, label, model_dir, is_diff, cmap, vmin=None, vmax=None,
+                 boundaries=None):
         self.label = label
+        self.boundaries = boundaries   # BOUNDARY_OPTIONS label, or None
         self.model_dir = model_dir
         self.is_diff = is_diff
         self.cmap = cmap
@@ -225,6 +227,7 @@ class _Tile:
         buf, _, _ = plot_e2s_field(
             model_dir=self.model_dir, base_or_var=var_name, level=level, t=t,
             cmap=self.cmap, vmin=self.vmin, vmax=self.vmax,
+            boundaries=self.boundaries,
         )
         img = Image.open(buf).convert("RGB")
         if self.size is None:
@@ -439,6 +442,21 @@ class VideoExportPanel(param.Parameterized):
             return None
         return rows or None
 
+    def _boundaries(self):
+        """The boundary lines the Visualization tab is drawing, or None.
+
+        Taken from the plot grid's frame_spec(), so the video shows exactly
+        what's on screen. A flat single dataset (DatasetPlot2) draws no
+        boundaries, so its export doesn't either.
+        """
+        plot = self._active_plot_fn()
+        if plot is None or not hasattr(plot, "frame_spec"):
+            return None
+        try:
+            return plot.frame_spec().get("boundaries")
+        except Exception:
+            return None
+
     # -- callbacks ---------------------------------------------------------
 
     def _open(self, _event=None):
@@ -498,6 +516,7 @@ class VideoExportPanel(param.Parameterized):
             var_name=self.controls.var_name,
             level=self.controls.level_value,
             nframes=self._nframes(),
+            boundaries=self._boundaries(),
             rps=self.renderings_per_second,
             resolution=RESOLUTIONS[self.resolution],
         )
@@ -521,7 +540,8 @@ class VideoExportPanel(param.Parameterized):
         try:
             exe = _ffmpeg_exe()
 
-            tiles = [[_Tile(label, path, is_diff, cmap, vmin, vmax)
+            tiles = [[_Tile(label, path, is_diff, cmap, vmin, vmax,
+                            boundaries=snap["boundaries"])
                       for label, path, is_diff, cmap, vmin, vmax in row]
                      for row in rows]
             flat = [t for row in tiles for t in row]

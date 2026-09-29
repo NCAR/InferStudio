@@ -358,6 +358,7 @@ def link_controls(controls, state):
         "colormap": "cmap",
         "cmap_min": "cmap_min",
         "cmap_max": "cmap_max",
+        "boundaries": "boundaries",
     }
 
     def _coerce(dst, value):
