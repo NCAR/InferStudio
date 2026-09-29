@@ -16,7 +16,9 @@ from visualization.datasetPlot import DatasetPlot2, SharedPlotControls
 from visualization.forecastStatsPanel import ForecastStatsPanel
 from visualization.loadSuiteDialog import LoadSuiteDialog
 from visualization.videoExport import VideoExportPanel
-from visualization.plotGrid import PlotGrid, PlotGridState, CLIM_UNSET
+from visualization.plotGrid import (
+    PlotGrid, PlotGridState, CLIM_UNSET, ASPECT, AUTOSIZE_TAG,
+    PANEL_FRAME_WIDTH, MAX_PANEL_FRAME_WIDTH)
 from visualization.earth2StudioPlot import close_dataset_cache
 
 from inference.commandRunner import CommandRunner
@@ -338,6 +340,102 @@ class WheelScrollPassthrough(pn.custom.JSComponent):
         }
       }, { capture: true, passive: true });
     }
+    """
+
+class PlotGridAutoSize(pn.custom.JSComponent):
+    """Grows the plot grid's maps to fill the window's width.
+
+    The panels are fixed-size figures (see PANEL_FRAME_WIDTH in plotGrid):
+    Bokeh's responsive sizing squeezed them into whatever the window left,
+    clipping colorbars and the right-hand column. This keeps them fixed-size
+    but picks the size in the browser - every figure tagged AUTOSIZE_TAG gets
+    the same frame width, chosen so the grid just fills the scrolling main
+    area, never below PANEL_FRAME_WIDTH (a narrower window still scrolls
+    sideways, as before) or above MAX_PANEL_FRAME_WIDTH, and the height
+    follows at ASPECT. The rasterized fields re-render at the new pixel
+    size, since rasterize() tracks the figure's size.
+
+    HoloViews only applies a figure's frame size when it is first drawn, so
+    later re-renders (a time-slider step, a new difference) don't undo it.
+
+    Runs on window resize, plus a once-a-second check that catches a new
+    suite's grid or anything else that changes the available width. Both
+    are cheap no-ops when the size is already right.
+    """
+
+    _esm = f"""
+    const TAG = {AUTOSIZE_TAG!r};
+    const MIN_W = {PANEL_FRAME_WIDTH}, MAX_W = {MAX_PANEL_FRAME_WIDTH};
+    const ASPECT = {ASPECT};
+    // Room left between the grid and the scroll area's right edge, for the
+    // card's padding and border.
+    const RIGHT_GAP = 36;
+
+    function scroller(el) {{
+      for (let n = el; n != null; n = n.parentNode || n.host) {{
+        if (n instanceof Element) {{
+          const ox = getComputedStyle(n).overflowX;
+          if (ox === "auto" || ox === "scroll") {{ return n; }}
+        }}
+      }}
+      return null;
+    }}
+
+    function fit() {{
+      const figs = [];
+      for (const doc of window.Bokeh.documents) {{
+        for (const m of doc.all_models) {{
+          if (!(m.tags || []).includes(TAG)) {{ continue; }}
+          const v = window.Bokeh.index.find_one(m);
+          if (v != null && v.el.isConnected && v.el.getBoundingClientRect().width > 0) {{
+            figs.push({{ m, v }});
+          }}
+        }}
+      }}
+      if (figs.length === 0) {{ return; }}
+      const grid = figs[0].v.parent;
+      const main = scroller(figs[0].v.el);
+      if (grid == null || main == null) {{ return; }}
+      // Everything but the frames - axes, titles, colorbars, the gaps
+      // between columns - measured from one layout pass, so the target
+      // doesn't depend on whether that layout has caught up with the last
+      // resize yet.
+      const cols = new Map();   // column left edge -> [widest figure, most non-frame space]
+      for (const {{ v }} of figs) {{
+        const r = v.el.getBoundingClientRect();
+        const key = Math.round(r.left);
+        const [w, extra] = cols.get(key) || [0, 0];
+        cols.set(key, [Math.max(w, r.width), Math.max(extra, r.width - v.frame.bbox.width)]);
+      }}
+      let colsWidth = 0, extras = 0;
+      for (const [w, extra] of cols.values()) {{ colsWidth += w; extras += extra; }}
+      const mr = main.getBoundingClientRect();
+      const gr = grid.el.getBoundingClientRect();
+      const gaps = gr.width - colsWidth;
+      const avail = (mr.left + main.clientWidth - RIGHT_GAP) - (gr.left + main.scrollLeft);
+      const cur = figs[0].m.frame_width;
+      const want = Math.max(MIN_W, Math.min(MAX_W, Math.floor((avail - gaps - extras) / cols.size)));
+      if (Math.abs(want - cur) < 4) {{ return; }}
+      for (const {{ m }} of figs) {{
+        m.frame_width = want;
+        m.frame_height = Math.round(want / ASPECT);
+      }}
+      // A plot doesn't re-lay itself out when its frame size changes; this
+      // recomputes the whole layout from the root, which also reports the
+      // new inner size to the server so rasterize() re-renders to match.
+      figs[0].v.invalidate_layout();
+    }}
+
+    export function render() {{
+      if (window.__inferstudioPlotGridAutoSize) {{ return; }}
+      window.__inferstudioPlotGridAutoSize = true;
+      let timer = null;
+      window.addEventListener("resize", () => {{
+        clearTimeout(timer);
+        timer = setTimeout(fit, 150);
+      }});
+      setInterval(fit, 1000);
+    }}
     """
 
 def link_controls(controls, state):
@@ -784,6 +882,7 @@ def build_app(data_dir):
     vis = pn.Column(
         vis_content, diff_busy_overlay,
         WheelScrollPassthrough(width=0, height=0, margin=0),
+        PlotGridAutoSize(width=0, height=0, margin=0),
         sizing_mode="stretch_width",
         styles={"height": "100%", "overflow": "hidden",
                 "position": "relative"},

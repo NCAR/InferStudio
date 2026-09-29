@@ -106,6 +106,15 @@ PANEL_FRAME_WIDTH = 560
 PANEL_FRAME_HEIGHT = int(PANEL_FRAME_WIDTH / ASPECT)
 COLORBAR_WIDTH = 12
 
+# PANEL_FRAME_WIDTH is the smallest a panel gets, not its only size: in the
+# browser, app_layout's PlotGridAutoSize widens every figure tagged
+# AUTOSIZE_TAG to fill the space the window leaves, up to
+# MAX_PANEL_FRAME_WIDTH, keeping ASPECT. Still fixed-size figures, just
+# resized from outside - see PlotGridAutoSize for why that's not Bokeh's own
+# responsive sizing.
+MAX_PANEL_FRAME_WIDTH = 1600
+AUTOSIZE_TAG = "plotgrid-autosize"
+
 DEFAULT_CMAP = "viridis"
 DIFF_CMAP = "coolwarm"
 
@@ -826,6 +835,14 @@ class PlotGrid(param.Parameterized):
             fig.js_on_event("doubletap", self._reset_customjs)
             self._reset_figs.add(id(fig))
 
+    @staticmethod
+    def _tag_autosize(plot, element):
+        """Bokeh hook (see _panel_opts): mark the figure for
+        PlotGridAutoSize (app_layout.py) to widen with the window."""
+        fig = plot.state
+        if AUTOSIZE_TAG not in fig.tags:
+            fig.tags = [*fig.tags, AUTOSIZE_TAG]
+
     def _draw_boundaries(self, plot, element):
         """Bokeh hook (see _panel_opts): draw the selected Natural Earth
         boundaries over the map.
@@ -1025,7 +1042,8 @@ class PlotGrid(param.Parameterized):
             shared_axes=True,
             xlabel="longitude",
             ylabel="latitude",
-            hooks=[self._clamp_zoom_pan, self._disable_axis_zoom,
+            hooks=[self._tag_autosize,
+                   self._clamp_zoom_pan, self._disable_axis_zoom,
                    self._wire_dblclick_reset,
                    self._sync_colorbar_title, self._tick_colorbar_ends,
                    partial(self._wire_colorbar_drag, kind),
