@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 from inference.outputParams import OutputParams
+from tooltips import below_tooltip
 from inference.timePicker import TimePicker
 from inference.commandRunner import CommandRunner
 
@@ -64,7 +65,8 @@ class ModelPicker(param.Parameterized):
                 name=name,
                 button_type='primary',
                 button_style='solid' if name in self.value else 'outline',
-                description=descriptions.get(name, ''),
+                description=(below_tooltip(descriptions[name])
+                             if name in descriptions else None),
                 margin=(0, 5, 5, 0),
             )
             button.on_click(partial(self._on_click, name))

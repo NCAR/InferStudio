@@ -3,6 +3,8 @@ import os
 import param
 from datetime import datetime
 
+from tooltips import below_tooltip
+
 class OutputParams:
     def __init__(self, start_path=".", width=400):
         self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
@@ -32,7 +34,7 @@ class OutputParams:
             options=['SP','t2m'],
             button_type='primary',
             button_style='outline',
-            description="Selected variables are saved to disk",
+            description=below_tooltip("Selected variables are saved to disk"),
             #disabled=True
         )
         self.surfaceVarsGroup = pn.Row(
@@ -47,7 +49,7 @@ class OutputParams:
             options=['U','V','T','Q'],
             button_type='primary',
             button_style='outline',
-            description="Selected variables are saved to disk",
+            description=below_tooltip("Selected variables are saved to disk"),
             #disabled=True
         )
         self.UAVarsGroup = pn.Row(
