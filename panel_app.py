@@ -2,7 +2,7 @@
 # coding: utf-8
 
 # InferStudio — launched automatically by NCAR's Open OnDemand "InferStudio"
-# app (see template/script.sh.erb in the OOD app bundle for the actual
+# app (see template/script.sh.erb in NCAR/bc_InferStudio for the actual
 # `panel serve` invocation, including the URL --prefix OOD requires).
 #
 # To run manually for local testing (outside OOD), from this directory:
