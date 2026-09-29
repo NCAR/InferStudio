@@ -3,6 +3,7 @@ import os
 import base64
 import warnings
 import panel as pn
+import param
 import xarray as xr
 from pathlib import Path
 from functools import lru_cache
@@ -203,6 +204,85 @@ def model_dirs_for(entry: dict) -> dict:
     """
     return {name: Path(m["path"]) for name, m in entry.get("models", {}).items()}
 
+
+# Sidebar width shared by the Visualization and Statistics tabs. The busy
+# overlay pads its content by the same amount so its spinner lands in the
+# middle of the plot card rather than the middle of the whole tab.
+_SIDEBAR_WIDTH = 250
+
+def _diff_busy_html(diff_status, diff_pairs):
+    """Overlay HTML for the Visualization tab while a difference computes.
+
+    Empty string when nothing is computing. Otherwise a translucent grey
+    sheet with a large spinner and one "Computing difference between A and
+    B..." line per pair in progress, centred over the plot card.
+    """
+    lines = [
+        f"Computing difference between {model} and {other}\u2026"
+        for model, status in diff_status.items()
+        if status == "computing" and (other := diff_pairs.get(model))
+    ]
+    if not lines:
+        return ""
+    text = "".join(
+        f"<div class='diff-busy-text'>{line}</div>" for line in lines)
+    return (
+        "<style>"
+        "@keyframes diff-busy-spin{to{transform:rotate(360deg)}}"
+        ".diff-busy{position:absolute;inset:0;display:flex;"
+        "flex-direction:column;align-items:center;justify-content:center;"
+        f"padding-left:{_SIDEBAR_WIDTH}px;box-sizing:border-box;"
+        "background:rgba(233,236,239,0.78);cursor:wait;}"
+        ".diff-busy-wheel{width:96px;height:96px;border-radius:50%;"
+        "border:10px solid #cfd6de;border-top-color:#007bff;"
+        "animation:diff-busy-spin 0.9s linear infinite;margin-bottom:24px;}"
+        ".diff-busy-text{font-size:20px;font-weight:600;color:#1f2d3d;"
+        "text-align:center;}"
+        ".diff-busy-note{margin-top:8px;font-size:14px;color:#4a5866;}"
+        "</style>"
+        "<div class='diff-busy' role='status' aria-live='polite'>"
+        "<div class='diff-busy-wheel'></div>"
+        f"{text}"
+        "<div class='diff-busy-note'>A full suite can take a minute. The "
+        "Statistics and Inference tabs are still available.</div>"
+        "</div>"
+    )
+
+class TabBusyOverlay(pn.custom.JSComponent):
+    """Overlay that also makes the rest of its tab inert while shown.
+
+    Covering the tab only stops the mouse - Tab-key focus and typing still
+    reach the widgets underneath. So while `html` is non-empty, the
+    component sets the `inert` attribute on its sibling elements (the tab
+    content it's laid over), which takes them out of the focus order and
+    blocks every kind of input, then clears it when `html` empties.
+    Siblings are found through the shadow root because Bokeh renders each
+    layout inside its own; the overlay's host sits in the same root as the
+    content it covers.
+    """
+
+    html = param.String(default="")
+
+    _esm = """
+    export function render({ model, el }) {
+      const box = document.createElement("div");
+      el.appendChild(box);
+      function sync() {
+        const busy = model.html !== "";
+        box.innerHTML = model.html;
+        const host = el.getRootNode().host;
+        const parent = host && host.parentNode;
+        if (!parent) return;
+        for (const sib of parent.children) {
+          if (sib !== host) sib.inert = busy;
+        }
+      }
+      model.on("html", sync);
+      // Layout may attach the host after render; re-sync once it has.
+      requestAnimationFrame(sync);
+      sync();
+    }
+    """
 
 def link_controls(controls, state):
     """Bridge SharedPlotControls -> PlotGridState.
@@ -566,7 +646,7 @@ def build_app(data_dir):
         video_export.modal,
         pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
         meta_panel.panel,
-        width=250,
+        width=_SIDEBAR_WIDTH,
         # Its own bounded scrollbar too - same reasoning as vis/main below:
         # sizing_mode stays default (Bokeh doesn't fight the height here
         # since nothing asks it to manage that axis), height:100% resolves
@@ -617,8 +697,39 @@ def build_app(data_dir):
     # sibling within that same non-scrolling chain) never gets carried off
     # by an internal scroll, and each pane's own overflow-y:auto is what
     # scrolls - not #main, and not the page.
-    vis = pn.Row(sidebar, main, sizing_mode="stretch_width",
-                 styles={"height": "100%", "overflow": "hidden"})
+    vis_content = pn.Row(sidebar, main, sizing_mode="stretch_width",
+                         styles={"height": "100%", "overflow": "hidden"})
+
+    # Greys out and locks the whole Visualization tab while a difference
+    # computes. The small header spinner was the only other sign, and it was
+    # easy to miss; the old in-card spinner still left the sidebar live, so
+    # the user could change the variable or pick another pair mid-run.
+    # Absolutely positioned over vis_content rather than swapped in for it,
+    # so the tab keeps its layout underneath and nothing reflows when the
+    # computation finishes. Lives inside the tab, so Statistics and
+    # Inference stay usable.
+    diff_busy_overlay = TabBusyOverlay(
+        visible=False,
+        margin=0,
+        styles={
+            "position": "absolute", "top": "0", "left": "0",
+            "width": "100%", "height": "100%", "z-index": "1000",
+        },
+    )
+
+    def _sync_diff_busy(*_):
+        html = _diff_busy_html(grid_state.diff_status, grid_state.diff_pairs)
+        diff_busy_overlay.html = html
+        diff_busy_overlay.visible = bool(html)
+
+    grid_state.param.watch(_sync_diff_busy, ["diff_status", "diff_pairs"])
+
+    vis = pn.Column(
+        vis_content, diff_busy_overlay,
+        sizing_mode="stretch_width",
+        styles={"height": "100%", "overflow": "hidden",
+                "position": "relative"},
+    )
     inference = pn.Column(
         inference_tab.panel(),
         sizing_mode="stretch_width",
@@ -630,7 +741,7 @@ def build_app(data_dir):
         stats_browser.panel,
         stats_load_suite_dialog.open_button,
         stats_load_suite_dialog.modal,
-        width=250,
+        width=_SIDEBAR_WIDTH,
         styles={"height": "100%", "overflow-y": "auto"},
     )
     statistics_main = pn.Column(

@@ -589,8 +589,6 @@ class PlotGrid(param.Parameterized):
         self._torn_down = False
 
         self._hv_pane = None
-        self._busy_pane = None
-        self._plot_area = None
 
         # id(Range1d) -> CustomJS enforcing that range's zoom/pan limits -
         # see _apply_zoom_clamp. Cleared in teardown() so a torn-down grid
@@ -636,10 +634,6 @@ class PlotGrid(param.Parameterized):
         # keep firing on a dead grid and mutate widgets no longer on screen.
         self._status_watcher = None
 
-        # Set by panel(); kept so teardown can unwatch, same reasoning as
-        # _status_watcher above.
-        self._busy_watcher = None
-
         # Recompute colour limits whenever the user picks a different
         # variable or level. Without this, field_clim/diff_clim are only
         # ever set at grid construction (app_layout's refresh_clims_async)
@@ -676,13 +670,6 @@ class PlotGrid(param.Parameterized):
                 pass
             self._clim_watcher = None
 
-        if self._busy_watcher is not None:
-            try:
-                self.state.param.unwatch(self._busy_watcher)
-            except Exception:
-                pass
-            self._busy_watcher = None
-
         for stream in (self._field_stream, self._diff_stream,
                        *self._pointer_streams):
             try:
@@ -701,8 +688,13 @@ class PlotGrid(param.Parameterized):
         self._cbar_drag_figs.clear()
         self._layout = None
         self._hv_pane = None
-        self._busy_pane = None
-        self._plot_area = None
+
+        # A pair still computing when this grid is replaced never reports
+        # back (work() bails out once _torn_down is set), so its "computing"
+        # would otherwise sit on the shared state forever - and keep the
+        # app's Visualization-tab busy overlay up with it. Last, so the
+        # streams cleared above don't re-render this grid in response.
+        self.state.diff_status = {}
 
     # -- element construction ------------------------------------------
 
@@ -1088,6 +1080,19 @@ class PlotGrid(param.Parameterized):
             return self._placeholder(f"{model} minus {other} - {status}",
                                      kind="diff")
 
+        # Not on disk yet: _ensure_diff_async is (or is about to start)
+        # computing it, and will flip diff_status - re-running this - when
+        # it lands. Without this, the render triggered by diff_pairs
+        # changing gets here before that "computing" status does, and
+        # load_diff_field computes the whole difference itself, on the
+        # Bokeh server thread - freezing the app for the full run, so no
+        # busy indicator beyond the header spinner could ever reach the
+        # browser.
+        if not self._diff_exists(model, other):
+            return self._placeholder(
+                f"{model} minus {other} - computing", computing=True,
+                kind="diff")
+
         try:
             da, meta = load_diff_field(
                 self.model_dirs[model],
@@ -1363,63 +1368,15 @@ class PlotGrid(param.Parameterized):
             min_height=64,
         )
 
+        # No in-card busy state here: while a difference computes, the app
+        # lays a spinner over the whole Visualization tab instead (see
+        # _diff_busy_overlay in app_layout.py), which also blocks
+        # interaction with the tab until it finishes.
         self._hv_pane = pn.pane.HoloViews(self.layout())
-        self._busy_pane = self._busy_overlay()
-
-        # The small tinted placeholder cell (_placeholder(computing=True))
-        # plus the readout banner were the previous signal that a
-        # difference was computing, and both were easy to miss sitting
-        # alongside the rest of the linked grid. Swapping the WHOLE plot
-        # area out for a big spinner while any pair is computing is far
-        # harder to miss - a full-suite difference can take a minute, so
-        # something has to fill that time obviously.
-        busy = any(s == "computing" for s in self.state.diff_status.values())
-        # fixed, not stretch_width - see card().
-        self._plot_area = pn.Column(
-            self._busy_pane if busy else self._hv_pane,
-            sizing_mode="fixed",
-        )
-
-        def _toggle_busy(event):
-            busy = any(s == "computing" for s in (event.new or {}).values())
-            self._plot_area.objects = [
-                self._busy_pane if busy else self._hv_pane]
-
-        self._busy_watcher = self.state.param.watch(_toggle_busy, "diff_status")
-
         return pn.Column(
             readout,
-            self._plot_area,
+            self._hv_pane,
             sizing_mode="fixed",
-        )
-
-    def _busy_overlay(self):
-        """Large, centered stand-in for the grid while a difference computes."""
-        return pn.Column(
-            pn.layout.VSpacer(),
-            pn.Row(
-                pn.layout.HSpacer(),
-                pn.indicators.LoadingSpinner(
-                    value=True, width=120, height=120, color="primary"),
-                pn.layout.HSpacer(),
-            ),
-            pn.Row(
-                pn.layout.HSpacer(),
-                pn.pane.Markdown(
-                    "**Computing difference — a full suite can take "
-                    "a minute.**",
-                    align="center",
-                ),
-                pn.layout.HSpacer(),
-            ),
-            pn.layout.VSpacer(),
-            # Fixed at roughly the grid's own footprint so the card doesn't
-            # collapse to spinner width while a difference computes.
-            width=2 * PANEL_FRAME_WIDTH + 300,
-            # Explicit, or Panel infers stretch_width from the spacers and
-            # drops the width.
-            sizing_mode="fixed",
-            min_height=420,
         )
 
     def card(self, title="Forecast fields", **kwargs):
