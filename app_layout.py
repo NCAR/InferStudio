@@ -284,6 +284,62 @@ class TabBusyOverlay(pn.custom.JSComponent):
     }
     """
 
+class WheelScrollPassthrough(pn.custom.JSComponent):
+    """Lets the mouse wheel scroll the page anywhere over a plot except
+    its map area.
+
+    BokehJS's WheelZoomTool reports every wheel event over a figure as
+    handled - even when the cursor is on an axis, the title, a margin or
+    the colorbar, where zoom() does nothing - and Bokeh then cancels the
+    event, so the page can't scroll while the cursor is anywhere over a
+    plot. With the grid's plots stacked down the page, that left only
+    narrow gaps to scroll from.
+
+    One window-level capture listener, installed once per page, runs
+    before Bokeh's own. For a wheel over a plot but outside its frame it
+    stops the event reaching Bokeh without cancelling it, so the browser
+    scrolls as it would over plain page content. Over the frame it does
+    nothing and the wheel zooms as before. Being window-level, it covers
+    plots created later (a new suite, a re-render) without re-wiring, and
+    works when a plot scrolls under a cursor that hasn't moved.
+
+    Plot views are looked up from each document's models and cached by
+    their event layer (the element Bokeh listens on); the cache is only
+    rebuilt when an event arrives over a layer it hasn't seen.
+    """
+
+    _esm = """
+    export function render() {
+      if (window.__inferstudioWheelPassthrough) { return; }
+      window.__inferstudioWheelPassthrough = true;
+      let views = new Map();   // events layer element -> plot view
+      function rebuild() {
+        views = new Map();
+        for (const doc of window.Bokeh.documents) {
+          for (const m of doc.all_models) {
+            if (!("toolbar" in m && "renderers" in m && "left" in m)) { continue; }
+            const v = window.Bokeh.index.find_one(m);
+            if (v != null && v.canvas_view != null && v.frame != null) {
+              views.set(v.canvas_view.events_el, v);
+            }
+          }
+        }
+      }
+      window.addEventListener("wheel", (e) => {
+        const layer = e.composedPath().find(
+          (n) => n.classList != null && n.classList.contains("bk-events"));
+        if (layer == null) { return; }
+        if (!views.has(layer)) { rebuild(); }
+        const view = views.get(layer);
+        if (view == null) { return; }
+        const r = layer.getBoundingClientRect();
+        if (!view.frame.bbox.contains(e.clientX - r.left, e.clientY - r.top)) {
+          e.stopPropagation();
+        }
+      }, { capture: true, passive: true });
+    }
+    """
+
 def link_controls(controls, state):
     """Bridge SharedPlotControls -> PlotGridState.
 
@@ -726,6 +782,7 @@ def build_app(data_dir):
 
     vis = pn.Column(
         vis_content, diff_busy_overlay,
+        WheelScrollPassthrough(width=0, height=0, margin=0),
         sizing_mode="stretch_width",
         styles={"height": "100%", "overflow": "hidden",
                 "position": "relative"},
