@@ -23,6 +23,7 @@ from visualization.earth2StudioPlot import close_dataset_cache
 
 from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
+from job_status import job_clock, install_disconnect_notice
 
 # Model-difference cache. Each pair gets its own subdirectory (see
 # modelDiff.compute_model_difference), so this is the parent only.
@@ -1005,6 +1006,14 @@ def build_app(data_dir):
         )
     )
     pn.state.sync_busy(busy_spinner)
+    # Remaining wall time of the OOD job, next to the spinner. Absent when
+    # running outside OOD, where there's no wall time.
+    clock = job_clock(margin=(0, 20, 0, 0), styles={
+        "display": "flex", "align-items": "center", "height": "100%",
+        "flex-shrink": "0",
+    })
+    if clock is not None:
+        template.header.append(clock)
     template.header.append(busy_spinner)
     template.header.append(
         pn.pane.PNG(
@@ -1046,6 +1055,10 @@ def build_app(data_dir):
             )
 
     pn.state.onload(_show_welcome)
+
+    # When the job hits its wall time the server dies with it, and the page
+    # would otherwise just stop responding with no explanation.
+    install_disconnect_notice()
 
     # earth2StudioPlot holds datasets open (dask-backed) so the grid's
     # DynamicMap callbacks don't reopen an mfdataset on every slider tick.
