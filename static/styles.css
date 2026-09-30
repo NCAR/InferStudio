@@ -218,3 +218,15 @@
 /*.hidden {
   display: none !important;
 }*/
+
+/* Primary buttons and toggles (Load Existing Suite, Download Video, the
+   Inference tab's model/variable/time-step toggles, ...) in the header's
+   navy, instead of Panel's stock blue. Design variables are custom
+   properties, which inherit into every widget's shadow root - a plain
+   selector here would stop at the shadow boundary. */
+:root {
+  --design-primary-color: #091422;
+  --design-primary-text-color: #ffffff;
+  --panel-primary-color: #091422;
+  --panel-on-primary-color: #ffffff;
+}

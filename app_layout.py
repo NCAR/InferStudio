@@ -7,6 +7,8 @@ import param
 import xarray as xr
 from pathlib import Path
 from functools import lru_cache
+from panel.theme.base import Inherit
+from panel.widgets.button import _ButtonBase
 
 from dimensions import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME, resolve_nc_glob
 
@@ -202,6 +204,45 @@ def model_dirs_for(entry: dict) -> dict:
     still routes to DatasetPlot2 below rather than to the model grid.
     """
     return {name: Path(m["path"]) for name, m in entry.get("models", {}).items()}
+
+
+# --- Button colours ------------------------------------------------------ #
+# Primary buttons and toggles (Load Existing Suite, Download Video, the
+# Inference tab's model/variable/time-step toggles, ...) use the header's
+# navy. static/styles.css sets the primary colour itself; this covers what
+# that can't reach: Panel's Bootstrap theme hard-codes Bootstrap blue for
+# the primary button's border and hover/active states inside each button's
+# shadow root, which only a stylesheet on the widget itself can override.
+# _ButtonBase is the common parent of Button, Toggle, CheckButtonGroup and
+# RadioButtonGroup, so this reaches every one of them.
+_NAVY = "#091422"
+_NAVY_HOVER = "#1d3450"
+_BUTTON_STYLESHEET = f"""
+.bk-btn-primary {{
+  --bs-btn-bg: {_NAVY};
+  --bs-btn-border-color: {_NAVY};
+  --bs-btn-hover-bg: {_NAVY_HOVER};
+  --bs-btn-hover-border-color: {_NAVY_HOVER};
+  --bs-btn-active-bg: {_NAVY};
+  --bs-btn-active-border-color: {_NAVY};
+  --bs-btn-disabled-bg: {_NAVY};
+  --bs-btn-disabled-border-color: {_NAVY};
+  --bs-btn-focus-shadow-rgb: 9, 20, 34;
+}}
+/* An unselected outline toggle: navy outline and text, with a pale hover
+   rather than a navy fill that would hide its dark label. */
+:host(.outline) .bk-btn-primary:not(.bk-active) {{
+  color: {_NAVY};
+}}
+:host(.outline) .bk-btn-primary:not(.bk-active):hover {{
+  background-color: #DFEFF6;
+  color: {_NAVY};
+}}
+"""
+# Inherit keeps the theme's own button stylesheet (from Viewable's
+# modifiers) ahead of this one; without it, this list replaces it.
+pn.theme.Bootstrap.modifiers[_ButtonBase] = {
+    "stylesheets": [Inherit, _BUTTON_STYLESHEET]}
 
 
 # Sidebar width shared by the Visualization and Statistics tabs. The busy
