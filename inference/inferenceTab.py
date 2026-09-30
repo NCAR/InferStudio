@@ -25,6 +25,25 @@ EARTH2STUDIO_MODEL_LIST = ['AIFS', 'Aurora', 'Pangu', 'FourCastNet3']
 EARTH2STUDIO_MODELS = frozenset(EARTH2STUDIO_MODEL_LIST)
 #EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'GraphCast', 'SFNO'}
 
+# Runs in the browser whenever a log box's text changes: keeps it scrolled
+# to the newest output, unless the user has scrolled up to read earlier
+# lines - then it stays put until they scroll back to the bottom.
+LOG_AUTOSCROLL_JS = """
+const view = Bokeh.index.find_one(cb_obj);
+const el = view == null ? null : view.input_el;
+if (el == null) { return; }
+if (!el._autoscroll) {
+  el._autoscroll = true;
+  el._stick = true;
+  el.addEventListener("scroll", () => {
+    el._stick = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  });
+}
+if (el._stick) {
+  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+}
+"""
+
 # Short, hover-friendly descriptions shown as a tooltip on each model button.
 MODEL_DESCRIPTIONS = {
     'WXFormer': (
@@ -219,6 +238,7 @@ class InferenceTab(param.Parameterized):
                 sizing_mode="stretch_width",
                 height=300,
             )
+            widget.jscallback(value=LOG_AUTOSCROLL_JS)
             spinner = pn.indicators.LoadingSpinner(
                 width=25, height=25, value=True, color="primary", visible=True
             )
