@@ -60,6 +60,7 @@ import threading
 import time
 import traceback
 from functools import partial
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -82,6 +83,7 @@ from visualization.modelDiff import (
     symmetric_diff_range,
 )
 from dimensions import diff_file_path
+from cf_convert import variable_long_name
 
 hv.extension("bokeh")
 
@@ -526,6 +528,17 @@ def _schedule(fn):
     except Exception:
         pass
     fn()
+
+
+def _fmt_lat(lat):
+    """45.62 -> "45.62°N", -45.62 -> "45.62°S"."""
+    return f"{abs(lat):.2f}\u00b0{'N' if lat >= 0 else 'S'}"
+
+
+def _fmt_lon(lon):
+    """Longitude as °E/°W, whether the grid runs 0..360 or -180..180."""
+    lon = (lon + 180) % 360 - 180
+    return f"{abs(lon):.2f}\u00b0{'E' if lon >= 0 else 'W'}"
 
 
 def _fmt(value):
@@ -1235,41 +1248,49 @@ class PlotGrid(param.Parameterized):
             entries = [(m, self._fields.get((kind, m))) for m in self.models]
 
         rows = []
-        var_name = None
         for model, entry in entries:
             if entry is None:
                 continue
             da, meta = entry
-            var_name = var_name or meta.var_name
-            rows.append((model, _fmt(self._sample(da, meta, x, y))))
+            # Over a difference panel the values are deltas; the label says
+            # which pair, so they can't be mistaken for model values.
+            label = model
+            if kind == "diff":
+                label = f"{model} \u2212 {self.state.diff_pairs.get(model)}"
+            rows.append((label, _fmt(self._sample(da, meta, x, y))))
 
         if not rows:
             return
 
-        label = f"{var_name} delta" if kind == "diff" else var_name
         self.state.readout_rows = (
-            (("Variable", label), ("Lat", f"{y:.2f}"), ("Lon", f"{x:.2f}")),
+            (("Lat", _fmt_lat(y)), ("Lon", _fmt_lon(x))),
             tuple(rows),
         )
 
     @staticmethod
-    def _readout_html(stamp, left, right, status=None):
-        """Lay the readout out on a fixed grid, with a banner when a
-        difference is being computed.
+    def _readout_html(stamp, variable, level, left, right, status=None):
+        """The header above the grid: valid time and variable as a
+        headline, the cursor readout, and the mouse controls - with a
+        banner when a difference is being computed.
+
+        Everything here is sized to be read at a glance: the readout is the
+        only way to get a number off the maps, and the mouse controls are
+        the only hint that the maps can be zoomed and the colorbars
+        dragged, so neither can be small grey print.
 
         The banner exists because a difference over a full suite takes long
         enough that silence reads as failure. The busy spinner in the
         template header is too small and too far from where the user is
         looking; this sits directly above the panel that is waiting.
 
-        Alignment is the whole point. A plain inline run of spans reflows on
-        every mouse move, because "0.0005791" and "-0.006" are different
-        widths - so the labels visibly slide around and the readout is
-        unreadable while the cursor moves. Two things fix that: a CSS grid
-        with `max-content` label columns (label positions are set by the
-        widest label once and then never move), and right-aligned values in
-        a fixed-width column with tabular-nums and a monospace face, so
-        decimal points and minus signs line up.
+        Alignment is the whole point of the readout grid. A plain inline
+        run of spans reflows on every mouse move, because "0.0005791" and
+        "-0.006" are different widths - so the labels visibly slide around
+        and the readout is unreadable while the cursor moves. Two things fix
+        that: a CSS grid with `max-content` label columns (label positions
+        are set by the widest label once and then never move), and
+        right-aligned values in a fixed-width column with tabular-nums and
+        a monospace face, so decimal points and minus signs line up.
         """
         computing = sorted(m for m, s in (status or {}).items()
                            if s == "computing")
@@ -1287,7 +1308,21 @@ class PlotGrid(param.Parameterized):
                 f"<div class='rl'>{l_lab}{':' if l_lab else ''}</div>"
                 f"<div class='rv'>{l_val}</div>"
                 f"<div class='rl'>{r_lab}{':' if r_lab else ''}</div>"
-                f"<div class='rv'>{r_val}</div>"
+                f"<div class='rv rv-model'>{r_val}</div>"
+            )
+        readout = (
+            f"<div class='readout'>{''.join(cells)}</div>" if cells else
+            "<div class='readout-empty'>Hover over a map to read "
+            "values here.</div>"
+        )
+
+        headline = ""
+        if variable:
+            long_name = variable_long_name(variable) or variable
+            where = f" at {level} hPa" if level else ""
+            headline = (
+                f"<div class='readout-var'>{escape(long_name)}{where} "
+                f"<span class='var-code'>({escape(variable)})</span></div>"
             )
 
         banner = ""
@@ -1307,38 +1342,51 @@ class PlotGrid(param.Parameterized):
 
         return (
             "<style>"
-            ".readout-wrap{display:flex;align-items:flex-start;gap:32px;}"
+            ".readout-wrap{display:flex;align-items:flex-start;gap:28px;"
+            "text-align:left;}"
+            ".readout-var{font-size:20px;font-weight:700;color:#091422;"
+            "white-space:nowrap;}"
+            ".readout-var .var-code{font-weight:400;color:#555;"
+            "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
+            "font-size:17px;}"
+            ".readout-time{font-size:15px;font-weight:600;color:#333;"
+            "white-space:nowrap;font-variant-numeric:tabular-nums;"
+            "margin-bottom:6px;}"
             ".readout{display:grid;"
             # max-content sizes each label column to its widest member and
             # holds it; the fixed value columns mean a value gaining a digit
             # cannot push the next label sideways.
-            "grid-template-columns:max-content 4.5em max-content 7em;"
-            "column-gap:10px;row-gap:1px;font-size:13px;"
-            "width:max-content;}"
+            "grid-template-columns:max-content 6em max-content 8.5em;"
+            "column-gap:12px;row-gap:2px;font-size:17px;"
+            # Header navy and pale blue (app_layout.py's header_background
+            # and header link colour), so this and the mouse controls read
+            # as part of the app rather than as notices pasted onto it.
+            "width:max-content;background:#091422;color:#DFEFF6;"
+            "border-radius:6px;padding:6px 12px;}"
             # text-align must be explicit on BOTH classes: without it the
             # cells inherit whatever alignment the surrounding Panel card
             # applies, which right-aligns the labels against each other.
-            ".readout .rl{font-weight:600;text-align:left;justify-self:start;}"
+            ".readout .rl{font-weight:600;text-align:left;justify-self:start;"
+            "color:#DFEFF6;}"
             ".readout .rv{text-align:right;justify-self:stretch;"
             # nowrap matters for the exponent cases that survive _fmt: a
             # value wider than its column would wrap to a second line and
             # push every row below it down.
             "white-space:nowrap;font-variant-numeric:tabular-nums;"
             "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
-            ".readout-time{font-size:13px;font-weight:600;white-space:nowrap;"
-            "font-variant-numeric:tabular-nums;}"
-            # Three rows - title, map, colorbar - so it sits beside the
-            # three-row readout without making the header any taller. The
-            # line-height matches the readout's row pitch so the rows line
-            # up, and text-align is explicit for the same reason as .rl.
+            ".readout .rv-model{font-weight:700;color:#8fd3ff;}"
+            ".readout-empty{font-size:15px;color:#DFEFF6;font-style:italic;"
+            "background:#091422;border-radius:6px;"
+            "padding:8px 12px;width:max-content;}"
             ".readout-hint{display:grid;grid-template-columns:max-content "
-            "max-content;column-gap:8px;row-gap:1px;font-size:11px;"
-            "line-height:18.5px;color:#666;white-space:nowrap;"
-            "text-align:left;}"
-            ".readout-hint .hint-title{grid-column:1/3;font-weight:600;"
-            "color:#444;}"
-            ".readout-hint .hint-label{font-weight:600;}"
-            ".readout-banner{font-size:12px;padding:5px 10px;"
+            "max-content;column-gap:10px;row-gap:4px;font-size:14px;"
+            "color:#DFEFF6;white-space:nowrap;text-align:left;"
+            "background:#091422;border-radius:6px;"
+            "padding:8px 14px;align-self:center;}"
+            ".readout-hint .hint-title{grid-column:1/3;font-weight:700;"
+            "font-size:15px;color:#ffffff;}"
+            ".readout-hint .hint-label{font-weight:700;color:#8fd3ff;}"
+            ".readout-banner{font-size:14px;padding:6px 12px;"
             "border-radius:4px;margin-bottom:6px;width:max-content;}"
             ".readout-busy{background:#fff3cd;border:1px solid #ffc107;}"
             ".readout-err{background:#f8d7da;border:1px solid #dc3545;}"
@@ -1348,10 +1396,13 @@ class PlotGrid(param.Parameterized):
             "</style>"
             f"{banner}"
             "<div class='readout-wrap'>"
+            "<div>"
+            f"{headline}"
             f"<div class='readout-time'>{stamp}</div>"
-            f"<div class='readout'>{''.join(cells)}</div>"
+            f"{readout}"
+            "</div>"
             "<div class='readout-hint'>"
-            "<div class='hint-title'>Mouse Controls</div>"
+            "<div class='hint-title'>\U0001f5b1 Mouse controls</div>"
             "<div class='hint-label'>Map:</div>"
             "<div>scroll to zoom &middot; drag to pan &middot; "
             "double-click to reset</div>"
@@ -1439,15 +1490,17 @@ class PlotGrid(param.Parameterized):
         # a panel, readout_rows is empty and this renders the timestamp and
         # the navigation hint alone.
         readout = pn.pane.HTML(
-            pn.bind(lambda stamp, rows, status: self._readout_html(
-                        stamp, rows[0], rows[1], status),
+            pn.bind(lambda stamp, var, level, rows, status: self._readout_html(
+                        stamp, var, level, rows[0], rows[1], status),
                     self.state.param.header_text,
+                    self.state.param.variable,
+                    self.state.param.level,
                     self.state.param.readout_rows,
                     self.state.param.diff_status),
             margin=(4, 0, 8, 12),
             # Reserves the readout's rows so the plots below don't shift
             # down the first time the cursor enters a panel.
-            min_height=64,
+            min_height=128,
         )
 
         # No in-card busy state here: while a difference computes, the app

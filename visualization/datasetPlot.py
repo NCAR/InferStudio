@@ -7,6 +7,7 @@ import panel as pn
 import param
 
 from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
+from cf_convert import variable_long_name
 from visualization.era5_plot import plot_png, NETCDF_FILE
 from visualization.earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
 from visualization.modelDiff import compute_model_difference
@@ -175,6 +176,14 @@ class SharedPlotControls(param.Parameterized):
         self.var_selector.link(self, value="var_name")
         self.level_selector.link(self, value="level_value")
 
+        # What the selected short name means, right under the dropdown -
+        # "sp" or "msl" alone means nothing to many users.
+        self._var_description = pn.pane.HTML(
+            pn.bind(self._describe_variable, self.var_selector.param.value),
+            sizing_mode="stretch_width",
+            margin=(0, 15, 5, 5),
+        )
+
         # Colormap selector — built from cmocean (or a matplotlib fallback
         # if cmocean isn't installed). self._colormaps maps name -> the
         # actual Colormap object, used to resolve the selected name back to
@@ -274,6 +283,7 @@ class SharedPlotControls(param.Parameterized):
                 sizing_mode="stretch_width",
                 css_classes=["widget-row"],
             ),
+            self._var_description,
             pn.Row(
                 pn.pane.HTML(
                     "<b>Level (hPa)</b>",
@@ -329,6 +339,21 @@ class SharedPlotControls(param.Parameterized):
                 sizing_mode="stretch_width",
             ),
             sizing_mode="stretch_width",
+        )
+
+    @staticmethod
+    def _describe_variable(var):
+        if not var:
+            return ""
+        long_name = variable_long_name(var)
+        text = (f"<b>{long_name}</b>" if long_name
+                else "<i>No description available</i>")
+        return (
+            "<div style='background:#DFEFF6; border-left:4px solid #091422;"
+            " border-radius:3px; padding:6px 10px; font-size:14px;"
+            " color:#091422; line-height:1.3;'>"
+            f"<span style='font-family:ui-monospace,Menlo,monospace;'>{var}</span>"
+            f" = {text}</div>"
         )
 
     def _set_displayed_min(self, value):

@@ -73,6 +73,22 @@ _CF_SURFACE_ATTRS = {
     "msl": {"standard_name": "air_pressure_at_mean_sea_level", "long_name": "Mean sea level pressure", "units": "Pa"},
 }
 
+
+def variable_long_name(name):
+    """Human-readable name for a variable's short name ("sp" -> "Surface
+    pressure"), or None if it isn't one this file knows. Case-insensitive,
+    and a legacy flattened name like "u500" resolves through its base "u".
+    """
+    key = (name or "").lower()
+    for table in (_CF_SURFACE_ATTRS, _CF_VAR_ATTRS):
+        if key in table:
+            return table[key]["long_name"]
+    base = key.rstrip("0123456789")
+    if base != key and base in _CF_VAR_ATTRS:
+        return _CF_VAR_ATTRS[base]["long_name"]
+    return None
+
+
 # CF attributes for coordinate variables.
 #
 # `units` uses the plural forms (degrees_north / degrees_east). CF 4.1
