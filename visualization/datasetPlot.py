@@ -637,7 +637,7 @@ class DatasetPlot2(param.Parameterized):
             try:
                 diff_path = compute_model_difference(
                     self.model_paths[model], self.model_paths[other],
-                    cache_dir, model, other,
+                    model, other,
                 )
             except Exception as e:
                 _schedule(partial(self._finish_diff_error, model,
