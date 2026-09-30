@@ -44,7 +44,7 @@ hv.Layout, and the sidebar is where the other field controls already live.
 
 Typical use:
 
-    grid = PlotGrid(models, model_dirs, DIFF_CACHE_DIR, state=shared_state)
+    grid = PlotGrid(models, model_dirs, state=shared_state)
     grid.set_time_bounds(n_steps)
     sidebar.append(grid.diff_selectors())
     plots_card = grid.card(title=suite_name)
@@ -79,10 +79,9 @@ from visualization.boundaries import (
 from visualization.modelDiff import (
     load_diff_field,
     compute_model_difference,
-    pair_dir_path,
-    pair_name,
     symmetric_diff_range,
 )
+from dimensions import diff_file_path
 
 hv.extension("bokeh")
 
@@ -551,18 +550,15 @@ def _fmt(value):
 class PlotGrid(param.Parameterized):
     """Builds and owns the linked plot grid."""
 
-    def __init__(self, models, model_dirs, diff_cache_dir, state=None):
+    def __init__(self, models, model_dirs, state=None):
         """
         models         : list[str] - model names, in display order
         model_dirs     : dict[str, Path] - model name -> directory of .nc files
-        diff_cache_dir : Path - e.g. /glade/derecho/scratch/pearse/
-                                     .inferstudio_diff_cache/
         state          : PlotGridState, or None to create one
         """
         super().__init__()
         self.models = list(models)
         self.model_dirs = dict(model_dirs)
-        self.diff_cache_dir = Path(diff_cache_dir)
         self.state = state if state is not None else PlotGridState()
 
         # Forecast length, set by set_time_bounds. Only frame_spec reads it;
@@ -1184,7 +1180,6 @@ class PlotGrid(param.Parameterized):
             da, meta = load_diff_field(
                 self.model_dirs[model],
                 self.model_dirs[other],
-                self.diff_cache_dir,
                 model,
                 other,
                 self.state.variable,
@@ -1488,12 +1483,22 @@ class PlotGrid(param.Parameterized):
 
     def diff_selectors(self, width=200):
         """Column of one Select per model, for the sidebar."""
+        def options(model):
+            # Pairs whose difference is already saved with the suite (from
+            # this session or an earlier one) are marked, since picking
+            # one shows it straight away rather than computing it.
+            opts = {"None": "None"}
+            for other in self.models:
+                if other != model:
+                    saved = self._diff_exists(model, other)
+                    opts[f"{other} (saved)" if saved else other] = other
+            return opts
+
         widgets = {}
         for model in self.models:
-            others = [m for m in self.models if m != model]
             widgets[model] = pn.widgets.Select(
                 name=f"{model} minus",
-                options=["None"] + others,
+                options=options(model),
                 value="None",
                 width=width,
             )
@@ -1522,6 +1527,8 @@ class PlotGrid(param.Parameterized):
                 w.disabled = busy
                 w.name = (f"{model} minus  (computing\u2026)" if busy
                           else f"{model} minus")
+                if event.new.get(model) == "ready":
+                    w.options = options(model)
 
         for w in widgets.values():
             w.param.watch(sync, "value")
@@ -1534,8 +1541,11 @@ class PlotGrid(param.Parameterized):
     # -- background computation -----------------------------------------
 
     def _diff_exists(self, a, b):
-        d = pair_dir_path(self.diff_cache_dir, a, b)
-        return (d / f"{pair_name(a, b)}.nc").exists()
+        return self._diff_path(a, b).exists()
+
+    def _diff_path(self, a, b):
+        """(a minus b)'s file, saved in a's directory with the suite."""
+        return diff_file_path(self.model_dirs[a], a, b)
 
     def _set_status(self, model, value):
         def apply():
@@ -1572,8 +1582,7 @@ class PlotGrid(param.Parameterized):
         def work():
             try:
                 compute_model_difference(
-                    self.model_dirs[a], self.model_dirs[b],
-                    self.diff_cache_dir, a, b,
+                    self.model_dirs[a], self.model_dirs[b], a, b,
                 )
                 if self._torn_down:
                     return
@@ -1633,8 +1642,7 @@ class PlotGrid(param.Parameterized):
                 continue
             try:
                 lo, hi = symmetric_diff_range(
-                    self.model_dirs[a], self.model_dirs[b],
-                    self.diff_cache_dir, a, b,
+                    self.model_dirs[a], self.model_dirs[b], a, b,
                     self.state.variable, self.state.level, sample_steps,
                 )
             except Exception:
@@ -1706,7 +1714,7 @@ class PlotGrid(param.Parameterized):
                 panels.append({
                     "kind": "diff",
                     "title": f"{model} minus {other}",
-                    "dir": pair_dir_path(self.diff_cache_dir, model, other),
+                    "dir": self._diff_path(model, other),
                     "cmap": DIFF_CMAP,
                     "clim": self.state.diff_clim,
                 })

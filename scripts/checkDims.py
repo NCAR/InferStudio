@@ -54,8 +54,10 @@ def nc_files(model_dir: Path):
     earth2studio output and its *_cf.nc conversion, and reading both at once
     would merge two different variable-naming schemes.
     """
-    cf = sorted(model_dir.glob("*_cf.nc"))
-    return cf if cf else sorted(model_dir.glob("*.nc"))
+    files = sorted(p for p in model_dir.glob("*.nc")
+                   if not p.name.endswith("_diff.nc"))  # model diffs, not this model's data
+    cf = [p for p in files if p.name.endswith("_cf.nc")]
+    return cf if cf else files
 
 
 def resolve(names, candidates):

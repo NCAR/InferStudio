@@ -12,6 +12,7 @@ from functools import partial
 from pathlib import Path
 
 from inference.outputParams import OutputParams
+from dimensions import model_file_stem
 from tooltips import below_tooltip
 from inference.timePicker import TimePicker
 from inference.commandRunner import CommandRunner
@@ -197,6 +198,9 @@ class InferenceTab(param.Parameterized):
             ),
             "output_dir":      self.outputParams.current_path_val,
             "model":           model,
+            "file_stem":       model_file_stem(
+                self.outputParams.simulationNamePicker.value_input, model
+            ),
         }
 
     # ------------------------------------------------------------------ #

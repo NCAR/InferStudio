@@ -468,7 +468,7 @@ class DatasetPlot2(param.Parameterized):
         # than resetting back to "no diff" on every render.
         self._diff_selectors = {}       # model -> Select widget
         self._diff_slots = {}           # model -> Column that holds the diff card (empty when none selected)
-        # model -> cached difference dataset dir, for whichever diffs are
+        # model -> difference file, for whichever diffs are
         # currently displayed. compute_model_difference already returns
         # this path; retaining it lets export_panels() below describe the
         # diff cards without recomputing anything.
@@ -624,14 +624,6 @@ class DatasetPlot2(param.Parameterized):
                 min_height=420,
             )
         ]
-
-        sim_dir = Path(self.metadata["path"])
-        # Deliberately NOT a sibling of sim_dir (e.g. sim_dir.parent /
-        # f"{sim_dir.name}_diffs") — that lands inside data_dir itself,
-        # which scan_datasets walks directly, so it would show up as a
-        # spurious extra dataset in the Datasets list. Using a dedicated,
-        # clearly-separate cache root avoids that class of bug entirely.
-        cache_dir = Path(f"/glade/derecho/scratch/{os.environ['USER']}/.inferstudio_diff_cache") / sim_dir.name
 
         # Off the Bokeh callback thread: compute_model_difference over a
         # full suite can take minutes, and running it inline here would

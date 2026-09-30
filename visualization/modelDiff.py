@@ -4,17 +4,15 @@ NetCDF file that can be plotted the same way as any other model output
 (via load_e2s_field / plot_e2s_field), just with a diverging colormap and
 a symmetric value range, since these are signed difference fields.
 
-Cached: once computed for a given model pair, the same file is reused on
-subsequent requests rather than recomputing.
+Saved with the simulation: (A minus B) is written to A's own directory,
+next to A's output (see dimensions.diff_file_path), e.g.
+<suite>/Aurora/InferStudio_Aurora_minus_Pangu_<timestamp>_diff.nc. Once a
+pair's file exists it is reused - in this session or any later one that
+loads the suite - rather than recomputed.
 
-Each model pair gets its own subdirectory (cache_dir/<A>_minus_<B>/) -
-matching the same "model_dir contains this model's .nc file(s)"
-convention used everywhere else in the app (e.g. <sim_dir>/AIFS/AIFS.nc).
-The loaders always glob *.nc within whatever directory they're given, so
-if multiple diff pairs shared one flat directory, computing a second pair
-for the same suite would make that glob match both files at once and try
-to merge them together - giving each pair its own directory avoids that
-entirely.
+The loaders are handed that file's path in place of a model directory.
+resolve_nc_glob returns it as-is, and leaves *_diff.nc files out when it
+reads a model directory, so Aurora's diffs never get merged into Aurora.
 
 The output is written to the same CF conventions cf_convert.py produces
 for model output, so a difference file is readable by anything that can
@@ -32,15 +30,15 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from dimensions import resolve_nc_glob
+from dimensions import resolve_nc_glob, diff_file_path
 from visualization.earth2StudioVars import _resolve_dim, LAT_NAMES, LON_NAMES
 from visualization.earth2StudioPlot import invalidate_dataset, load_e2s_field
 from visualization.ncJobLock import NC_JOB_LOCK
 
 
-# One lock per pair name. The HoloViews grid can fire several panel
+# One lock per output file. The HoloViews grid can fire several panel
 # callbacks concurrently off a single parameter change; without this, two
-# threads can both see a missing cache file and both start the same
+# threads can both see a missing diff file and both start the same
 # multi-gigabyte computation.
 _PAIR_LOCKS = defaultdict(threading.Lock)
 _PAIR_LOCKS_GUARD = threading.Lock()
@@ -52,15 +50,6 @@ _AUX_COORDS = ("forecast_reference_time", "forecast_period")
 def _lock_for(name: str) -> threading.Lock:
     with _PAIR_LOCKS_GUARD:
         return _PAIR_LOCKS[name]
-
-
-def pair_name(model_a_name: str, model_b_name: str) -> str:
-    return f"{model_a_name}_minus_{model_b_name}"
-
-
-def pair_dir_path(cache_dir, model_a_name, model_b_name) -> Path:
-    """Where a given pair's directory lives, whether or not it exists yet."""
-    return Path(cache_dir) / pair_name(model_a_name, model_b_name)
 
 
 def _build_encoding(ds):
@@ -100,40 +89,35 @@ def _build_encoding(ds):
     return encoding
 
 
-def compute_model_difference(model_a_dir, model_b_dir, cache_dir,
+def compute_model_difference(model_a_dir, model_b_dir,
                              model_a_name, model_b_name) -> Path:
     """Compute (model_a - model_b) for every variable present in both
-    datasets, writing the result to
-    <cache_dir>/<A>_minus_<B>/<A>_minus_<B>.nc.
+    datasets, writing the result to diff_file_path(model_a_dir, ...) -
+    in model A's directory.
 
-    Returns the PATH TO THE DIRECTORY containing that file (not the file
-    itself) - this is the same "model_dir" contract the loaders expect for
-    every other model. If the file already exists, its directory is
-    returned immediately without recomputing.
+    Returns the path to that file, which the loaders accept wherever they
+    take a model directory. If the file already exists, it is returned
+    immediately without recomputing.
     """
-    name = pair_name(model_a_name, model_b_name)
-    pair_dir = pair_dir_path(cache_dir, model_a_name, model_b_name)
-    out_path = pair_dir / f"{name}.nc"
+    out_path = diff_file_path(model_a_dir, model_a_name, model_b_name)
 
     # Fast path outside the lock - the overwhelmingly common case once a
     # pair has been computed is that the file is simply there.
     if out_path.exists():
-        return pair_dir
+        return out_path
 
-    with _lock_for(name):
+    with _lock_for(str(out_path)):
         # Re-check: another thread may have finished while we waited.
         if out_path.exists():
-            return pair_dir
-
-        pair_dir.mkdir(parents=True, exist_ok=True)
+            return out_path
 
         # Write to a temporary name in the same directory, then rename.
         # os.replace is atomic within a filesystem, so a reader either sees
         # no file or a complete one - never a partially flushed NetCDF.
         # This matters now that plot callbacks poll these paths on every
         # parameter change rather than once per explicit user action.
-        # The leading dot also keeps the temp file out of the *.nc glob.
-        tmp_path = pair_dir / f".{name}.nc.tmp"
+        # The leading dot and .tmp also keep it out of the *.nc glob.
+        tmp_path = out_path.with_name(f".{out_path.name}.tmp")
 
         # NC_JOB_LOCK first, so a Statistics run reading the suite waits
         # for this whole open/compute/write rather than interleaving HDF5
@@ -270,24 +254,24 @@ def compute_model_difference(model_a_dir, model_b_dir, cache_dir,
                 tmp_path.unlink(missing_ok=True)
                 raise
 
-        # A failed or superseded earlier read of this directory may be
-        # sitting in the loader's open-dataset cache. Drop it so the next
-        # read picks up the file just written.
-        invalidate_dataset(pair_dir)
+        # A failed or superseded earlier read of this file may be sitting
+        # in the loader's open-dataset cache. Drop it so the next read
+        # picks up the file just written.
+        invalidate_dataset(out_path)
 
-    return pair_dir
+    return out_path
 
 
-def load_diff_field(model_a_dir, model_b_dir, cache_dir,
+def load_diff_field(model_a_dir, model_b_dir,
                     model_a_name, model_b_name, base_or_var, level, t):
     """Convenience wrapper: ensure the diff exists, then load one field
     from it. This is what the plot grid's diff_provider calls."""
-    pair_dir = compute_model_difference(
-        model_a_dir, model_b_dir, cache_dir, model_a_name, model_b_name)
-    return load_e2s_field(pair_dir, base_or_var, level, t)
+    diff_path = compute_model_difference(
+        model_a_dir, model_b_dir, model_a_name, model_b_name)
+    return load_e2s_field(diff_path, base_or_var, level, t)
 
 
-def symmetric_diff_range(model_a_dir, model_b_dir, cache_dir,
+def symmetric_diff_range(model_a_dir, model_b_dir,
                          model_a_name, model_b_name, base_or_var, level,
                          sample_steps=3):
     """Symmetric (-m, +m) colour limits sampled across a few steps.
@@ -297,8 +281,8 @@ def symmetric_diff_range(model_a_dir, model_b_dir, cache_dir,
     biased.
     """
     from visualization.earth2StudioPlot import field_range
-    pair_dir = compute_model_difference(
-        model_a_dir, model_b_dir, cache_dir, model_a_name, model_b_name)
-    lo, hi = field_range(pair_dir, base_or_var, level, sample_steps)
+    diff_path = compute_model_difference(
+        model_a_dir, model_b_dir, model_a_name, model_b_name)
+    lo, hi = field_range(diff_path, base_or_var, level, sample_steps)
     m = max(abs(lo), abs(hi))
     return (-m, m)

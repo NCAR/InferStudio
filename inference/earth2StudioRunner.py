@@ -111,7 +111,7 @@ class Earth2StudioRunner(ModelRunner):
         end        = config["end_time"]
         timestep   = config["timestep"]
         output_path = config["output_path"]
-        sim_name   = config["simulation_name"]
+        file_stem  = config["file_stem"]
         ua_vars    = self._translateVars(config["ua_vars"], model_name)
         sfc_vars   = self._translateVars(config["surface_vars"], model_name)
         all_vars = list(dict.fromkeys(ua_vars + sfc_vars))
@@ -124,9 +124,8 @@ class Earth2StudioRunner(ModelRunner):
             end = datetime.fromisoformat(end)
         n_steps = int((end - start).total_seconds() / 3600 / hours)
 
-        output_nc  = f"{output_path}/{sim_name}.nc"
-        #script_path = os.path.join(config["output_dir"], f"{sim_name}_run.py")
-        script_path = os.path.join(config["output_dir"], f"{sim_name}_{model_name}_run.py")
+        output_nc  = f"{output_path}/{file_stem}.nc"
+        script_path = os.path.join(config["output_dir"], f"{file_stem}_run.py")
 
 
         script = f"""

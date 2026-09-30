@@ -43,7 +43,7 @@ class MilesCreditRunner(ModelRunner):
             f"save_forecast: '{config['output_path']}'"
         )
 
-        config_file = config["output_dir"] + '/' + config["simulation_name"] + '.yml'
+        config_file = config["output_dir"] + '/' + config["file_stem"] + '.yml'
         with open(config_file, 'w') as f:
             f.write(content)
 

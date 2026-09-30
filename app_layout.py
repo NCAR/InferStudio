@@ -25,10 +25,6 @@ from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
 from job_status import job_clock, install_disconnect_notice
 
-# Model-difference cache. Each pair gets its own subdirectory (see
-# modelDiff.compute_model_difference), so this is the parent only.
-DIFF_CACHE_DIR = Path(f"/glade/derecho/scratch/{os.environ['USER']}/.inferstudio_diff_cache")
-
 # --- Static asset locations ------------------------------------------------
 # Resolved relative to THIS module, not the process working directory, so the
 # paths hold regardless of where `panel serve` is launched from (OOD's
@@ -757,12 +753,6 @@ def build_app(data_dir):
         grid = PlotGrid(
             models=list(model_dirs),
             model_dirs=model_dirs,
-            # Scoped per suite (ds is the suite's own directory name) --
-            # otherwise a diff cached under "<A>_minus_<B>" for one suite
-            # gets silently reused for any other suite that happens to
-            # reuse the same model names, comparing two unrelated runs
-            # against each other.
-            diff_cache_dir=DIFF_CACHE_DIR / ds,
             state=grid_state,
         )
         # ntime already came out of the scan, so the forecast length is set
