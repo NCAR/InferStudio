@@ -75,7 +75,7 @@ from bokeh.models import (
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, CANON_LAT, CANON_LON)
 from visualization.boundaries import (
-    boundary_lines, NONE as BOUNDARIES_NONE, BOUNDARY_COLOR, BOUNDARY_WIDTH,
+    boundary_lines, DEFAULT as BOUNDARIES_DEFAULT, BOUNDARY_COLOR, BOUNDARY_WIDTH,
     BOUNDARY_HALO_COLOR, BOUNDARY_HALO_WIDTH, BOUNDARY_HALO_ALPHA)
 from visualization.modelDiff import (
     load_diff_field,
@@ -490,7 +490,7 @@ class PlotGridState(param.Parameterized):
     # A visualization.boundaries.BOUNDARY_OPTIONS label. In neither stream
     # list below: the lines live in their own data sources (see
     # PlotGrid._draw_boundaries), so changing them re-renders nothing.
-    boundaries = param.String(default=BOUNDARIES_NONE)
+    boundaries = param.String(default=BOUNDARIES_DEFAULT)
 
     # Cursor readout rows, as (label, value) pairs in two columns:
     # (left_pairs, right_pairs). Empty until the cursor first enters a
@@ -1310,10 +1310,15 @@ class PlotGrid(param.Parameterized):
                 f"<div class='rl'>{r_lab}{':' if r_lab else ''}</div>"
                 f"<div class='rv rv-model'>{r_val}</div>"
             )
+        # The valid time heads the readout box, so the time and the values
+        # read at that time are one block.
+        time_row = f"<div class='readout-time'>{stamp}</div>" if stamp else ""
         readout = (
-            f"<div class='readout'>{''.join(cells)}</div>" if cells else
-            "<div class='readout-empty'>Hover over a map to read "
-            "values here.</div>"
+            f"<div class='readout'>{time_row}{''.join(cells)}</div>"
+            if cells else
+            f"<div class='readout-empty'>{time_row}"
+            "<div>Hover over a map to read "
+            "values here.</div></div>"
         )
 
         headline = ""
@@ -1342,16 +1347,21 @@ class PlotGrid(param.Parameterized):
 
         return (
             "<style>"
-            ".readout-wrap{display:flex;align-items:flex-start;gap:28px;"
-            "text-align:left;}"
+            ".readout-wrap{text-align:left;}"
+            # The readout and the mouse controls share a row of their own,
+            # below the headline and time, and stretch to the same height so
+            # the two boxes' tops and bottoms line up.
+            ".readout-row{display:flex;align-items:stretch;gap:28px;}"
             ".readout-var{font-size:20px;font-weight:700;color:#091422;"
-            "white-space:nowrap;}"
+            "white-space:nowrap;margin-bottom:6px;}"
             ".readout-var .var-code{font-weight:400;color:#555;"
             "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
             "font-size:17px;}"
-            ".readout-time{font-size:15px;font-weight:600;color:#333;"
-            "white-space:nowrap;font-variant-numeric:tabular-nums;"
-            "margin-bottom:6px;}"
+            # Spans all four readout columns. Left-aligned explicitly for
+            # the same reason as .rl below.
+            ".readout-time{grid-column:1/-1;font-size:15px;font-weight:600;"
+            "color:#ffffff;white-space:nowrap;text-align:left;"
+            "font-variant-numeric:tabular-nums;margin-bottom:2px;}"
             ".readout{display:grid;"
             # max-content sizes each label column to its widest member and
             # holds it; the fixed value columns mean a value gaining a digit
@@ -1377,12 +1387,14 @@ class PlotGrid(param.Parameterized):
             ".readout .rv-model{font-weight:700;color:#8fd3ff;}"
             ".readout-empty{font-size:15px;color:#DFEFF6;font-style:italic;"
             "background:#091422;border-radius:6px;"
-            "padding:8px 12px;width:max-content;}"
+            "padding:8px 12px;width:max-content;"
+            "display:flex;flex-direction:column;justify-content:center;}"
+            ".readout-empty .readout-time{font-style:normal;}"
             ".readout-hint{display:grid;grid-template-columns:max-content "
             "max-content;column-gap:10px;row-gap:4px;font-size:14px;"
             "color:#DFEFF6;white-space:nowrap;text-align:left;"
             "background:#091422;border-radius:6px;"
-            "padding:8px 14px;align-self:center;}"
+            "padding:8px 14px;align-content:center;}"
             ".readout-hint .hint-title{grid-column:1/3;font-weight:700;"
             "font-size:15px;color:#ffffff;}"
             ".readout-hint .hint-label{font-weight:700;color:#8fd3ff;}"
@@ -1396,11 +1408,9 @@ class PlotGrid(param.Parameterized):
             "</style>"
             f"{banner}"
             "<div class='readout-wrap'>"
-            "<div>"
             f"{headline}"
-            f"<div class='readout-time'>{stamp}</div>"
+            "<div class='readout-row'>"
             f"{readout}"
-            "</div>"
             "<div class='readout-hint'>"
             "<div class='hint-title'>\U0001f5b1 Mouse controls</div>"
             "<div class='hint-label'>Map:</div>"
@@ -1408,6 +1418,7 @@ class PlotGrid(param.Parameterized):
             "double-click to reset</div>"
             "<div class='hint-label'>Colorbar:</div>"
             "<div>drag to rescale &middot; double-click to reset</div>"
+            "</div>"
             "</div>"
             "</div>"
         )

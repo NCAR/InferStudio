@@ -27,6 +27,10 @@ LAYERS = {
 }
 
 NONE = "None"
+COASTLINES = "Coastlines"
+
+# What a new plot opens with.
+DEFAULT = COASTLINES
 
 # Line style, shared by the plot grid (Bokeh, widths in screen pixels) and
 # the video export's matplotlib frames (widths in points): a thin dark line
@@ -50,7 +54,7 @@ MPL_BOUNDARY_HALO_WIDTH = 1.2
 # Australia, Brazil, China, India, Russia and a few others).
 BOUNDARY_OPTIONS = {
     NONE: (),
-    "Coastlines": ("coastline",),
+    COASTLINES: ("coastline",),
     "Coastlines + countries": ("coastline", "countries"),
     "Coastlines + countries + states/provinces":
         ("coastline", "countries", "states"),

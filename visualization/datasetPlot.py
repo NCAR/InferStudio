@@ -11,7 +11,8 @@ from cf_convert import variable_long_name
 from visualization.era5_plot import plot_png, NETCDF_FILE
 from visualization.earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
 from visualization.modelDiff import compute_model_difference
-from visualization.boundaries import BOUNDARY_OPTIONS, NONE as BOUNDARIES_NONE
+from visualization.boundaries import (
+    BOUNDARY_OPTIONS, DEFAULT as BOUNDARIES_DEFAULT)
 
 pn.extension(raw_css=[Path("static/styles.css").read_text()])
 
@@ -111,7 +112,7 @@ class SharedPlotControls(param.Parameterized):
     cmap_min = param.Number(default=None, allow_None=True)
     cmap_max = param.Number(default=None, allow_None=True)
     # A visualization.boundaries.BOUNDARY_OPTIONS label.
-    boundaries = param.String(default=BOUNDARIES_NONE)
+    boundaries = param.String(default=BOUNDARIES_DEFAULT)
 
     def __init__(self, **params):
         super().__init__(**params)
