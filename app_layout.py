@@ -1008,6 +1008,9 @@ def build_app(data_dir):
         stats_browser.panel,
         stats_load_suite_dialog.open_button,
         stats_load_suite_dialog.modal,
+        controls.stats_panel(),
+        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
+        meta_panel.panel,
         width=_SIDEBAR_WIDTH,
         styles={"height": "100%", "overflow-y": "auto"},
     )

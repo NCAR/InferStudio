@@ -18,6 +18,7 @@ Two entry points:
 
 import io
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -182,7 +183,82 @@ def _is_evenly_spaced(values, rtol=1e-4) -> bool:
 # Loader
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Read retries
+#
+# Now and then a read fails with "RuntimeError: NetCDF: HDF error" on a file
+# that reads cleanly before and after - seen on a panel's first render after
+# a fresh server start, never reproduced on demand. Nothing points to a bad
+# file or to a second HDF5 library, so a transient read failure (or a handle
+# left in a bad state) is the likely cause. Closing the cached dataset and
+# reopening it is cheap next to a failed panel, so a failed read is retried
+# on a freshly opened file before giving up.
+# ---------------------------------------------------------------------------
+
+READ_ATTEMPTS = 3
+_RETRY_DELAY_S = 0.5
+
+
+class FieldReadError(RuntimeError):
+    """A field still couldn't be read after READ_ATTEMPTS tries.
+
+    str() names what was being read; .short fits a panel title. The full
+    record (files, variable, level, step, each attempt's error) goes to the
+    server log as the attempts happen.
+    """
+
+    def __init__(self, model_dir, base_or_var, level, t, attempts, cause):
+        self.model_dir = Path(model_dir)
+        self.base_or_var = base_or_var
+        self.level = level
+        self.t = t
+        self.attempts = attempts
+        self.cause = cause
+        what = base_or_var + (f" at {level} hPa" if level else "")
+        super().__init__(
+            f"{cause} reading {what}, step {t} ({attempts} tries)")
+
+    @property
+    def short(self):
+        """For a panel title, which has room for little more than this:
+        the header above the grid already names the variable and time."""
+        cause = str(self.cause).removeprefix("NetCDF: ")
+        return f"read failed ({cause}, {self.attempts} tries)"
+
+
+def _is_netcdf_read_error(exc) -> bool:
+    """netCDF4 raises RuntimeError("NetCDF: ...") for library-level
+    failures; anything else (KeyError for an unknown variable, etc.) is a
+    real problem that retrying won't fix."""
+    if isinstance(exc, FieldReadError):
+        return False
+    if isinstance(exc, OSError):
+        return True
+    return isinstance(exc, RuntimeError) and str(exc).startswith("NetCDF:")
+
+
 def load_e2s_field(model_dir, base_or_var, level, t):
+    """load_e2s_field_once, retried on a reopened file after a netCDF read
+    error (see "Read retries" above). Raises FieldReadError if every attempt
+    fails."""
+    for attempt in range(1, READ_ATTEMPTS + 1):
+        try:
+            return load_e2s_field_once(model_dir, base_or_var, level, t)
+        except (RuntimeError, OSError) as exc:
+            if not _is_netcdf_read_error(exc):
+                raise
+            print(f"load_e2s_field: attempt {attempt}/{READ_ATTEMPTS} "
+                  f"failed reading {base_or_var!r} level={level} t={t} "
+                  f"from {resolve_nc_glob(model_dir)}: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            invalidate_dataset(model_dir)
+            if attempt == READ_ATTEMPTS:
+                raise FieldReadError(model_dir, base_or_var, level, t,
+                                     attempt, exc) from exc
+            time.sleep(_RETRY_DELAY_S * attempt)
+
+
+def load_e2s_field_once(model_dir, base_or_var, level, t):
     """Load a single lat/lon field as an in-memory 2D DataArray.
 
     Parameters

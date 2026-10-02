@@ -1,4 +1,6 @@
 # dataset_metadata.py
+from html import escape
+
 import panel as pn
 import param
 
@@ -14,6 +16,9 @@ class DatasetMetadata(param.Parameterized):
         data = self.metadata[self.active_key]
         v2d = ", ".join(data.get('vars2d', []))
         v3d = ", ".join(data.get('vars3d', []))
+        # A break opportunity after each slash, so a long path wraps between
+        # directories rather than mid-name where it can help it.
+        path = escape(str(data.get('path', 'N/A'))).replace("/", "/<wbr>")
 
         html_content = f"""
         <style>
@@ -38,6 +43,15 @@ class DatasetMetadata(param.Parameterized):
                 text-align: right;
                 color: #222;
                 flex-grow: 1;
+                min-width: 0;
+            }}
+            .meta-path {{
+                /* On its own line under the label, using the full column
+                   width. Breaks anywhere as a fallback for a single
+                   directory name too long for the column. */
+                color: #222;
+                padding: 0 0 2px 0;
+                overflow-wrap: anywhere;
             }}
             .var-section {{
                 margin-top: 10px;
@@ -56,6 +70,8 @@ class DatasetMetadata(param.Parameterized):
         </style>
         <div class="metadata-container">
             <div class="meta-row"><span class="meta-label">Name:</span><span class="meta-value">{self.active_key}</span></div>
+            <div class="meta-row"><span class="meta-label">Path:</span></div>
+            <div class="meta-path">{path}</div>
             <div class="meta-row"><span class="meta-label">Ts Start:</span><span class="meta-value">{data.get('stime', 'N/A')}</span></div>
             <div class="meta-row"><span class="meta-label">Ts End:</span><span class="meta-value">{data.get('etime', 'N/A')}</span></div>
             <div class="meta-row"><span class="meta-label">Latitudes:</span><span class="meta-value">{data.get('nlat', 'N/A')}</span></div>

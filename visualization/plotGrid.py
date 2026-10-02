@@ -73,7 +73,7 @@ from bokeh.models import (
     WheelZoomTool)
 
 from visualization.earth2StudioPlot import (
-    load_e2s_field, field_range, CANON_LAT, CANON_LON)
+    load_e2s_field, field_range, FieldReadError, CANON_LAT, CANON_LON)
 from visualization.boundaries import (
     boundary_lines, DEFAULT as BOUNDARIES_DEFAULT, BOUNDARY_COLOR, BOUNDARY_WIDTH,
     BOUNDARY_HALO_COLOR, BOUNDARY_HALO_WIDTH, BOUNDARY_HALO_ALPHA)
@@ -1142,6 +1142,11 @@ class PlotGrid(param.Parameterized):
             traceback.print_exc()
             with self._fields_lock:
                 self._fields.pop(("field", model), None)
+            if isinstance(exc, FieldReadError):
+                # Already retried on a reopened file. Any change of time,
+                # variable or level re-runs this callback, i.e. tries again.
+                return self._placeholder(
+                    f"{model} - {exc.short} - change time to retry")
             return self._placeholder(f"{model} - {type(exc).__name__}: {exc}")
 
         with self._fields_lock:

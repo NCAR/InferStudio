@@ -472,6 +472,68 @@ class SharedPlotControls(param.Parameterized):
     def panel(self):
         return self._row
 
+    def _mirror_select(self, src):
+        """A second Select kept in step with `src`, both ways.
+
+        A Panel widget can sit in only one layout, so the Statistics tab
+        gets its own copies of the Variable and Level selectors. Options,
+        enabled state and width follow `src`; picking a value in either
+        one sets the other. The guard stops `dst` writing back while it is
+        being updated from `src` - assigning new options makes a Select
+        reset its own value, which would otherwise be pushed back.
+        """
+        dst = pn.widgets.Select(
+            name="", options=src.options, value=src.value,
+            disabled=src.disabled, max_width=src.max_width,
+            sizing_mode="stretch_width")
+        syncing = {"on": False}
+
+        def _from_src(*events):
+            syncing["on"] = True
+            try:
+                for ev in events:
+                    if getattr(dst, ev.name) != ev.new:
+                        setattr(dst, ev.name, ev.new)
+                if dst.value != src.value:
+                    dst.value = src.value
+            finally:
+                syncing["on"] = False
+
+        def _from_dst(ev):
+            if not syncing["on"] and src.value != ev.new:
+                src.value = ev.new
+
+        src.param.watch(_from_src, ["options", "value", "disabled",
+                                    "max_width"])
+        dst.param.watch(_from_dst, "value")
+        return dst
+
+    def stats_panel(self):
+        """The Variable and Level controls for the Statistics tab's
+        sidebar, mirroring the Visualization tab's (see _mirror_select)."""
+        def label(text):
+            return pn.pane.HTML(
+                f"<b>{text}</b>",
+                styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
+                width=90,
+                margin=0,
+            )
+
+        var_selector = self._mirror_select(self.var_selector)
+        level_selector = self._mirror_select(self.level_selector)
+        return pn.Column(
+            pn.Row(label("Variable"), var_selector, align="start",
+                   sizing_mode="stretch_width", css_classes=["widget-row"]),
+            pn.pane.HTML(
+                pn.bind(self._describe_variable, self.var_selector.param.value),
+                sizing_mode="stretch_width",
+                margin=(0, 15, 5, 5),
+            ),
+            pn.Row(label("Level (hPa)"), level_selector, align="start",
+                   sizing_mode="stretch_width", css_classes=["widget-row"]),
+            sizing_mode="stretch_width",
+        )
+
 
 class DatasetPlot2(param.Parameterized):
     dataset = param.String()
