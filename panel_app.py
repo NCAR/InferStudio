@@ -17,7 +17,12 @@ DATA_DIR = Path("/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/panelTest/")
 
 pn.extension(
     'modal',
+    # styles.css is loaded here, not only by visualization/datasetPlot.py's
+    # import-time pn.extension: Panel keeps raw_css per session, and a
+    # module is imported once per server process, so that copy only ever
+    # reached the first session. This file runs for every session.
     raw_css=[
+        (Path(__file__).parent / "static" / "styles.css").read_text(),
         ".bk-btn-group { flex-wrap: wrap !important; max-width: 600px; }",
         ".bk-btn-group button { border-radius: 4px !important; margin: 2px; }",
     ],
