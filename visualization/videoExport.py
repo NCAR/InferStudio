@@ -8,16 +8,20 @@ Frames are produced by calling plot_e2s_field directly -- the same function
 that backs the on-screen panes -- rather than by driving the live widgets, so
 the export never fights the session for control of the plot.
 
-The user-facing knob is "renderings per second": how fast the forecast
-advances in wall-clock time. That is deliberately distinct from the MP4
-container frame rate. ffmpeg reads the PNG sequence at the rendering rate
-(-framerate) and duplicates frames up to the output rate (-r), so 2
-renderings/s still yields a smooth 30 fps file rather than a 2 fps one that
-some players stutter on.
+The user-facing knob is "frames per second": how many forecast time steps
+are shown per second of playback. That is deliberately distinct from the MP4
+container frame rate. ffmpeg reads the PNG sequence at the user's rate
+(-framerate) and duplicates frames up to the output rate (-r), so 2 frames/s
+still yields a smooth 30 fps file rather than a 2 fps one that some players
+stutter on.
+
+The finished MP4 is saved in the simulation suite's own directory and then
+handed to the browser as a download.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -33,7 +37,7 @@ from PIL import Image, ImageDraw
 
 from visualization.earth2StudioPlot import plot_e2s_field
 
-DEFAULT_RENDERINGS_PER_SECOND = 2.0
+DEFAULT_FRAMES_PER_SECOND = 2.0
 MP4_FRAME_RATE = 30
 
 # The composited frame's own size depends entirely on the current layout --
@@ -59,10 +63,6 @@ _LABEL_H = 30
 _HEADER_H = 34
 _BG = (255, 255, 255)
 _INK = (20, 20, 20)
-
-_EXPORT_DIR = Path(
-    f"/glade/derecho/scratch/{os.environ.get('USER', 'nobody')}/.inferstudio_exports"
-)
 
 # plot_e2s_field renders through matplotlib's pyplot state machine, which is
 # not thread safe. The export worker must not race the live session's own
@@ -274,6 +274,41 @@ def _compose(rows, header):
     return canvas
 
 
+class BrowserDownload(pn.custom.JSComponent):
+    """Saves a file to the user's machine without a second click.
+
+    FileDownload only starts a download when its own button is clicked, so
+    it can't follow on from an export that finishes in the background.
+    Setting `data` (base64) here makes the browser save it as `filename`
+    straight away. `filename` must be set before `data`. The browser clears
+    `data` once saved, so the session doesn't keep a copy of the video.
+    """
+
+    data = param.String(default="")
+    filename = param.String(default="download")
+    mime = param.String(default="application/octet-stream")
+
+    _esm = """
+    export function render({ model }) {
+      model.on("data", () => {
+        if (!model.data) return;
+        const bin = atob(model.data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const url = URL.createObjectURL(new Blob([bytes], { type: model.mime }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = model.filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        model.data = "";
+      });
+    }
+    """
+
+
 # --------------------------------------------------------------------------
 # modal
 # --------------------------------------------------------------------------
@@ -285,11 +320,11 @@ class VideoExportPanel(param.Parameterized):
     `.modal`, both of which must be appended to the sidebar Column.
     """
 
-    renderings_per_second = param.Number(
-        default=DEFAULT_RENDERINGS_PER_SECOND,
+    frames_per_second = param.Number(
+        default=DEFAULT_FRAMES_PER_SECOND,
         bounds=(0.25, 24.0),
         step=0.25,
-        label="Renderings per second",
+        label="Frames per second",
         doc="How many forecast time steps are shown per second of playback.",
     )
 
@@ -302,11 +337,13 @@ class VideoExportPanel(param.Parameterized):
             "rarely matches the target's.",
     )
 
-    def __init__(self, controls, active_plot_fn, output_dir=_EXPORT_DIR, **params):
+    def __init__(self, controls, active_plot_fn, suite_dir_fn, **params):
+        """`suite_dir_fn` returns the directory of the suite on screen,
+        which is where the finished MP4 is saved."""
         super().__init__(**params)
         self.controls = controls
         self._active_plot_fn = active_plot_fn
-        self._output_dir = Path(output_dir)
+        self._suite_dir_fn = suite_dir_fn
         self._cancel = threading.Event()
         self._thread = None
 
@@ -321,8 +358,12 @@ class VideoExportPanel(param.Parameterized):
         self.open_button.on_click(self._open)
 
         self._rps = pn.widgets.FloatSlider.from_param(
-            self.param.renderings_per_second, sizing_mode="stretch_width",
+            self.param.frames_per_second, sizing_mode="stretch_width",
         )
+        # One checkbox per simulation (model) on screen, rebuilt each time
+        # the dialog opens - see _build_model_checks.
+        self._model_checks = {}
+        self._models_box = pn.Column(sizing_mode="stretch_width", margin=0)
         self._resolution = pn.widgets.Select.from_param(
             self.param.resolution, sizing_mode="stretch_width",
         )
@@ -331,11 +372,10 @@ class VideoExportPanel(param.Parameterized):
             value=0, max=100, sizing_mode="stretch_width", visible=False,
         )
         self._status = pn.pane.Markdown("", sizing_mode="stretch_width")
-        self._download = pn.widgets.FileDownload(
-            label="Download MP4", button_type="success",
-            disabled=True, sizing_mode="stretch_width",
-        )
-        self._export_btn = pn.widgets.Button(name="Export", button_type="primary", width=110)
+        self._browser_download = BrowserDownload(
+            mime="video/mp4", width=0, height=0, margin=0)
+        self._export_btn = pn.widgets.Button(
+            name="Download MP4", button_type="primary", width=140)
         self._cancel_btn = pn.widgets.Button(
             name="Cancel", button_type="light", width=110, disabled=True,
         )
@@ -350,6 +390,7 @@ class VideoExportPanel(param.Parameterized):
                     "time step and encodes it to MP4."
                 ),
                 pn.layout.Divider(),
+                self._models_box,
                 self._rps,
                 self._resolution,
                 self._summary,
@@ -357,7 +398,7 @@ class VideoExportPanel(param.Parameterized):
                 pn.Row(self._export_btn, self._cancel_btn),
                 self._progress,
                 self._status,
-                self._download,
+                self._browser_download,
                 width=460,
                 sizing_mode="stretch_width",
             ),
@@ -423,12 +464,16 @@ class VideoExportPanel(param.Parameterized):
             for row in raw_rows
         ]
 
-    def _panel_spec(self):
+    def _panel_spec(self, selected_only=False):
         """What the Visualization tab is currently rendering, or None.
 
         A list of rows, each a list of (label, model_dir, is_diff, cmap,
         vmin, vmax) tuples, mirroring the on-screen layout -- one row per
-        model, with its difference card alongside when active.
+        model, with its difference card alongside when active. Each row's
+        first entry is the model's own field, labelled with the model name.
+
+        With `selected_only`, rows for simulations the user unticked in the
+        dialog are dropped.
         """
         plot = self._active_plot_fn()
         if plot is None or not self.controls.var_name:
@@ -440,7 +485,32 @@ class VideoExportPanel(param.Parameterized):
                 rows = self._dataset_spec(plot)
         except Exception:
             return None
+        if rows and selected_only:
+            rows = [r for r in rows if self._model_selected(r[0][0])]
         return rows or None
+
+    def _model_selected(self, model):
+        check = self._model_checks.get(model)
+        return check is None or check.value
+
+    def _build_model_checks(self):
+        """One checkbox per simulation on screen, all ticked.
+
+        Rebuilt on every open, since the suite (and so its models) may have
+        changed since the dialog was last shown.
+        """
+        rows = self._panel_spec() or []
+        self._model_checks = {}
+        for row in rows:
+            model = row[0][0]
+            check = pn.widgets.Checkbox(name=model, value=True, margin=(2, 10))
+            check.param.watch(lambda _e: self._refresh_summary(), "value")
+            self._model_checks[model] = check
+        self._models_box.objects = (
+            [pn.pane.Markdown("**Simulations**", margin=(0, 10)),
+             *self._model_checks.values()]
+            if self._model_checks else []
+        )
 
     def _boundaries(self):
         """The boundary lines the Visualization tab is drawing, or None.
@@ -459,30 +529,30 @@ class VideoExportPanel(param.Parameterized):
 
     # -- callbacks ---------------------------------------------------------
 
+    def _exporting(self):
+        return bool(self._thread and self._thread.is_alive())
+
     def _open(self, _event=None):
-        self._download.disabled = True
-        self._status.object = ""
-        self._progress.visible = False
-        self._refresh_summary()
+        if not self._exporting():
+            # Left alone mid-export, so reopening the dialog shows the
+            # run's progress rather than a fresh form.
+            self._status.object = ""
+            self._progress.visible = False
+            self._build_model_checks()
+            self._refresh_summary()
         self.modal.open = True
 
-    @param.depends("renderings_per_second", "resolution", watch=True)
+    @param.depends("frames_per_second", "resolution", watch=True)
     def _refresh_summary(self):
-        if not self._download.disabled:
-            # A completed video's download link reflects whatever settings
-            # were in effect when Export was clicked. Changing a setting
-            # without re-exporting must not leave that stale link sitting
-            # there looking current -- _open() already disables it when the
-            # modal is freshly opened, but that doesn't cover changing a
-            # setting again while it's still open from a previous export.
-            self._download.disabled = True
-            self._status.object = (
-                "_Settings changed — click Export again to regenerate "
-                "the video._"
-            )
-        rows = self._panel_spec()
-        if rows is None or self.controls.time_slider.disabled:
+        if self._exporting():
+            return
+        if self._panel_spec() is None or self.controls.time_slider.disabled:
             self._summary.object = "_Nothing rendered to export._"
+            self._export_btn.disabled = True
+            return
+        rows = self._panel_spec(selected_only=True)
+        if rows is None:
+            self._summary.object = "_Select at least one simulation._"
             self._export_btn.disabled = True
             return
         n = self._nframes()
@@ -491,8 +561,7 @@ class VideoExportPanel(param.Parameterized):
         res_txt = f"{target[0]}\u00d7{target[1]}" if target else "source resolution"
         self._summary.object = (
             f"**{n}** time steps \u00d7 **{npanels}** panel(s) \u2192 "
-            f"**{n / self.renderings_per_second:.1f} s** of video "
-            f"at {MP4_FRAME_RATE} fps, {res_txt}."
+            f"**{n / self.frames_per_second:.1f} s** of video, {res_txt}."
         )
         self._export_btn.disabled = False
 
@@ -501,11 +570,22 @@ class VideoExportPanel(param.Parameterized):
         self._status.object = "_Cancelling\u2026_"
 
     def _start(self, _event=None):
-        if self._thread and self._thread.is_alive():
+        if self._exporting():
             return
-        rows = self._panel_spec()
+        rows = self._panel_spec(selected_only=True)
         if rows is None:
-            self._status.object = "**Nothing to export** \u2014 render something first."
+            self._status.object = (
+                "**Nothing to export** \u2014 render something and select "
+                "at least one simulation.")
+            return
+        suite_dir = self._suite_dir_fn()
+        if suite_dir is None:
+            self._status.object = "**Nothing to export** \u2014 no suite selected."
+            return
+        if not os.access(suite_dir, os.W_OK):
+            self._status.object = (
+                f"**Can't save the video** \u2014 you don't have write "
+                f"permission in the suite's directory:\n\n`{suite_dir}`")
             return
 
         # Snapshot the controls now. The user is free to keep scrubbing the
@@ -517,14 +597,16 @@ class VideoExportPanel(param.Parameterized):
             level=self.controls.level_value,
             nframes=self._nframes(),
             boundaries=self._boundaries(),
-            rps=self.renderings_per_second,
+            fps=self.frames_per_second,
             resolution=RESOLUTIONS[self.resolution],
+            suite_dir=Path(suite_dir),
         )
 
         self._cancel.clear()
         self._export_btn.disabled = True
         self._cancel_btn.disabled = False
-        self._download.disabled = True
+        for check in self._model_checks.values():
+            check.disabled = True
         self._progress.value = 0
         self._progress.visible = True
         self._status.object = "_Starting\u2026_"
@@ -571,9 +653,8 @@ class VideoExportPanel(param.Parameterized):
             render_base, render_span = (45, 45) if scanning else (0, 90)
 
             # --- pass 2: render frames ---------------------------------------
-            self._output_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-            out_path = self._output_dir / f"inferstudio_{var}_{stamp}.mp4"
+            out_path = snap["suite_dir"] / f"inferstudio_{var}_{stamp}.mp4"
             level_txt = f" @ {level} hPa" if level else ""
 
             with tempfile.TemporaryDirectory(prefix="inferstudio_frames_") as tmp:
@@ -617,7 +698,7 @@ class VideoExportPanel(param.Parameterized):
 
                 cmd = [
                     exe, "-y",
-                    "-framerate", f"{snap['rps']:g}",   # input rate = renderings/s
+                    "-framerate", f"{snap['fps']:g}",   # input rate = frames/s
                     "-i", str(tmpdir / "frame_%05d.png"),
                     "-vf", ",".join(vf),
                     "-c:v", "libx264",
@@ -627,20 +708,57 @@ class VideoExportPanel(param.Parameterized):
                     "-movflags", "+faststart",
                     str(out_path),
                 ]
-                proc = subprocess.run(cmd, capture_output=True, text=True)
+                # Polled rather than run() so Cancel also stops a long encode.
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.PIPE, text=True)
+                stderr = []
+                reader = threading.Thread(
+                    target=lambda: stderr.extend(proc.stderr), daemon=True)
+                reader.start()
+                while proc.poll() is None:
+                    if self._cancel.wait(0.25):
+                        proc.kill()
+                        proc.wait()
+                        reader.join()
+                        out_path.unlink(missing_ok=True)
+                        _ui(setattr, self._status, "object", "**Export cancelled.**")
+                        return
+                reader.join()
                 if proc.returncode != 0:
-                    tail = "\n".join(proc.stderr.strip().splitlines()[-12:])
+                    out_path.unlink(missing_ok=True)
+                    tail = "".join(stderr[-12:]).strip()
                     raise RuntimeError(f"ffmpeg failed:\n```\n{tail}\n```")
 
             mb = out_path.stat().st_size / 1e6
             _ui(setattr, self._progress, "value", 100)
             _ui(setattr, self._status, "object",
-                f"**Done** \u2014 {total} renderings, {mb:.1f} MB\n\n`{out_path}`")
-            _ui(self._download.param.update,
-                file=str(out_path), filename=out_path.name, disabled=False)
+                f"**Done** \u2014 {total} frames, {mb:.1f} MB. Saved in the "
+                f"suite's directory as:\n\n`{out_path}`\n\nYour browser "
+                "is downloading a copy.")
+            _ui(self._notify_saved, out_path)
+            # filename first: the browser saves as soon as data arrives.
+            data = base64.b64encode(out_path.read_bytes()).decode("ascii")
+            _ui(setattr, self._browser_download, "filename", out_path.name)
+            _ui(setattr, self._browser_download, "data", data)
 
         except Exception as exc:
             _ui(setattr, self._status, "object", f"**Export failed:** {exc}")
         finally:
-            _ui(setattr, self._export_btn, "disabled", False)
-            _ui(setattr, self._cancel_btn, "disabled", True)
+            _ui(self._finish)
+
+    def _finish(self):
+        self._cancel_btn.disabled = True
+        for check in self._model_checks.values():
+            check.disabled = False
+        # The thread may not have exited yet, which would make
+        # _refresh_summary think the export is still running.
+        self._thread = None
+        self._refresh_summary()
+
+    @staticmethod
+    def _notify_saved(out_path):
+        if pn.state.notifications:
+            pn.state.notifications.success(
+                f"Video saved as {out_path.name} in {out_path.parent}",
+                duration=0,
+            )

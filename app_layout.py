@@ -872,7 +872,13 @@ def build_app(data_dir):
     # server-side image buffers to capture. VideoExportPanel must render its
     # own frames via earth2StudioPlot.plot_e2s_field (retained for exactly
     # this reason) using the spec returned by PlotGrid.frame_spec().
-    video_export = VideoExportPanel(controls, lambda: _active_plot["obj"])
+    def _suite_dir():
+        if not shown.datasets:
+            return None
+        return dataset_metadata.get(shown.datasets[0], {}).get("path")
+
+    video_export = VideoExportPanel(
+        controls, lambda: _active_plot["obj"], _suite_dir)
 
     sidebar = pn.Column(
         pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
