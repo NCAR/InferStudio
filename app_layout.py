@@ -250,22 +250,30 @@ pn.theme.Bootstrap.modifiers[_ButtonBase] = {
 # middle of the plot card rather than the middle of the whole tab.
 _SIDEBAR_WIDTH = 250
 
-def _diff_busy_html(diff_status, diff_pairs):
-    """Overlay HTML for the Visualization tab while a difference computes.
-
-    Empty string when nothing is computing. Otherwise a translucent grey
-    sheet with a large spinner and one "Computing difference between A and
-    B..." line per pair in progress, centred over the plot card.
-    """
-    lines = [
+def _diff_busy_lines(diff_status, diff_pairs):
+    """One "Computing difference between A and B..." line per pair in
+    progress, or an empty list when nothing is computing."""
+    return [
         f"Computing difference between {model} and {other}\u2026"
         for model, status in diff_status.items()
         if status == "computing" and (other := diff_pairs.get(model))
     ]
+
+_DIFF_BUSY_NOTE = ("A full suite can take a minute. The Statistics and "
+                   "Inference tabs are still available.")
+
+def _busy_html(lines, note=""):
+    """Overlay HTML for a tab that is busy loading or computing.
+
+    Empty string when `lines` is empty. Otherwise a translucent grey sheet
+    with a large spinner, one bold line per entry in `lines` and an
+    optional smaller `note` beneath, centred over the plot card.
+    """
     if not lines:
         return ""
     text = "".join(
         f"<div class='diff-busy-text'>{line}</div>" for line in lines)
+    note_html = f"<div class='diff-busy-note'>{note}</div>" if note else ""
     return (
         "<style>"
         "@keyframes diff-busy-spin{to{transform:rotate(360deg)}}"
@@ -283,10 +291,25 @@ def _diff_busy_html(diff_status, diff_pairs):
         "<div class='diff-busy' role='status' aria-live='polite'>"
         "<div class='diff-busy-wheel'></div>"
         f"{text}"
-        "<div class='diff-busy-note'>A full suite can take a minute. The "
-        "Statistics and Inference tabs are still available.</div>"
+        f"{note_html}"
         "</div>"
     )
+
+class _ShownDatasets(param.Parameterized):
+    """The selection the tabs are actually showing, one tick behind the
+    dataset browser's.
+
+    Building a suite's plot grid and stats panel runs on the server thread,
+    and Panel only flushes changes to the browser when the callback that
+    made them returns - so a busy overlay shown in the same callback as the
+    build would never reach the screen. Changing `loading` first and
+    `datasets` on the next tick lets the overlay go out before the build
+    starts.
+    """
+
+    datasets = param.List(default=[])
+    # Name of the dataset being loaded, "" when idle.
+    loading = param.String(default="")
 
 class TabBusyOverlay(pn.custom.JSComponent):
     """Overlay that also makes the rest of its tab inert while shown.
@@ -763,7 +786,36 @@ def build_app(data_dir):
     # controls. Repopulated by plot_grid on every dataset change.
     diff_slot = pn.Column(sizing_mode="stretch_width", margin=(0, 10, 0, 0))
 
-    @pn.depends(browser.param.checked_items)
+    shown = _ShownDatasets(datasets=list(browser.checked_items))
+    # Bumped on every selection change, so a superseded selection's
+    # pending build is skipped instead of run and thrown away.
+    _load_token = {"n": 0}
+
+    def _on_checked(event):
+        new = list(event.new)
+        _load_token["n"] += 1
+        token = _load_token["n"]
+        if not new:
+            # Nothing to build - the tabs just show a prompt.
+            shown.loading = ""
+            shown.datasets = new
+            return
+        shown.loading = new[0]
+
+        def apply():
+            if token != _load_token["n"]:
+                return
+            try:
+                shown.datasets = new
+            finally:
+                if token == _load_token["n"]:
+                    shown.loading = ""
+
+        pn.state.execute(apply, schedule=True)
+
+    browser.param.watch(_on_checked, "checked_items")
+
+    @pn.depends(shown.param.datasets)
     def plot_grid(datasets):
         # Detach the outgoing grid before building its replacement. Its
         # streams stay subscribed to the shared grid_state otherwise, so it
@@ -804,7 +856,7 @@ def build_app(data_dir):
         grid.refresh_clims_async()
         return grid.card(title=ds)
 
-    @pn.depends(browser.param.checked_items)
+    @pn.depends(shown.param.datasets)
     def stats_reactive(datasets):
         if not datasets:
             return pn.pane.Markdown("### Select one or more datasets")
@@ -888,7 +940,7 @@ def build_app(data_dir):
                          styles={"height": "100%", "overflow": "hidden"})
 
     # Greys out and locks the whole Visualization tab while a difference
-    # computes. The small header spinner was the only other sign, and it was
+    # computes or a newly selected dataset loads. The small header spinner was the only other sign, and it was
     # easy to miss; the old in-card spinner still left the sidebar live, so
     # the user could change the variable or pick another pair mid-run.
     # Absolutely positioned over vis_content rather than swapped in for it,
@@ -904,12 +956,32 @@ def build_app(data_dir):
         },
     )
 
-    def _sync_diff_busy(*_):
-        html = _diff_busy_html(grid_state.diff_status, grid_state.diff_pairs)
+    # The same overlay covers the Statistics tab while a newly selected
+    # dataset loads; both tabs rebuild on a selection change.
+    stats_busy_overlay = TabBusyOverlay(
+        visible=False,
+        margin=0,
+        styles=dict(diff_busy_overlay.styles),
+    )
+
+    def _sync_busy(*_):
+        if shown.loading:
+            lines = [f"Loading dataset {shown.loading}\u2026"]
+            html = _busy_html(lines)
+            stats_html = html
+        else:
+            html = _busy_html(
+                _diff_busy_lines(grid_state.diff_status, grid_state.diff_pairs),
+                _DIFF_BUSY_NOTE,
+            )
+            stats_html = ""
         diff_busy_overlay.html = html
         diff_busy_overlay.visible = bool(html)
+        stats_busy_overlay.html = stats_html
+        stats_busy_overlay.visible = bool(stats_html)
 
-    grid_state.param.watch(_sync_diff_busy, ["diff_status", "diff_pairs"])
+    grid_state.param.watch(_sync_busy, ["diff_status", "diff_pairs"])
+    shown.param.watch(_sync_busy, "loading")
 
     vis = pn.Column(
         vis_content, diff_busy_overlay,
@@ -939,9 +1011,15 @@ def build_app(data_dir):
         css_classes=["main-content"],
         styles={"height": "100%", "overflow-y": "auto"},
     )
-    statistics = pn.Row(
+    statistics_content = pn.Row(
         statistics_sidebar, statistics_main, sizing_mode="stretch_width",
         styles={"height": "100%", "overflow": "hidden"},
+    )
+    statistics = pn.Column(
+        statistics_content, stats_busy_overlay,
+        sizing_mode="stretch_width",
+        styles={"height": "100%", "overflow": "hidden",
+                "position": "relative"},
     )
 
     tabs = pn.Tabs(
