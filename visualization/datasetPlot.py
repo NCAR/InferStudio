@@ -260,6 +260,7 @@ class SharedPlotControls(param.Parameterized):
             options=list(BOUNDARY_OPTIONS),
             value=self.boundaries,
             sizing_mode="stretch_width",
+            margin=(5, 15, 5, 5),
         )
         self.boundaries_selector.link(self, value="boundaries")
 
@@ -329,11 +330,14 @@ class SharedPlotControls(param.Parameterized):
                 sizing_mode="stretch_width",
                 css_classes=["widget-row"],
             ),
+            # Margins line both edges up with the Colormap Min/Max rows
+            # above: label at their labels' left edge, dropdown spanning
+            # from there to their inputs' right edge.
             pn.Column(
                 pn.pane.HTML(
                     "<b>Boundaries</b>",
                     styles={'line-height': '20px', 'font-size': '14px', 'white-space': 'nowrap'},
-                    margin=0,
+                    margin=(0, 0, 0, 5),
                 ),
                 self.boundaries_selector,
                 sizing_mode="stretch_width",
