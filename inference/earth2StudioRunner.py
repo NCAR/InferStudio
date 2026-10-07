@@ -173,6 +173,19 @@ class Earth2StudioRunner(ModelRunner):
         else:
             data_source_setup = f"data = {data_source}()"
 
+        # FCN3's DISCO convolutions overflow a 40 GB A100 (Derecho) unless
+        # their weight contraction is chunked by latitude; 4 chunks matches
+        # the unpatched output exactly. expandable_segments has to be set
+        # before torch is imported.
+        if model_name == 'FourCastNet3':
+            alloc_env = 'os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"'
+            model_patch = (
+                f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
+                "import fcn3ChunkedDisco\n"
+                "fcn3ChunkedDisco.apply(n_chunks=4)")
+        else:
+            alloc_env = model_patch = ""
+
         output_nc  = f"{output_path}/{file_stem}.nc"
         script_path = os.path.join(config["output_dir"], f"{file_stem}_run.py")
 
@@ -184,6 +197,7 @@ import sys
 os.environ["TQDM_DISABLE"] = "1"
 os.environ["PYTHONUNBUFFERED"] = "1"
 os.environ["JAX_PLATFORMS"] = "cuda"
+{alloc_env}
 
 import logging
 import torch
@@ -193,6 +207,7 @@ from datetime import datetime
 from earth2studio.io import NetCDF4Backend
 from earth2studio.run import deterministic
 from earth2studio.data import {data_source}
+{model_patch}
 
 logging.basicConfig(
     level=logging.INFO,
