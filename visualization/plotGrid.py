@@ -67,6 +67,7 @@ import numpy as np
 import param
 import panel as pn
 import holoviews as hv
+import xarray as xr
 from holoviews.operation.datashader import rasterize
 from bokeh.models import (
     ColumnDataSource, CustomJS, CustomJSTickFormatter, FixedTicker,
@@ -78,6 +79,7 @@ from visualization.boundaries import (
     boundary_lines, DEFAULT as BOUNDARIES_DEFAULT, BOUNDARY_COLOR, BOUNDARY_WIDTH,
     BOUNDARY_HALO_COLOR, BOUNDARY_HALO_WIDTH, BOUNDARY_HALO_ALPHA)
 from visualization.modelDiff import (
+    DiffCancelled,
     load_diff_field,
     compute_model_difference,
     symmetric_diff_range,
@@ -146,6 +148,75 @@ GLOBAL_EXTENT = (0.0, -90.0, 360.0, 90.0)
 # full-map aspect.
 MIN_LON_SPAN = 10.0
 MIN_LAT_SPAN = 5.0
+
+# Periodic longitude. A global field is drawn three times side by side - one
+# period west, the field itself, one period east (see _tile_lon) - so a pan
+# across the edge of the map shows the field continuing rather than a blank
+# margin, and the map can be centred anywhere, Africa included. The pan
+# clamp keeps the view inside those three copies; at the end of each drag
+# _LON_WRAP_JS shifts the view back by a whole period if it has strayed
+# toward either outer copy, which looks like nothing at all because the
+# data there is identical. Axis labels and the readout fold back into the
+# file's own convention, so 380 reads as 20.
+LON_PERIOD = 360.0
+
+# How far the view's centre may drift from the middle copy before a drag's
+# end shifts it back, as a fraction of a period beyond either edge. Wide
+# enough that working around the 0/360 seam (Africa, on a 0..360 grid)
+# never triggers a shift - each shift briefly blanks the panels while the
+# server re-rasterizes the moved view - and narrow enough that the fully
+# zoomed-out view, whose centre the clamp holds within half a period of the
+# outer copies' far edges, can still reach it.
+LON_WRAP_MARGIN = 0.25
+
+# End of a drag: shift the x range by whole periods back toward the middle
+# copy, then ask every figure on that range to emit RangesUpdate. Setting a
+# range directly doesn't emit it (see _RESET_JS), and without it the
+# rasterized image stays where the old view was, now off-screen.
+_LON_WRAP_JS = """
+if (!(period > 0)) { return }
+const c = (range.start + range.end) / 2
+let shift = 0
+if (c < base - margin * period) { shift = period }
+else if (c > base + (1 + margin) * period) { shift = -period }
+if (shift === 0) { return }
+range.setv({start: range.start + shift, end: range.end + shift})
+for (const m of cb_obj.origin.document.all_models) {
+  if (m.x_range !== range) { continue }
+  const view = Bokeh.index.find_one(m)
+  if (view != null) { view.trigger_ranges_update_event() }
+}
+"""
+
+# Longitude axis labels folded into [base, base + period), so the outer
+# copies are labelled like the middle one.
+_LON_TICK_JS = """
+const v = ((tick - base) % period + period) % period + base
+return String(parseFloat(v.toFixed(6)))
+"""
+
+
+def _lon_period(lon):
+    """LON_PERIOD if `lon` is an evenly spaced axis covering the whole
+    globe (n steps of d degrees adding up to 360), else None - a regional
+    field isn't periodic, and tiling it would draw copies side by side
+    with gaps between them."""
+    lon = np.asarray(lon, dtype="float64")
+    if lon.size < 3:
+        return None
+    d = np.diff(lon)
+    if not np.allclose(d, d[0], rtol=1e-4) or d[0] <= 0:
+        return None
+    return LON_PERIOD if abs(lon.size * d[0] - LON_PERIOD) < 0.5 * d[0] else None
+
+
+def _tile_lon(da, lon_dim, period):
+    """`da` with a copy one period west and one period east of it."""
+    return xr.concat(
+        [da.assign_coords({lon_dim: da[lon_dim] + k * period})
+         for k in (-1, 0, 1)],
+        dim=lon_dim)
+
 
 # Pan-only clamp: translates (never resizes) [start, end] back inside
 # [lo, hi] if a drag has pushed it past either edge. Deliberately does NOT
@@ -595,6 +666,9 @@ class PlotGrid(param.Parameterized):
         # first render is exactly when placeholder difference panels sit next
         # to real field panels.
         self._last_extent = GLOBAL_EXTENT
+        # LON_PERIOD when the fields span the globe in longitude, else None.
+        # Set alongside _last_extent, from the same field.
+        self._lon_period = LON_PERIOD
         try:
             da, meta = load_e2s_field(
                 self.model_dirs[self.models[0]],
@@ -602,11 +676,15 @@ class PlotGrid(param.Parameterized):
             lon, lat = da[meta.lon_dim].values, da[meta.lat_dim].values
             self._last_extent = (float(lon.min()), float(lat.min()),
                                  float(lon.max()), float(lat.max()))
+            self._lon_period = _lon_period(lon)
         except Exception:
             pass   # constant fallback is fine; extent corrects on first render
 
         # Guards against spawning duplicate background jobs for one pair.
+        # Each running job's cancel event is kept alongside, so
+        # cancel_diffs() can stop it.
         self._pending = set()
+        self._cancel_events = {}
         self._pending_lock = threading.Lock()
 
         # Set once this grid has been replaced, so any callback still in
@@ -621,6 +699,13 @@ class PlotGrid(param.Parameterized):
         # doesn't keep these ranges (and the fields captured in their
         # CustomJS args) alive.
         self._zoom_customjs = {}
+
+        # id(Range1d) -> CustomJS wrapping that range's longitude at the end
+        # of a drag, and figure id -> longitude tick formatter - see
+        # _wire_lon_wrap.
+        self._wrap_customjs = {}
+        self._wrap_figs = set()
+        self._lon_formatters = {}
 
         # Double-click reset: one CustomJS shared by every panel, and the
         # ids of the figures it's already attached to - see
@@ -731,6 +816,9 @@ class PlotGrid(param.Parameterized):
         with self._fields_lock:
             self._fields.clear()
         self._zoom_customjs.clear()
+        self._wrap_customjs.clear()
+        self._wrap_figs.clear()
+        self._lon_formatters.clear()
         self._reset_figs.clear()
         self._cbar_drag_figs.clear()
         self._boundary_figs.clear()
@@ -785,10 +873,17 @@ class PlotGrid(param.Parameterized):
         """
         lon0, lat0, lon1, lat1 = self._last_extent
         fig = plot.state
-        self._apply_zoom_clamp(fig.x_range, lon0, lon1, MIN_LON_SPAN)
+        period = self._lon_period
+        if period:
+            # Pan across all three copies (see _tile_lon), zoom out to one
+            # period at most.
+            self._apply_zoom_clamp(fig.x_range, lon0 - period, lon1 + period,
+                                   MIN_LON_SPAN, max_span=period)
+        else:
+            self._apply_zoom_clamp(fig.x_range, lon0, lon1, MIN_LON_SPAN)
         self._apply_zoom_clamp(fig.y_range, lat0, lat1, MIN_LAT_SPAN)
 
-    def _apply_zoom_clamp(self, rng, lo, hi, min_span):
+    def _apply_zoom_clamp(self, rng, lo, hi, min_span, max_span=None):
         """Cap `rng` at [lo, hi] and no tighter than min_span, via two
         independent mechanisms:
 
@@ -804,8 +899,9 @@ class PlotGrid(param.Parameterized):
           on the same range, so an existing callback's `args` is mutated in
           place instead of adding another.
         """
-        rng.min_interval = min(min_span, hi - lo)
-        rng.max_interval = hi - lo
+        max_span = hi - lo if max_span is None else max_span
+        rng.min_interval = min(min_span, max_span)
+        rng.max_interval = max_span
 
         cb = self._zoom_customjs.get(id(rng))
         if cb is None:
@@ -829,6 +925,46 @@ class PlotGrid(param.Parameterized):
         for tool in plot.state.tools:
             if isinstance(tool, WheelZoomTool) and tool.zoom_on_axis:
                 tool.zoom_on_axis = False
+
+    def _wire_lon_wrap(self, plot, element):
+        """Bokeh hook (see _panel_opts): keep a periodic map's view near
+        the middle copy, and label its longitude axis in the file's own
+        convention. See _LON_WRAP_JS and _LON_TICK_JS.
+
+        The wrap callback is one per x range (linked panels share one, and
+        a second callback would shift it twice), the formatter one per
+        figure; both are attached once and have their args refreshed on
+        later calls, as _apply_zoom_clamp does. A period of 0 switches the
+        wrap off and leaves the labels as they are, for a regional field.
+        """
+        fig = plot.state
+        rng = fig.x_range
+        args = dict(base=self._last_extent[0],
+                    period=self._lon_period or 0.0,
+                    margin=LON_WRAP_MARGIN)
+
+        cb = self._wrap_customjs.get(id(rng))
+        if cb is None:
+            cb = CustomJS(args=dict(range=rng, **args), code=_LON_WRAP_JS)
+            self._wrap_customjs[id(rng)] = cb
+        else:
+            cb.args = dict(range=rng, **args)
+        if id(fig) not in self._wrap_figs:
+            fig.js_on_event("panend", cb)
+            self._wrap_figs.add(id(fig))
+
+        if not self._lon_period:
+            return
+        tick_args = dict(base=args["base"], period=args["period"])
+        fmt = self._lon_formatters.get(id(fig))
+        if fmt is None:
+            fmt = CustomJSTickFormatter(args=tick_args, code=_LON_TICK_JS)
+            self._lon_formatters[id(fig)] = fmt
+        else:
+            fmt.args = tick_args
+        for axis in fig.xaxis:
+            if axis.formatter is not fmt:
+                axis.formatter = fmt
 
     def _wire_dblclick_reset(self, plot, element):
         """Bokeh hook (see _panel_opts): double-click resets every panel.
@@ -888,6 +1024,12 @@ class PlotGrid(param.Parameterized):
             if only is not None and lon360 != only:
                 continue
             x, y = boundary_lines(self.state.boundaries, lon360)
+            if self._lon_period and x.size:
+                # Same three copies as the field - see _tile_lon.
+                gap = np.full(1, np.nan, dtype=x.dtype)
+                p = x.dtype.type(self._lon_period)
+                x = np.concatenate([x - p, gap, x, gap, x + p])
+                y = np.concatenate([y, gap, y, gap, y])
             self._boundary_sources[lon360].data = dict(x=x, y=y)
 
     def _cbar_token(self, kind):
@@ -1051,8 +1193,12 @@ class PlotGrid(param.Parameterized):
             shared_axes=True,
             xlabel="longitude",
             ylabel="latitude",
+            # The initial view, and what a double-click resets to: one
+            # period, not the three copies a periodic field carries.
+            xlim=(self._last_extent[0], self._last_extent[2]),
             hooks=[self._tag_autosize,
                    self._clamp_zoom_pan, self._disable_axis_zoom,
+                   self._wire_lon_wrap,
                    self._wire_dblclick_reset,
                    self._sync_colorbar_title, self._tick_colorbar_ends,
                    partial(self._wire_colorbar_drag, kind),
@@ -1069,12 +1215,16 @@ class PlotGrid(param.Parameterized):
         DIFF_CMAP explicitly, because a static value in that chain alongside
         param references makes HoloViews rebuild the branch differently.
         """
+        da = da.sortby(meta.lon_dim)
         lon = da[meta.lon_dim].values
         lat = da[meta.lat_dim].values
         self._last_extent = (
             float(lon.min()), float(lat.min()),
             float(lon.max()), float(lat.max()),
         )
+        self._lon_period = _lon_period(lon)
+        if self._lon_period:
+            da = _tile_lon(da, meta.lon_dim, self._lon_period)
 
         # hv.Image assumes an evenly spaced grid and will silently misplace
         # data on, say, a reduced Gaussian latitude axis. QuadMesh handles
@@ -1248,6 +1398,12 @@ class PlotGrid(param.Parameterized):
         if now - self._last_pointer < POINTER_MIN_INTERVAL:
             return
         self._last_pointer = now
+
+        if self._lon_period:
+            # Over an outer copy (see _tile_lon): the same point in the
+            # middle one, which is what the stored fields cover.
+            base = self._last_extent[0]
+            x = (x - base) % self._lon_period + base
 
         with self._fields_lock:
             entries = [(m, self._fields.get((kind, m))) for m in self.models]
@@ -1641,10 +1797,12 @@ class PlotGrid(param.Parameterized):
             return
 
         key = (a, b)
+        cancel = threading.Event()
         with self._pending_lock:
             if key in self._pending:
                 return
             self._pending.add(key)
+            self._cancel_events[key] = cancel
 
         self._set_status(a, "computing")
 
@@ -1652,11 +1810,15 @@ class PlotGrid(param.Parameterized):
             try:
                 compute_model_difference(
                     self.model_dirs[a], self.model_dirs[b], a, b,
+                    cancel=cancel,
                 )
                 if self._torn_down:
                     return
                 self._set_status(a, "ready")
                 self.refresh_diff_clim_async()
+            except DiffCancelled:
+                if not self._torn_down:
+                    _schedule(partial(self._clear_cancelled, a))
             except Exception as exc:
                 traceback.print_exc()
                 if not self._torn_down:
@@ -1664,9 +1826,29 @@ class PlotGrid(param.Parameterized):
             finally:
                 with self._pending_lock:
                     self._pending.discard(key)
+                    self._cancel_events.pop(key, None)
 
         threading.Thread(target=work, daemon=True,
                          name=f"diff-{a}-minus-{b}").start()
+
+    def cancel_diffs(self):
+        """Stop every difference this grid is computing.
+
+        Each stops at its next dask task and leaves no file behind; its
+        selector then goes back to None (see _clear_cancelled).
+        """
+        with self._pending_lock:
+            for event in self._cancel_events.values():
+                event.set()
+
+    def _clear_cancelled(self, model):
+        """Return a cancelled pair's selector to None and drop its status,
+        so the panel goes back to "no difference selected"."""
+        widget = getattr(self, "_diff_widgets", {}).get(model)
+        if widget is not None:
+            widget.value = "None"
+        self.state.diff_status = {
+            m: s for m, s in self.state.diff_status.items() if m != model}
 
     # -- colour limits ---------------------------------------------------
 

@@ -22,6 +22,34 @@ MODEL_MAP = {
     'SFNO':         'earth2studio.models.px.SFNO',
 }
 
+# Initial-condition source per model. GFS lacks fields some models need
+# (e.g. AIFS's skt, tcw, stl1/2, swvl1/2), and earth2studio silently fills
+# missing variables with zeros, so those models blow up when started from GFS.
+# Each entry is a list of (earliest start time, source class) — the latest
+# entry whose start time is <= the run's start wins.
+DEFAULT_DATA_SOURCE = 'GFS'
+MODEL_DATA_SOURCE = {
+    'AIFS': [
+        (datetime.min,         'ARCO'),   # ERA5 reanalysis, for historical starts
+        (datetime(2024, 3, 1), 'IFS'),    # ECMWF open data (earliest IFS archive date)
+    ],
+}
+
+# ECMWF publishes IFS open data on three mirrors that throttle independently
+# (AWS answered "503 Slow Down" until the fetch timed out, while Azure served
+# the same files in seconds), so an IFS fetch tries each in turn. The ECMWF
+# server only keeps the last 4 days; earth2studio rejects older times there
+# up front, without a request.
+#
+# The mirrors are opened with cache=False. earth2studio's IFS cache names a
+# file by time/variable/level only and downloads straight to that name, so
+# a download cut off by a timeout stays behind as a truncated file that every
+# later fetch - from any mirror, in any run - reads instead of refetching.
+# Without the cache each mirror downloads to its own temporary directory,
+# removed after each fetch. Only the initial state is fetched, so nothing is
+# lost by not caching it.
+IFS_MIRRORS = ['azure', 'aws', 'ecmwf']
+
 MODEL_VAR_MAP = {
     'AIFS': {
         'U':    ['u50','u100','u150','u200','u250','u300','u400','u500','u600','u700','u850','u925','u1000'],
@@ -124,6 +152,14 @@ class Earth2StudioRunner(ModelRunner):
             end = datetime.fromisoformat(end)
         n_steps = int((end - start).total_seconds() / 3600 / hours)
 
+        data_source = self._dataSource(model_name, start)
+        if data_source == 'IFS':
+            data_source_setup = (
+                "data = MirroredSource('IFS', [(m, IFS(source=m, cache=False)) for m in "
+                f"{IFS_MIRRORS!r}])")
+        else:
+            data_source_setup = f"data = {data_source}()"
+
         output_nc  = f"{output_path}/{file_stem}.nc"
         script_path = os.path.join(config["output_dir"], f"{file_stem}_run.py")
 
@@ -143,7 +179,7 @@ import numpy as np
 from datetime import datetime
 from earth2studio.io import NetCDF4Backend
 from earth2studio.run import deterministic
-from earth2studio.data import GFS
+from earth2studio.data import {data_source}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -167,8 +203,29 @@ model = model.to(device)
 print("Setting up output backend...", flush=True)
 io = NetCDF4Backend("{output_nc}", backend_kwargs={{'mode': 'w'}})
 
-print("Setting up data source...", flush=True)
-data = GFS()
+# Fetch from the first mirror that succeeds, starting each call with the
+# one that last worked.
+class MirroredSource:
+    def __init__(self, name, mirrors):
+        self.name = name
+        self.mirrors = list(mirrors)    # [(label, source)]
+
+    def __call__(self, time, variable):
+        errors = []
+        for i, (label, source) in enumerate(self.mirrors):
+            try:
+                da = source(time, variable)
+            except Exception as e:
+                print(f"WARNING: {{self.name}} fetch from {{label}} failed: {{e!r}}", flush=True)
+                errors.append(f"{{label}}: {{e!r}}")
+                continue
+            if i:
+                self.mirrors.insert(0, self.mirrors.pop(i))
+            return da
+        raise RuntimeError(f"Every {{self.name}} mirror failed - " + "; ".join(errors))
+
+print("Setting up data source: {data_source}...", flush=True)
+{data_source_setup}
 
 print(f"Running inference: {n_steps} steps from {start.isoformat()}...", flush=True)
 deterministic(
@@ -199,6 +256,13 @@ except Exception as e:
         #return f"python {script_path}"
         #return f"{EARTH2STUDIO_PYTHON} {script_path}"
         return f"{python_bin} {script_path}"
+
+    def _dataSource(self, model_name, start):
+        source = DEFAULT_DATA_SOURCE
+        for begin, name in MODEL_DATA_SOURCE.get(model_name, []):
+            if start >= begin:
+                source = name
+        return source
 
     def _translateVars(self, vars, model_name):
         var_map = MODEL_VAR_MAP.get(model_name, {})

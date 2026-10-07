@@ -28,7 +28,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import dask
 import xarray as xr
+from dask.callbacks import Callback
 
 from dimensions import resolve_nc_glob, diff_file_path
 from visualization.earth2StudioVars import _resolve_dim, LAT_NAMES, LON_NAMES
@@ -89,8 +91,32 @@ def _build_encoding(ds):
     return encoding
 
 
+class DiffCancelled(Exception):
+    """Raised by compute_model_difference when its `cancel` event is set."""
+
+
+class _CancelOnEvent(Callback):
+    """Aborts a dask computation once `event` is set.
+
+    Dask calls _pretask before each task, on the thread that called
+    compute(). Callbacks are global while active, though, so this only
+    raises for computations started on the thread that created it -
+    another thread's load or Statistics run carries on.
+    """
+
+    def __init__(self, event):
+        super().__init__()
+        self._event = event
+        self._thread = threading.get_ident()
+
+    def _pretask(self, key, dsk, state):
+        if self._event.is_set() and threading.get_ident() == self._thread:
+            raise DiffCancelled()
+
+
 def compute_model_difference(model_a_dir, model_b_dir,
-                             model_a_name, model_b_name) -> Path:
+                             model_a_name, model_b_name,
+                             cancel=None) -> Path:
     """Compute (model_a - model_b) for every variable present in both
     datasets, writing the result to diff_file_path(model_a_dir, ...) -
     in model A's directory.
@@ -98,7 +124,11 @@ def compute_model_difference(model_a_dir, model_b_dir,
     Returns the path to that file, which the loaders accept wherever they
     take a model directory. If the file already exists, it is returned
     immediately without recomputing.
+
+    `cancel`, a threading.Event, stops the computation when set: it raises
+    DiffCancelled at the next dask task, leaving no file behind.
     """
+    cancel = cancel or threading.Event()
     out_path = diff_file_path(model_a_dir, model_a_name, model_b_name)
 
     # Fast path outside the lock - the overwhelmingly common case once a
@@ -127,6 +157,10 @@ def compute_model_difference(model_a_dir, model_b_dir,
                                data_vars="all", chunks={}) as ds_a, \
              xr.open_mfdataset(resolve_nc_glob(model_b_dir), engine="netcdf4",
                                data_vars="all", chunks={}) as ds_b:
+
+            # Waiting for NC_JOB_LOCK can take a while if Statistics holds it.
+            if cancel.is_set():
+                raise DiffCancelled()
 
             shared_vars = sorted(set(ds_a.data_vars) & set(ds_b.data_vars))
             if not shared_vars:
@@ -248,7 +282,19 @@ def compute_model_difference(model_a_dir, model_b_dir,
                 out_ds.attrs["skipped_variables"] = ", ".join(sorted(skipped))
 
             try:
-                out_ds.to_netcdf(tmp_path, encoding=_build_encoding(out_ds))
+                # Single-threaded on purpose. On dask's threaded scheduler
+                # the reads of A and B and the write of the result run at
+                # once, and they deadlock inside xarray: reads take
+                # CombinedLock({netCDF-C, HDF5}), the write takes
+                # CombinedLock({netCDF-C, HDF5, file}), and CombinedLock
+                # orders its locks by set iteration - by object id, so the
+                # two can take the shared pair in opposite orders. Whether
+                # a process hangs depends on where those locks landed in
+                # memory. Little is lost: every read and write already
+                # queues for the HDF5 lock.
+                with dask.config.set(scheduler="synchronous"), \
+                     _CancelOnEvent(cancel):
+                    out_ds.to_netcdf(tmp_path, encoding=_build_encoding(out_ds))
                 os.replace(tmp_path, out_path)
             except BaseException:
                 tmp_path.unlink(missing_ok=True)

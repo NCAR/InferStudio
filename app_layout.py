@@ -262,18 +262,22 @@ def _diff_busy_lines(diff_status, diff_pairs):
 _DIFF_BUSY_NOTE = ("A full suite can take a minute. The Statistics and "
                    "Inference tabs are still available.")
 
-def _busy_html(lines, note=""):
+def _busy_html(lines, note="", cancel=False):
     """Overlay HTML for a tab that is busy loading or computing.
 
     Empty string when `lines` is empty. Otherwise a translucent grey sheet
     with a large spinner, one bold line per entry in `lines` and an
-    optional smaller `note` beneath, centred over the plot card.
+    optional smaller `note` beneath, centred over the plot card. With
+    `cancel`, a Cancel button follows; TabBusyOverlay reports its click.
     """
     if not lines:
         return ""
     text = "".join(
         f"<div class='diff-busy-text'>{line}</div>" for line in lines)
     note_html = f"<div class='diff-busy-note'>{note}</div>" if note else ""
+    cancel_html = (
+        "<button type='button' class='diff-busy-cancel' data-busy-cancel>"
+        "Cancel</button>" if cancel else "")
     return (
         "<style>"
         "@keyframes diff-busy-spin{to{transform:rotate(360deg)}}"
@@ -287,11 +291,17 @@ def _busy_html(lines, note=""):
         ".diff-busy-text{font-size:20px;font-weight:600;color:#1f2d3d;"
         "text-align:center;}"
         ".diff-busy-note{margin-top:8px;font-size:14px;color:#4a5866;}"
+        ".diff-busy-cancel{margin-top:20px;padding:8px 28px;font-size:15px;"
+        f"font-weight:600;color:#fff;background:{_NAVY};border:none;"
+        "border-radius:4px;cursor:pointer;}"
+        f".diff-busy-cancel:hover{{background:{_NAVY_HOVER};}}"
+        ".diff-busy-cancel:disabled{opacity:0.65;cursor:wait;}"
         "</style>"
         "<div class='diff-busy' role='status' aria-live='polite'>"
         "<div class='diff-busy-wheel'></div>"
         f"{text}"
         f"{note_html}"
+        f"{cancel_html}"
         "</div>"
     )
 
@@ -322,6 +332,10 @@ class TabBusyOverlay(pn.custom.JSComponent):
     Siblings are found through the shadow root because Bokeh renders each
     layout inside its own; the overlay's host sits in the same root as the
     content it covers.
+
+    A button in `html` marked `data-busy-cancel` sends "cancel" to the
+    callbacks registered with on_msg, and disables itself so it reads as
+    in hand until the overlay clears.
     """
 
     html = param.String(default="")
@@ -333,6 +347,14 @@ class TabBusyOverlay(pn.custom.JSComponent):
       function sync() {
         const busy = model.html !== "";
         box.innerHTML = model.html;
+        const cancel = box.querySelector("[data-busy-cancel]");
+        if (cancel) {
+          cancel.addEventListener("click", () => {
+            cancel.disabled = true;
+            cancel.textContent = "Cancelling\u2026";
+            model.send_msg("cancel");
+          });
+        }
         const host = el.getRootNode().host;
         const parent = host && host.parentNode;
         if (!parent) return;
@@ -979,6 +1001,7 @@ def build_app(data_dir):
             html = _busy_html(
                 _diff_busy_lines(grid_state.diff_status, grid_state.diff_pairs),
                 _DIFF_BUSY_NOTE,
+                cancel=True,
             )
             stats_html = ""
         diff_busy_overlay.html = html
@@ -987,6 +1010,14 @@ def build_app(data_dir):
         stats_busy_overlay.visible = bool(stats_html)
 
     grid_state.param.watch(_sync_busy, ["diff_status", "diff_pairs"])
+
+    def _cancel_diffs(event):
+        # on_msg hands over the DataEvent, not the bare message.
+        plot = _active_plot.get("obj")
+        if event.data == "cancel" and hasattr(plot, "cancel_diffs"):
+            plot.cancel_diffs()
+
+    diff_busy_overlay.on_msg(_cancel_diffs)
     shown.param.watch(_sync_busy, "loading")
 
     vis = pn.Column(

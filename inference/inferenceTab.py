@@ -514,10 +514,15 @@ class InferenceTab(param.Parameterized):
                 last_flush = now
                 self._append_log(model, text)
 
-            for line in proc.stdout:
-                with buf_lock:
-                    buf.append(line)
-                _flush()
+            # Keep a copy of the output next to the results, so warnings
+            # (e.g. missing input variables) are still visible after the session.
+            log_path = model_output / f"{model}_run.log"
+            with open(log_path, "w") as log_file:
+                for line in proc.stdout:
+                    log_file.write(line)
+                    with buf_lock:
+                        buf.append(line)
+                    _flush()
 
             _flush(force=True)  # catch any remainder
             proc.wait()
