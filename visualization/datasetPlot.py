@@ -21,7 +21,7 @@ pn.extension(raw_css=[Path("static/styles.css").read_text()])
 # TODO: WXFormer/MILES-CREDIT output is ERA5-style with a real level
 # dimension and isn't handled by plot_e2s_field yet — it still needs its
 # own branch here (probably routing back through era5_plot.plot_png).
-EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu"}
+EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "CAMulator"}
 
 
 def _schedule(fn):

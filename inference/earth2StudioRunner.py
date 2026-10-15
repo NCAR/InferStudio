@@ -6,6 +6,7 @@ import os
 #EARTH2STUDIO_PYTHON = f"/glade/work/pearse/conda-envs/earth2studio/bin/python"
 MODEL_ENV_MAP = {
     'AIFS':         f"/glade/work/pearse/E2S/envs/aifs/bin/python",
+    'CAMulator':    f"/glade/work/pearse/E2S/envs/camulator/bin/python",
     'Aurora':       f"/glade/work/pearse/E2S/envs/aurora/bin/python",
     'FourCastNet3': f"/glade/work/pearse/E2S/envs/fcn3/bin/python",
     'GraphCast':    f"/glade/work/pearse/E2S/envs/graphcast/bin/python",
@@ -15,6 +16,7 @@ MODEL_ENV_MAP = {
 
 MODEL_MAP = {
     'AIFS':         'earth2studio.models.px.AIFS',
+    'CAMulator':    'earth2studio.models.px.CAMulator',
     'Aurora':       'earth2studio.models.px.Aurora',
     'FourCastNet3': 'earth2studio.models.px.FCN3',      # was FourCastNetv2Small — wrong model entirely
     'GraphCast':    'earth2studio.models.px.GraphCastSmall',
@@ -33,7 +35,30 @@ MODEL_DATA_SOURCE = {
         (datetime.min,         'ARCO'),   # ERA5 reanalysis, for historical starts
         (datetime(2024, 3, 1), 'IFS'),    # ECMWF open data (earliest IFS archive date)
     ],
+    # CAMulator runs on CAM6's own hybrid levels, which no analysis source
+    # supplies; it starts from the CAM states shipped with its weights.
+    'CAMulator': [
+        (datetime.min,         'CAMulatorInitialConditions'),
+    ],
 }
+
+# Sources that live in this directory rather than in earth2studio.data,
+# by class name -> module.
+LOCAL_DATA_SOURCES = {
+    'CAMulatorInitialConditions': 'camulatorInit',
+}
+
+# The start times CAMulatorInitialConditions has a state for: 00Z on
+# 1 January and 1 July, 1980-2014, except July 1980. Kept here as well as in
+# camulatorInit, which imports earth2studio and so can't be imported by the
+# app.
+CAMULATOR_START_TIMES = frozenset(
+    datetime(y, m, 1) for y in range(1980, 2015) for m in (1, 7)
+    if (y, m) != (1980, 7))
+
+# CAMulatorForcing's transient record covers 1980-2014. A step reads the
+# forcing at its input time, so a run can end 6 hours after the last record.
+CAMULATOR_TRANSIENT_END = datetime(2015, 1, 1)
 
 # ECMWF publishes IFS open data on three mirrors that throttle independently
 # (AWS answered "503 Slow Down" until the fetch timed out, while Azure served
@@ -103,6 +128,23 @@ MODEL_VAR_MAP = {
         'Z500': ['z500'],
         'Q500': ['q500'],
     },
+    # CAMulator runs on CAM's 32 hybrid levels; its output is interpolated
+    # to these pressure levels afterwards (see camulatorPressure). Q is
+    # CAMulator's total water, vapour plus cloud condensate, and Z500 is
+    # integrated from its temperature and moisture.
+    'CAMulator': {
+        'U':    ['u50','u100','u150','u200','u250','u300','u400','u500','u600','u700','u850','u925','u1000'],
+        'V':    ['v50','v100','v150','v200','v250','v300','v400','v500','v600','v700','v850','v925','v1000'],
+        'T':    ['t50','t100','t150','t200','t250','t300','t400','t500','t600','t700','t850','t925','t1000'],
+        'Q':    ['q50','q100','q150','q200','q250','q300','q400','q500','q600','q700','q850','q925','q1000'],
+        'SP':   ['sp'],
+        't2m':  ['t2m'],
+        'U500': ['u500'],
+        'V500': ['v500'],
+        'T500': ['t500'],
+        'Z500': ['z500'],
+        'Q500': ['q500'],
+    },
     # GraphCast, SFNO — add their maps as you test them.
     # Fallback for unmapped models: pass vars through lowercased.
 }
@@ -129,6 +171,21 @@ class Earth2StudioRunner(ModelRunner):
         selected = set(config["model"]) & set(MODEL_MAP.keys())
         if config["model"] not in MODEL_MAP:
             return f"Error: '{config['model']}' is not a recognized Earth2Studio model."
+        if config["model"] == 'CAMulator':
+            start = config["start_time"]
+            if isinstance(start, str):
+                start = datetime.fromisoformat(start)
+            if start not in CAMULATOR_START_TIMES:
+                return ("Error: CAMulator can only start at 00Z on 1 January or "
+                        "1 July of 1980-2014 (1 January only in 1980), from "
+                        f"the CAM states shipped with it; got {start:%Y-%m-%d %H}Z.")
+            end = config["end_time"]
+            if isinstance(end, str):
+                end = datetime.fromisoformat(end)
+            if config.get("forcing_mode") == 'transient' and end > CAMULATOR_TRANSIENT_END:
+                return ("Error: CAMulator's transient forcing ends at "
+                        f"{CAMULATOR_TRANSIENT_END:%Y-%m-%d %H}Z; this run ends "
+                        f"{end:%Y-%m-%d %H}Z. Shorten it or use cyclic forcing.")
 #        if not selected:
 #            return "Error: No recognized Earth2Studio model selected."
 #        if len(selected) > 1:
@@ -172,6 +229,12 @@ class Earth2StudioRunner(ModelRunner):
                 f"{IFS_MIRRORS!r}])")
         else:
             data_source_setup = f"data = {data_source}()"
+        if data_source in LOCAL_DATA_SOURCES:
+            data_source_import = (
+                f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
+                f"from {LOCAL_DATA_SOURCES[data_source]} import {data_source}")
+        else:
+            data_source_import = f"from earth2studio.data import {data_source}"
 
         # FCN3's DISCO convolutions overflow a 40 GB A100 (Derecho) unless
         # their weight contraction is chunked by latitude; 4 chunks matches
@@ -187,6 +250,31 @@ class Earth2StudioRunner(ModelRunner):
             alloc_env = model_patch = ""
 
         output_nc  = f"{output_path}/{file_stem}.nc"
+
+        # CAMulator writes its own model levels to a side file, which is
+        # then interpolated to the requested pressure levels in output_nc
+        # and removed. Its forcing (cyclic or transient) comes from the
+        # Climate tab.
+        if model_name == 'CAMulator':
+            run_nc = f"{output_path}/{file_stem}_model_levels.nc"
+            pressure_import = (
+                f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
+                "import camulatorPressure\n"
+                "from earth2studio.data import CAMulatorForcing")
+            save_vars = f"camulatorPressure.model_level_inputs({all_vars})"
+            forcing_mode = config.get("forcing_mode", "cyclic")
+            model_kwargs = (
+                "forcing_data_source=CAMulatorForcing("
+                f"mode={forcing_mode!r}, verbose=False)")
+            post_run = (
+                "io.close()\n"
+                'print("Interpolating to pressure levels...", flush=True)\n'
+                f'camulatorPressure.convert("{run_nc}", "{output_nc}", {all_vars})\n'
+                f'os.remove("{run_nc}")')
+        else:
+            run_nc = output_nc
+            pressure_import = post_run = model_kwargs = ""
+            save_vars = f"{all_vars}"
         script_path = os.path.join(config["output_dir"], f"{file_stem}_run.py")
 
 
@@ -206,8 +294,9 @@ import numpy as np
 from datetime import datetime
 from earth2studio.io import NetCDF4Backend
 from earth2studio.run import deterministic
-from earth2studio.data import {data_source}
+{data_source_import}
 {model_patch}
+{pressure_import}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -222,14 +311,14 @@ ModelClass = getattr(mod, model_class)
 
 print("Downloading/loading weights...", flush=True)
 package = ModelClass.load_default_package()
-model = ModelClass.load_model(package)
+model = ModelClass.load_model(package, {model_kwargs})
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Running on: {{device}}", flush=True)
 model = model.to(device)
 
 print("Setting up output backend...", flush=True)
-io = NetCDF4Backend("{output_nc}", backend_kwargs={{'mode': 'w'}})
+io = NetCDF4Backend("{run_nc}", backend_kwargs={{'mode': 'w'}})
 
 # Fetch from the first mirror that succeeds, starting each call with the
 # one that last worked.
@@ -263,9 +352,10 @@ deterministic(
     data=data,
     io=io,
     output_coords={{
-        "variable": np.array({all_vars}),
+        "variable": np.array({save_vars}),
     }},
 )
+{post_run}
 print("Output written to {output_nc}", flush=True)
 
 print("Converting to CF-compliant format...", flush=True)

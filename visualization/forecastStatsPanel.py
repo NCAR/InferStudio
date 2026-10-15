@@ -55,7 +55,7 @@ from visualization.earth2StudioVars import parse_variable_groups, resolve_var_na
 
 # Same set used in datasetPlot.py — models whose output this verification
 # pipeline (and the earth2studio GFS datasource) can currently handle.
-EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu"}
+EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "CAMulator"}
 
 # Computed stats are saved inside each model's directory, at
 # <suite>/<Model>/stats/<var>[_<level>].csv plus a .json sidecar, so a new

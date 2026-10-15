@@ -6,7 +6,11 @@ from datetime import datetime
 from tooltips import below_tooltip
 
 class OutputParams:
-    def __init__(self, start_path=".", width=400):
+    # Each options argument is a list of variable names, or a dict of
+    # button label -> variable name.
+    def __init__(self, start_path=".", width=400,
+                 surface_options=('SP', 't2m'), surface_default=('SP', 't2m'),
+                 ua_options=('U', 'V', 'T', 'Q'), ua_default=('U', 'V', 'T', 'Q')):
         self.current_path_val = os.path.abspath(os.path.expanduser(start_path))
         self._callback = None
         self._last_auto_name = None
@@ -30,8 +34,8 @@ class OutputParams:
         self.surfaceVars = pn.widgets.CheckButtonGroup(
             name="2D Variables",
             #value=['SP'],
-            value=['SP','t2m'],
-            options=['SP','t2m'],
+            value=list(surface_default),
+            options=surface_options if isinstance(surface_options, dict) else list(surface_options),
             button_type='primary',
             button_style='outline',
             description=below_tooltip("Selected variables are saved to disk"),
@@ -45,8 +49,8 @@ class OutputParams:
         self.UAVars = pn.widgets.CheckButtonGroup(
             name="3D Variables",
             #value=['U'],
-            value=['U','V','T','Q'],
-            options=['U','V','T','Q'],
+            value=list(ua_default),
+            options=ua_options if isinstance(ua_options, dict) else list(ua_options),
             button_type='primary',
             button_style='outline',
             description=below_tooltip("Selected variables are saved to disk"),

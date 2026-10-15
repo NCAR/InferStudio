@@ -107,6 +107,14 @@ class TimePicker(param.Parameterized):
             # recursion.
             self.startDatePicker.value = snapped
 
+    @property
+    def start_time(self):
+        return self.startDatePicker.value
+
+    @property
+    def timestep(self) -> str:
+        return self.incrementButtons.value
+
     def _step_hours(self) -> int:
         return STEP_HOURS.get(self.incrementButtons.value, 6)
 

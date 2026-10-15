@@ -15,6 +15,7 @@ from inference.outputParams import OutputParams
 from dimensions import model_file_stem
 from tooltips import below_tooltip
 from inference.timePicker import TimePicker
+from inference.climateTimePicker import ClimateTimePicker
 from inference.commandRunner import CommandRunner
 
 from inference.milesCreditRunner import MilesCreditRunner
@@ -22,8 +23,11 @@ from inference.earth2StudioRunner import Earth2StudioRunner
 
 MILES_CREDIT_MODEL_LIST = ['WXFormer']
 MILES_CREDIT_MODELS = frozenset(MILES_CREDIT_MODEL_LIST)
-EARTH2STUDIO_MODEL_LIST = ['AIFS', 'Aurora', 'Pangu', 'FourCastNet3']
+EARTH2STUDIO_MODEL_LIST = ['AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'CAMulator']
 EARTH2STUDIO_MODELS = frozenset(EARTH2STUDIO_MODEL_LIST)
+CLIMATE_MODEL_LIST = ['CAMulator']
+WEATHER_MODEL_LIST = [m for m in MILES_CREDIT_MODEL_LIST + EARTH2STUDIO_MODEL_LIST
+                      if m not in CLIMATE_MODEL_LIST]
 #EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'GraphCast', 'SFNO'}
 
 # Runs in the browser whenever a log box's text changes: keeps it scrolled
@@ -67,6 +71,12 @@ MODEL_DESCRIPTIONS = {
         "NVIDIA's FourCastNet 3, a spherical Fourier Neural Operator model, "
         "run through Earth2Studio (PyTorch + makani)."
     ),
+    'CAMulator': (
+        "NSF NCAR's emulator of the CAM6 climate model (1 degree, 6-hourly), "
+        "run through Earth2Studio (PyTorch). Output is interpolated from its "
+        "32 model levels to pressure levels; Q is total water. Starts only "
+        "from its shipped CAM states: 00Z on 1 January or 1 July, 1980-2014."
+    ),
 }
 
 
@@ -108,21 +118,26 @@ class ModelPicker(param.Parameterized):
         return self.row
 
 
-class InferenceTab(param.Parameterized):
-    startDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0))
-    endDate = param.Date(default=datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=72))
+class ModelTab(param.Parameterized):
+    """Picks models, output and time settings, then runs the selected models
+    one after another. Subclasses choose the models and the settings."""
+
     outputDirectory = param.String(default="")
+
+    MODELS = []
+    DEFAULT_MODELS = []
 
     def __init__(self, **params):
         super().__init__(**params)
 
         self.modelPicker = ModelPicker(
-            value=['AIFS', 'Aurora'],
-            options=MILES_CREDIT_MODEL_LIST + EARTH2STUDIO_MODEL_LIST,
+            value=list(self.DEFAULT_MODELS),
+            options=self.MODELS,
             descriptions=MODEL_DESCRIPTIONS,
         )
 
-        self.outputParams = OutputParams(start_path=Path(f"/glade/derecho/scratch/{os.environ['USER']}"))
+        self.outputParams = self._make_output_params(
+            Path(f"/glade/derecho/scratch/{os.environ['USER']}"))
         self.outputParams.simulationNamePicker.param.watch(
             lambda e: self._clear_highlight(self.outputParams.simulationNamePicker),
             'value_input'
@@ -130,7 +145,7 @@ class InferenceTab(param.Parameterized):
         self.modelPicker.param.watch(self._update_default_sim_name, 'value')
         self._update_default_sim_name()
 
-        self.timePicker = TimePicker()
+        self.timePicker = self._make_time_picker()
 
         self.inferenceButton = pn.widgets.Button(
             name="Run Inference",
@@ -170,6 +185,12 @@ class InferenceTab(param.Parameterized):
         self.outputTabs = pn.Tabs(sizing_mode="stretch_width", height=350)
         self.statusRow = pn.Row(pn.pane.Markdown("", margin=0))
 
+    def _make_output_params(self, start_path):
+        return OutputParams(start_path=start_path)
+
+    def _make_time_picker(self):
+        return TimePicker()
+
     # ------------------------------------------------------------------ #
     #  Runner helpers                                                      #
     # ------------------------------------------------------------------ #
@@ -187,9 +208,9 @@ class InferenceTab(param.Parameterized):
     def _build_config(self, model: str) -> dict:
         return {
             "simulation_name": self.outputParams.simulationNamePicker.value_input,
-            "start_time":      self.timePicker.startDatePicker.value,
+            "start_time":      self.timePicker.start_time,
             "end_time":        self.timePicker.end_date,
-            "timestep":        self.timePicker.incrementButtons.value,
+            "timestep":        self.timePicker.timestep,
             "ua_vars":         self.outputParams.UAVars.value,
             "surface_vars":    self.outputParams.surfaceVars.value,
             "output_path":     str(
@@ -604,7 +625,7 @@ class InferenceTab(param.Parameterized):
                 sizing_mode='stretch_width',
             ),
             self.outputParams.panel(),
-            self.timePicker.panel,
+            self.timePicker.panel(),
             pn.WidgetBox(
                 "# Launcher",
                 pn.Row(
@@ -616,6 +637,79 @@ class InferenceTab(param.Parameterized):
                 self.outputTabs,
                 sizing_mode='stretch_width',
             ),
+            sizing_mode='stretch_both',
+            min_height=300,
+        )
+
+
+class WeatherTab(ModelTab):
+    MODELS = WEATHER_MODEL_LIST
+    DEFAULT_MODELS = ['AIFS', 'Aurora']
+
+
+# CAMulator diagnostics offered on the Climate tab, button label -> output
+# name. Names ending in digits (tp06, e06) would be read as pressure levels
+# by the Visualization tab, so they aren't offered yet.
+CLIMATE_SURFACE_VARS = {
+    'SP': 'SP',
+    't2m': 't2m',
+    'Skin T': 'skt',
+    '10m Wind': 'ws10m',
+    'OLR': 'mtuwlwrf',
+    'High Cloud': 'hcc',
+    'Mid Cloud': 'mcc',
+    'Low Cloud': 'lcc',
+}
+
+
+class ClimateTab(ModelTab):
+    MODELS = CLIMATE_MODEL_LIST
+    DEFAULT_MODELS = ['CAMulator']
+
+    def _make_output_params(self, start_path):
+        return OutputParams(
+            start_path=start_path,
+            surface_options=CLIMATE_SURFACE_VARS,
+            surface_default=['SP', 't2m'],
+        )
+
+    def _make_time_picker(self):
+        return ClimateTimePicker()
+
+    def _build_config(self, model: str) -> dict:
+        config = super()._build_config(model)
+        config["forcing_mode"] = self.timePicker.forcing_mode
+        return config
+
+
+class InferenceTab(param.Parameterized):
+    """The Inference tab: a Weather sub-tab for the weather models, and a
+    Climate sub-tab for climate models such as CAMulator.
+
+    outputDirectory is set whenever either sub-tab finishes a run, so the
+    app can load the new suite into the Visualization tab."""
+
+    outputDirectory = param.String(default="")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.weatherTab = WeatherTab()
+        self.climateTab = ClimateTab()
+        for tab in (self.weatherTab, self.climateTab):
+            tab.param.watch(self._forward_output, 'outputDirectory')
+
+    def _forward_output(self, event):
+        # A sub-tab triggers outputDirectory even when it's unchanged (a
+        # re-run of the same simulation name), so this does the same.
+        if event.new == self.outputDirectory:
+            self.param.trigger('outputDirectory')
+        else:
+            self.outputDirectory = event.new
+
+    def panel(self):
+        return pn.Tabs(
+            ("Weather", self.weatherTab.panel()),
+            ("Climate", self.climateTab.panel()),
             sizing_mode='stretch_both',
             min_height=300,
         )

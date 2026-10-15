@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 
 MODEL_ENV_MAP = {
     'AIFS':         "/glade/work/pearse/E2S/envs/aifs/bin/python",
+    'CAMulator':    "/glade/work/pearse/E2S/envs/camulator/bin/python",
     'Aurora':       "/glade/work/pearse/E2S/envs/aurora/bin/python",
     'FourCastNet3': "/glade/work/pearse/E2S/envs/fcn3/bin/python",
     'GraphCast':    "/glade/work/pearse/E2S/envs/graphcast/bin/python",
@@ -43,6 +44,7 @@ MODEL_ENV_MAP = {
 
 MODEL_MAP = {
     'AIFS':         'earth2studio.models.px.AIFS',
+    'CAMulator':    'earth2studio.models.px.CAMulator',
     'Aurora':       'earth2studio.models.px.Aurora',
     'FourCastNet3': 'earth2studio.models.px.FCN3',
     'GraphCast':    'earth2studio.models.px.GraphCastSmall',
