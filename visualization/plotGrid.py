@@ -226,7 +226,31 @@ def _tile_lon(da, lon_dim, period):
 # corrections made both zoom and pan flicker/stick at that point. The span
 # floor/ceiling is left entirely to Range1d.min_interval/max_interval (see
 # _apply_zoom_clamp) instead, which isn't implicated in the bug below.
+#
+# It also keeps the range the right way up. No axis here is ever meant to
+# be inverted, yet after enough zooming the latitude range sometimes ended
+# up with start > end, which draws the map upside down (the rasterized
+# image itself is always oriented correctly - an inverted window still
+# re-aggregates fine server-side). Whatever the source, the guard
+# swaps the ends back. The swap is deferred a tick, because an
+# inverted range can be a passing state: HoloViews sends start and end
+# as separate changes, and swapping between them would leave the wrong
+# window. After the swap every figure on this range emits RangesUpdate,
+# as _LON_WRAP_JS does, so rasterize() re-aggregates for the corrected
+# view.
 _PAN_CLAMP_JS = """
+if (range.start > range.end) {
+  setTimeout(() => {
+    if (!(range.start > range.end)) { return }
+    range.setv({start: range.end, end: range.start})
+    for (const m of range.document.all_models) {
+      if (m.x_range !== range && m.y_range !== range) { continue }
+      const view = Bokeh.index.find_one(m)
+      if (view != null) { view.trigger_ranges_update_event() }
+    }
+  }, 0)
+  return
+}
 let start = range.start
 let end = range.end
 if (start < lo) { end += (lo - start); start = lo }
@@ -363,6 +387,15 @@ return tick.toFixed(dec)
 # after a synthetic double-click), which would otherwise commit a wrong
 # range.
 #
+# Bokeh's PanTool sees the same drag first. Before Bokeh 3.9 it treats a
+# drag starting beside the frame - which is where the colorbar sits - as a
+# latitude-only pan, so a zoomed-in map would slide up and down while its
+# colorbar was dragged. Undoing that pan from here doesn't work: CustomJS
+# runs asynchronously, after the tool has already applied the first pan
+# step. Instead the PanTool is switched off while the pointer is right of
+# the frame (only the colorbar lives there) and back on once it returns,
+# so it is already off by the time a colorbar drag begins.
+#
 # Cursor: ns-resize over and while dragging the colorbar, grab over the map,
 # grabbing while panning it, and zoom-in/zoom-out briefly on a wheel zoom.
 # Bokeh itself only shows a cursor for the active *move* tool, which here is
@@ -398,7 +431,15 @@ function hoverCursor() {
   return null
 }
 
+function syncPanTool() {
+  const on = sx <= pv.frame.bbox.right
+  for (const t of fig.toolbar.tools) {
+    if (t.type === "PanTool" && t.active !== on) { t.active = on }
+  }
+}
+
 if (ev === "mousemove") {
+  if (!st.active && !st.panning) { syncPanTool() }
   setCursor(st.active ? "ns-resize" : st.panning ? "grabbing" : hoverCursor())
   return
 }
@@ -451,6 +492,7 @@ if (!st.active) { return }
 
 if (ev === "panend") {
   st.active = false
+  syncPanTool()
   commit.data = {kind: [kind], action: ["set"], low: [st.last[0]],
     high: [st.last[1]], n: [Date.now()]}
   setCursor(hoverCursor())
@@ -1471,13 +1513,10 @@ class PlotGrid(param.Parameterized):
                 f"<div class='rl'>{r_lab}{':' if r_lab else ''}</div>"
                 f"<div class='rv rv-model'>{r_val}</div>"
             )
-        # The valid time heads the readout box, so the time and the values
-        # read at that time are one block.
-        time_row = f"<div class='readout-time'>{stamp}</div>" if stamp else ""
         readout = (
-            f"<div class='readout'>{time_row}{''.join(cells)}</div>"
+            f"<div class='readout'>{''.join(cells)}</div>"
             if cells else
-            f"<div class='readout-empty'>{time_row}"
+            "<div class='readout-empty'>"
             "<div>Hover over a map to read "
             "values here.</div></div>"
         )
@@ -1490,6 +1529,10 @@ class PlotGrid(param.Parameterized):
                 f"<div class='readout-var'>{escape(long_name)}{where} "
                 f"<span class='var-code'>({escape(variable)})</span></div>"
             )
+        # The valid time sits directly under the variable, in the same
+        # face, so the two read as one title for the maps below.
+        if stamp:
+            headline += f"<div class='readout-var readout-time'>{stamp}</div>"
 
         banner = ""
         if computing:
@@ -1518,11 +1561,9 @@ class PlotGrid(param.Parameterized):
             ".readout-var .var-code{font-weight:400;color:#555;"
             "font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
             "font-size:17px;}"
-            # Spans all four readout columns. Left-aligned explicitly for
-            # the same reason as .rl below.
-            ".readout-time{grid-column:1/-1;font-size:15px;font-weight:600;"
-            "color:#ffffff;white-space:nowrap;text-align:left;"
-            "font-variant-numeric:tabular-nums;margin-bottom:2px;}"
+            # Tabular digits so the headline doesn't jitter as the time
+            # slider steps.
+            ".readout-time{font-variant-numeric:tabular-nums;margin-top:-4px;}"
             ".readout{display:grid;"
             # max-content sizes each label column to its widest member and
             # holds it; the fixed value columns mean a value gaining a digit
@@ -1550,7 +1591,6 @@ class PlotGrid(param.Parameterized):
             "background:#091422;border-radius:6px;"
             "padding:8px 12px;width:max-content;"
             "display:flex;flex-direction:column;justify-content:center;}"
-            ".readout-empty .readout-time{font-style:normal;}"
             ".readout-hint{display:grid;grid-template-columns:max-content "
             "max-content;column-gap:10px;row-gap:4px;font-size:14px;"
             "color:#DFEFF6;white-space:nowrap;text-align:left;"
@@ -1672,7 +1712,7 @@ class PlotGrid(param.Parameterized):
             margin=(4, 0, 8, 12),
             # Reserves the readout's rows so the plots below don't shift
             # down the first time the cursor enters a panel.
-            min_height=128,
+            min_height=160,
         )
 
         # No in-card busy state here: while a difference computes, the app
