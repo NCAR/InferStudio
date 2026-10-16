@@ -24,6 +24,10 @@ TIME_NAMES = ("time",)
 
 _LEVEL_VAR_RE = re.compile(r"^([a-zA-Z]+?)(\d+)$")
 
+# A model's own levels, named for a 0-based index from the model top with a
+# "k" suffix: CAMulator's u0k ... u31k.
+_MODEL_LEVEL_VAR_RE = re.compile(r"^([a-zA-Z]+?)(\d+)k$")
+
 
 def _resolve_dim(ds, *candidates):
     for name in candidates:
@@ -51,6 +55,25 @@ def parse_variable_groups(var_names):
         else:
             surface_vars.append(name)
     return level_vars, surface_vars
+
+
+def parse_model_level_groups(var_names):
+    """Split off variables on a model's own levels (u0k, qtot31k, ...).
+
+    Returns (model_level_vars, rest): model_level_vars is
+    {base_name: {level: full_var_name}} with levels numbered from 1 at the
+    model top, so u0k is level 1 of "u"; rest is every other name.
+    """
+    model_level_vars = {}
+    rest = []
+    for name in var_names:
+        m = _MODEL_LEVEL_VAR_RE.match(name)
+        if m:
+            base, k = m.group(1), int(m.group(2))
+            model_level_vars.setdefault(base, {})[k + 1] = name
+        else:
+            rest.append(name)
+    return model_level_vars, rest
 
 
 def available_levels(level_vars, base):

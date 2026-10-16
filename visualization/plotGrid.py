@@ -73,6 +73,7 @@ from bokeh.models import (
     ColumnDataSource, CustomJS, CustomJSTickFormatter, FixedTicker,
     WheelZoomTool)
 
+from dimensions import PRES_NAME, level_text
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, FieldReadError, CANON_LAT, CANON_LON)
 from visualization.boundaries import (
@@ -577,6 +578,7 @@ class PlotGridState(param.Parameterized):
 
     variable = param.String(default="q")
     level = param.Integer(default=500, allow_None=True)
+    level_dim = param.String(default=PRES_NAME)  # which kind of level
 
     # Either a colormap name or a matplotlib Colormap object - cmocean's
     # colormaps are not registered globally, so they arrive as objects.
@@ -1471,7 +1473,8 @@ class PlotGrid(param.Parameterized):
         )
 
     @staticmethod
-    def _readout_html(stamp, variable, level, left, right, status=None):
+    def _readout_html(stamp, variable, level, left, right, status=None,
+                      level_dim=PRES_NAME):
         """The header above the grid: valid time and variable as a
         headline, the cursor readout, and the mouse controls - with a
         banner when a difference is being computed.
@@ -1524,7 +1527,7 @@ class PlotGrid(param.Parameterized):
         headline = ""
         if variable:
             long_name = variable_long_name(variable) or variable
-            where = f" at {level} hPa" if level else ""
+            where = f" at {level_text(level, level_dim)}" if level else ""
             headline = (
                 f"<div class='readout-var'>{escape(long_name)}{where} "
                 f"<span class='var-code'>({escape(variable)})</span></div>"
@@ -1702,13 +1705,14 @@ class PlotGrid(param.Parameterized):
         # a panel, readout_rows is empty and this renders the timestamp and
         # the navigation hint alone.
         readout = pn.pane.HTML(
-            pn.bind(lambda stamp, var, level, rows, status: self._readout_html(
-                        stamp, var, level, rows[0], rows[1], status),
+            pn.bind(lambda stamp, var, level, rows, status, level_dim: self._readout_html(
+                        stamp, var, level, rows[0], rows[1], status, level_dim),
                     self.state.param.header_text,
                     self.state.param.variable,
                     self.state.param.level,
                     self.state.param.readout_rows,
-                    self.state.param.diff_status),
+                    self.state.param.diff_status,
+                    self.state.param.level_dim),
             margin=(4, 0, 8, 12),
             # Reserves the readout's rows so the plots below don't shift
             # down the first time the cursor enters a panel.

@@ -14,14 +14,17 @@ from pathlib import Path
 from inference.outputParams import OutputParams
 from dimensions import model_file_stem
 from tooltips import below_tooltip
+from tabStyles import TAB_HEADER_CSS
 from inference.timePicker import TimePicker
 from inference.climateTimePicker import ClimateTimePicker
 from inference.commandRunner import CommandRunner
 
-from inference.milesCreditRunner import MilesCreditRunner
+from inference.milesCreditRunner import MilesCreditRunner, MilesCreditGen2Runner
 from inference.earth2StudioRunner import Earth2StudioRunner
 
-MILES_CREDIT_MODEL_LIST = ['WXFormer']
+# WXFormer runs on MILES-CREDIT's gen1 pipeline, WXFormerGen2 on gen2 (see
+# MilesCreditGen2Runner).
+MILES_CREDIT_MODEL_LIST = ['WXFormer', 'WXFormerGen2']
 MILES_CREDIT_MODELS = frozenset(MILES_CREDIT_MODEL_LIST)
 EARTH2STUDIO_MODEL_LIST = ['AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'CAMulator']
 EARTH2STUDIO_MODELS = frozenset(EARTH2STUDIO_MODEL_LIST)
@@ -49,11 +52,25 @@ if (el._stick) {
 }
 """
 
+# Button labels for models whose name (also their output directory) isn't
+# what the button should say.
+MODEL_LABELS = {
+    'WXFormer': 'WXFormer (gen 1)',
+    'WXFormerGen2': 'WXFormer (gen 2)',
+}
+
 # Short, hover-friendly descriptions shown as a tooltip on each model button.
 MODEL_DESCRIPTIONS = {
     'WXFormer': (
-        "NCAR MILES-CREDIT's own transformer-based weather model. Writes "
-        "ERA5-style output with a real vertical-level dimension."
+        "NCAR MILES-CREDIT's own transformer-based weather model (1 hour, "
+        "0.25 degree), run through MILES-CREDIT's original gen1 pipeline. "
+        "Writes ERA5-style output with a real vertical-level dimension."
+    ),
+    'WXFormerGen2': (
+        "The same WXFormer weights run through MILES-CREDIT's gen2 realtime "
+        "pipeline (rollout_realtime_gen2), with a config converted by "
+        "`credit convert`. Needs miles-credit 2026.2 or later (the InferStudio "
+        "conda environment). Saves every hourly step."
     ),
     'AIFS': (
         "ECMWF's AI Forecasting System, run through Earth2Studio (PyTorch). "
@@ -73,8 +90,8 @@ MODEL_DESCRIPTIONS = {
     ),
     'CAMulator': (
         "NSF NCAR's emulator of the CAM6 climate model (1 degree, 6-hourly), "
-        "run through Earth2Studio (PyTorch). Output is interpolated from its "
-        "32 model levels to pressure levels; Q is total water. Starts only "
+        "run through Earth2Studio (PyTorch). Output is on its 32 model "
+        "levels, 1 at the model top; Q is total water. Starts only "
         "from its shipped CAM states: 00Z on 1 January or 1 July, 1980-2014."
     ),
 }
@@ -86,13 +103,14 @@ class ModelPicker(param.Parameterized):
 
     value = param.List(default=[])
 
-    def __init__(self, options, descriptions=None, **params):
+    def __init__(self, options, descriptions=None, labels=None, **params):
         super().__init__(**params)
         descriptions = descriptions or {}
+        labels = labels or {}
         self._buttons = {}
         for name in options:
             button = pn.widgets.Button(
-                name=name,
+                name=labels.get(name, name),
                 button_type='primary',
                 button_style='solid' if name in self.value else 'outline',
                 description=(below_tooltip(descriptions[name])
@@ -134,6 +152,7 @@ class ModelTab(param.Parameterized):
             value=list(self.DEFAULT_MODELS),
             options=self.MODELS,
             descriptions=MODEL_DESCRIPTIONS,
+            labels=MODEL_LABELS,
         )
 
         self.outputParams = self._make_output_params(
@@ -199,7 +218,9 @@ class ModelTab(param.Parameterized):
         """Return list of (model_name, runner) for every selected model."""
         runners = []
         for model in self.modelPicker.value:
-            if model in MILES_CREDIT_MODELS:
+            if model == 'WXFormerGen2':
+                runners.append((model, MilesCreditGen2Runner()))
+            elif model in MILES_CREDIT_MODELS:
                 runners.append((model, MilesCreditRunner()))
             elif model in EARTH2STUDIO_MODELS:
                 runners.append((model, Earth2StudioRunner()))
@@ -707,9 +728,12 @@ class InferenceTab(param.Parameterized):
             self.outputDirectory = event.new
 
     def panel(self):
+        # Styled like the app's main tabs; see tabStyles for the title's
+        # second line.
         return pn.Tabs(
             ("Weather", self.weatherTab.panel()),
-            ("Climate", self.climateTab.panel()),
+            ("Climate\n(experimental)", self.climateTab.panel()),
+            stylesheets=[TAB_HEADER_CSS],
             sizing_mode='stretch_both',
             min_height=300,
         )

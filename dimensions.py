@@ -20,6 +20,24 @@ LAT_NAME = "latitude"
 LON_NAME = "longitude"
 LEV_NAME = "level"
 PRES_NAME = "pressure"
+# A model's own vertical levels, numbered from 1 at the model top (CAMulator's
+# 32 hybrid levels). Numbered from 1 because a level of 0 means "no level"
+# throughout the Visualization tab.
+MODEL_LEV_NAME = "model_level"
+VERTICAL_DIMS = (PRES_NAME, MODEL_LEV_NAME)
+
+
+def vertical_dim(obj):
+    """The vertical dimension (pressure or model level) of a DataArray or
+    Dataset, or None if it has neither."""
+    return next((d for d in VERTICAL_DIMS if d in obj.dims), None)
+
+
+def level_text(level, dim=PRES_NAME):
+    """A level for display: "500 hPa", or "model level 12"."""
+    if dim == MODEL_LEV_NAME:
+        return f"model level {level}"
+    return f"{level} hPa"
 
 
 # Model-difference files (see visualization/modelDiff.py) end in this, and

@@ -29,7 +29,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dimensions import resolve_nc_glob, PRES_NAME
+from dimensions import resolve_nc_glob, vertical_dim
 from visualization.boundaries import (
     boundary_lines, NONE as BOUNDARIES_NONE, BOUNDARY_COLOR,
     BOUNDARY_HALO_COLOR, BOUNDARY_HALO_ALPHA, MPL_BOUNDARY_WIDTH,
@@ -214,7 +214,7 @@ class FieldReadError(RuntimeError):
         self.t = t
         self.attempts = attempts
         self.cause = cause
-        what = base_or_var + (f" at {level} hPa" if level else "")
+        what = base_or_var + (f" at level {level}" if level else "")
         super().__init__(
             f"{cause} reading {what}, step {t} ({attempts} tries)")
 
@@ -269,7 +269,8 @@ def load_e2s_field_once(model_dir, base_or_var, level, t):
         Either a surface variable name (t2m, msl, sp, ...) or a leveled
         base name (u, v, t, q, z, ...)
     level : int or None
-        Pressure level in hPa, used only when base_or_var is a leveled base.
+        Pressure level in hPa, or model level number for a model's own
+        levels (CAMulator's), used only when base_or_var is a leveled base.
     t : int
         Time index to select. Clamped to the available range.
 
@@ -290,15 +291,16 @@ def load_e2s_field_once(model_dir, base_or_var, level, t):
 
     da = ds[var_name]
 
-    # CF-compliant files (post cf_convert.py) stack all pressure levels of a
-    # variable into one array with a real `pressure` dimension, rather than
-    # earth2studio's original flattened per-level variables (u100, u850, ...).
-    # If this variable has a real pressure dim, select the requested level
-    # from it directly here — resolve_var_name won't have done this, since
-    # for a CF file base_or_var already IS the actual variable name (no
-    # flattened-name lookup needed).
-    if PRES_NAME in da.dims and level is not None:
-        da = da.sel({PRES_NAME: level}, method="nearest")
+    # CF-compliant files (post cf_convert.py) stack all levels of a
+    # variable into one array with a real vertical dimension (`pressure`,
+    # or `model_level`), rather than earth2studio's original flattened
+    # per-level variables (u100, u850, ...). If this variable has one,
+    # select the requested level from it directly here — resolve_var_name
+    # won't have done this, since for a CF file base_or_var already IS the
+    # actual variable name (no flattened-name lookup needed).
+    lev_dim = vertical_dim(da)
+    if lev_dim is not None and level is not None:
+        da = da.sel({lev_dim: level}, method="nearest")
 
     # Capture the initialization time, needed to turn a lead-time offset
     # into an absolute valid time.
@@ -432,8 +434,9 @@ def field_step_count(model_dir, base_or_var, level) -> int:
     lat_dim = _resolve_dim(ds, *LAT_NAMES)
     lon_dim = _resolve_dim(ds, *LON_NAMES)
     da = ds[var_name]
-    if PRES_NAME in da.dims:
-        da = da.isel({PRES_NAME: 0})
+    lev_dim = vertical_dim(da)
+    if lev_dim is not None:
+        da = da.isel({lev_dim: 0})
     extra = [d for d in da.dims
              if d not in (lat_dim, lon_dim) and da.sizes[d] > 1]
     return da.sizes[extra[0]] if len(extra) == 1 else 1

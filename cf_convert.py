@@ -13,7 +13,9 @@ Two structural changes are made, in this order:
      `time` axis, steps as `lead_time` — is not what CF expects, where
      `time` is the valid time and carries the record dimension.
 
-  2. Leveled variables are stacked onto a real `pressure` dimension.
+  2. Leveled variables are stacked onto a real `pressure` dimension, or,
+     for a model's own levels (CAMulator's u0k ... u31k), onto a
+     `model_level` dimension numbered from 1 at the model top.
 
 Order matters: the stacking step computes each variable's "leading" dims
 and transposes to (*leading, pressure, lat, lon). Collapsing first makes
@@ -33,6 +35,7 @@ codebase (parse_variable_groups, resolve_var_name, the Variable dropdown)
 is built entirely around lowercase names already.
 """
 
+import time
 from pathlib import Path
 
 import numpy as np
@@ -42,7 +45,9 @@ import pandas as pd
 # Reuse the SAME level-parsing/dim-resolution logic already used for
 # plotting, so this stays in sync automatically rather than duplicating
 # the flattened-variable-name regex or lat/lon-dimension detection.
-from visualization.earth2StudioVars import parse_variable_groups, _resolve_dim, LAT_NAMES, LON_NAMES
+from visualization.earth2StudioVars import (
+    parse_variable_groups, parse_model_level_groups, _resolve_dim, LAT_NAMES, LON_NAMES)
+from dimensions import PRES_NAME, MODEL_LEV_NAME
 
 # CF metadata for the base variables InferStudio actually runs. Extend
 # this if new base variables are added to MODEL_VAR_MAP in
@@ -58,6 +63,9 @@ _CF_VAR_ATTRS = {
     "t": {"standard_name": "air_temperature", "long_name": "Temperature", "units": "K"},
     "q": {"standard_name": "specific_humidity", "long_name": "Specific humidity", "units": "kg kg**-1"},
     "z": {"standard_name": "geopotential", "long_name": "Geopotential", "units": "m**2 s**-2"},
+    # CAMulator's moisture: vapour plus cloud condensate. CF has no
+    # standard name for it.
+    "qtot": {"long_name": "Total water", "units": "kg kg**-1"},
 }
 
 # CF metadata for known surface/single-level fields, applied only if the
@@ -126,6 +134,16 @@ _PRESSURE_CF_ATTRS = {
     # CF: "positive" states which direction of the coordinate corresponds
     # to up. Pressure decreases upward, so increasing pressure is downward.
     "positive": "down",
+}
+
+_MODEL_LEVEL_CF_ATTRS = {
+    "long_name": "model level",
+    "units": "1",
+    "axis": "Z",
+    # Level 1 is the model top, so increasing level is downward.
+    "positive": "down",
+    "comment": "Model's own vertical level, numbered from 1 at the model top. "
+               "CAMulator's are CAM6's 32 hybrid sigma-pressure levels.",
 }
 
 _TIME_CF_ATTRS = {
@@ -224,8 +242,10 @@ def _apply_coord_attrs(ds):
         attrs["valid_max"] = float(lon_vals.max())
         ds[lon_dim].attrs = attrs
 
-    if "pressure" in ds.coords:
-        ds["pressure"].attrs = dict(ds["pressure"].attrs, **_PRESSURE_CF_ATTRS)
+    if PRES_NAME in ds.coords:
+        ds[PRES_NAME].attrs = dict(ds[PRES_NAME].attrs, **_PRESSURE_CF_ATTRS)
+    if MODEL_LEV_NAME in ds.coords:
+        ds[MODEL_LEV_NAME].attrs = dict(ds[MODEL_LEV_NAME].attrs, **_MODEL_LEVEL_CF_ATTRS)
 
     # These three may already have been set by _collapse_lead_time, but a
     # file that arrives with a real time axis and no lead_time skips that
@@ -254,6 +274,9 @@ def _build_encoding(ds):
     _FillValue is suppressed on every coordinate. xarray adds one by
     default, and CF 2.5.1 says coordinate variables should not have
     missing values - a coordinate with a fill value is a contradiction.
+
+    Data variables are written uncompressed and without a _FillValue, so
+    their values are identical to the source file's.
     """
     encoding = {}
 
@@ -281,14 +304,39 @@ def _build_encoding(ds):
 
     lat_dim = _resolve_dim(ds, *LAT_NAMES)
     lon_dim = _resolve_dim(ds, *LON_NAMES)
-    for coord in (lat_dim, lon_dim, "pressure", "forecast_period"):
+    for coord in (lat_dim, lon_dim, PRES_NAME, MODEL_LEV_NAME, "forecast_period"):
         if coord and coord in ds.coords and coord not in encoding:
             encoding[coord] = {"_FillValue": None}
 
     for v in ds.data_vars:
-        encoding[v] = {"zlib": True, "complevel": 4, "_FillValue": None}
+        encoding[v] = {"zlib": False, "_FillValue": None}
 
     return encoding
+
+
+def _stack_levels(ds, base, levels_map, dim, dtype):
+    """One array of base variable `base` with a real `dim` dimension, from
+    its flattened per-level variables, {level: name} in levels_map."""
+    levels_sorted = sorted(levels_map.keys())
+    pieces = [ds[levels_map[lev]] for lev in levels_sorted]
+
+    # Determine lat/lon dim names and every other ("leading") dim from the
+    # first piece - should be consistent across all levels of the same base
+    # variable. Post-collapse this is just `time`.
+    lat_dim = _resolve_dim(pieces[0], *LAT_NAMES)
+    lon_dim = _resolve_dim(pieces[0], *LON_NAMES)
+    leading_dims = [d for d in pieces[0].dims if d not in (lat_dim, lon_dim)]
+
+    stacked = xr.concat(pieces, dim=dim)
+    stacked = stacked.assign_coords({dim: (dim, np.array(levels_sorted, dtype=dtype))})
+    # xr.concat prepends the new dim - reorder so leading dims (time) stay
+    # first, then the level, then lat/lon.
+    stacked = stacked.transpose(*leading_dims, dim, lat_dim, lon_dim)
+
+    attrs = dict(_CF_VAR_ATTRS.get(base, {}))
+    attrs.setdefault("short_name", base)
+    stacked.attrs = attrs
+    return stacked
 
 
 def make_cf_compliant(nc_path, suffix="_cf"):
@@ -307,36 +355,17 @@ def make_cf_compliant(nc_path, suffix="_cf"):
         # these two transformations is not arbitrary.
         ds = _collapse_lead_time(ds)
 
-        level_vars, surface_vars = parse_variable_groups(list(ds.data_vars))
+        model_level_vars, rest = parse_model_level_groups(list(ds.data_vars))
+        level_vars, surface_vars = parse_variable_groups(rest)
 
         new_vars = {}
 
         # Stack each leveled base variable (u, v, t, q, z, ...) into one
-        # array with a genuine `pressure` dimension.
-        for base, levels_map in level_vars.items():
-            levels_sorted = sorted(levels_map.keys())
-            pieces = [ds[levels_map[lev]] for lev in levels_sorted]
-
-            # Determine lat/lon dim names and every other ("leading") dim
-            # from the first piece - should be consistent across all levels
-            # of the same base variable. Post-collapse this is just `time`.
-            lat_dim = _resolve_dim(pieces[0], *LAT_NAMES)
-            lon_dim = _resolve_dim(pieces[0], *LON_NAMES)
-            leading_dims = [d for d in pieces[0].dims if d not in (lat_dim, lon_dim)]
-
-            stacked = xr.concat(pieces, dim="pressure")
-            stacked = stacked.assign_coords(
-                pressure=("pressure", np.array(levels_sorted, dtype="float64"))
-            )
-            # xr.concat prepends the new dim - reorder so leading dims
-            # (time) stay first, then pressure, then lat/lon.
-            stacked = stacked.transpose(*leading_dims, "pressure", lat_dim, lon_dim)
-
-            attrs = dict(_CF_VAR_ATTRS.get(base, {}))
-            attrs.setdefault("short_name", base)
-            stacked.attrs = attrs
-
-            new_vars[base] = stacked
+        # array with a genuine vertical dimension.
+        for groups, dim, dtype in ((level_vars, PRES_NAME, "float64"),
+                                   (model_level_vars, MODEL_LEV_NAME, "int32")):
+            for base, levels_map in groups.items():
+                new_vars[base] = _stack_levels(ds, base, levels_map, dim, dtype)
 
         # Surface/single-level fields pass through unchanged, but get CF
         # attrs stamped on if we recognize the variable name.
@@ -363,7 +392,23 @@ def make_cf_compliant(nc_path, suffix="_cf"):
 
         out_ds.attrs["Conventions"] = "CF-1.11"
 
-        out_ds.to_netcdf(out_path, encoding=_build_encoding(out_ds))
+        # Write the coordinates first, then one data variable at a time, so
+        # progress can be reported and only one variable is in memory at once.
+        encoding = _build_encoding(out_ds)
+        names = list(out_ds.data_vars)
+        print(f"CF conversion: writing {len(names)} variables to {out_path}", flush=True)
+        coords_only = out_ds.drop_vars(names)
+        coords_only.to_netcdf(
+            out_path, mode="w",
+            encoding={k: v for k, v in encoding.items() if k in coords_only.variables})
+        for i, name in enumerate(names, 1):
+            start = time.monotonic()
+            one = out_ds[[name]]
+            one.to_netcdf(
+                out_path, mode="a",
+                encoding={k: v for k, v in encoding.items() if k in one.variables})
+            print(f"CF conversion: [{i}/{len(names)}] {name} "
+                  f"({time.monotonic() - start:.1f}s)", flush=True)
 
     return out_path
 

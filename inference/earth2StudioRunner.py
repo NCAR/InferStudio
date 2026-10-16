@@ -128,22 +128,16 @@ MODEL_VAR_MAP = {
         'Z500': ['z500'],
         'Q500': ['q500'],
     },
-    # CAMulator runs on CAM's 32 hybrid levels; its output is interpolated
-    # to these pressure levels afterwards (see camulatorPressure). Q is
-    # CAMulator's total water, vapour plus cloud condensate, and Z500 is
-    # integrated from its temperature and moisture.
+    # CAMulator's output stays on CAM's 32 hybrid levels, u0k (model top)
+    # to u31k (lowest). Q is its total water, vapour plus cloud
+    # condensate. It has no geopotential.
     'CAMulator': {
-        'U':    ['u50','u100','u150','u200','u250','u300','u400','u500','u600','u700','u850','u925','u1000'],
-        'V':    ['v50','v100','v150','v200','v250','v300','v400','v500','v600','v700','v850','v925','v1000'],
-        'T':    ['t50','t100','t150','t200','t250','t300','t400','t500','t600','t700','t850','t925','t1000'],
-        'Q':    ['q50','q100','q150','q200','q250','q300','q400','q500','q600','q700','q850','q925','q1000'],
+        'U':    [f'u{k}k' for k in range(32)],
+        'V':    [f'v{k}k' for k in range(32)],
+        'T':    [f't{k}k' for k in range(32)],
+        'Q':    [f'qtot{k}k' for k in range(32)],
         'SP':   ['sp'],
         't2m':  ['t2m'],
-        'U500': ['u500'],
-        'V500': ['v500'],
-        'T500': ['t500'],
-        'Z500': ['z500'],
-        'Q500': ['q500'],
     },
     # GraphCast, SFNO — add their maps as you test them.
     # Fallback for unmapped models: pass vars through lowercased.
@@ -251,30 +245,15 @@ class Earth2StudioRunner(ModelRunner):
 
         output_nc  = f"{output_path}/{file_stem}.nc"
 
-        # CAMulator writes its own model levels to a side file, which is
-        # then interpolated to the requested pressure levels in output_nc
-        # and removed. Its forcing (cyclic or transient) comes from the
-        # Climate tab.
+        # CAMulator is driven by the forcing (cyclic or transient) chosen
+        # on the Climate tab.
         if model_name == 'CAMulator':
-            run_nc = f"{output_path}/{file_stem}_model_levels.nc"
-            pressure_import = (
-                f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
-                "import camulatorPressure\n"
-                "from earth2studio.data import CAMulatorForcing")
-            save_vars = f"camulatorPressure.model_level_inputs({all_vars})"
-            forcing_mode = config.get("forcing_mode", "cyclic")
+            forcing_import = "from earth2studio.data import CAMulatorForcing"
             model_kwargs = (
                 "forcing_data_source=CAMulatorForcing("
-                f"mode={forcing_mode!r}, verbose=False)")
-            post_run = (
-                "io.close()\n"
-                'print("Interpolating to pressure levels...", flush=True)\n'
-                f'camulatorPressure.convert("{run_nc}", "{output_nc}", {all_vars})\n'
-                f'os.remove("{run_nc}")')
+                f"mode={config.get('forcing_mode', 'cyclic')!r}, verbose=False)")
         else:
-            run_nc = output_nc
-            pressure_import = post_run = model_kwargs = ""
-            save_vars = f"{all_vars}"
+            forcing_import = model_kwargs = ""
         script_path = os.path.join(config["output_dir"], f"{file_stem}_run.py")
 
 
@@ -296,7 +275,7 @@ from earth2studio.io import NetCDF4Backend
 from earth2studio.run import deterministic
 {data_source_import}
 {model_patch}
-{pressure_import}
+{forcing_import}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -318,7 +297,7 @@ print(f"Running on: {{device}}", flush=True)
 model = model.to(device)
 
 print("Setting up output backend...", flush=True)
-io = NetCDF4Backend("{run_nc}", backend_kwargs={{'mode': 'w'}})
+io = NetCDF4Backend("{output_nc}", backend_kwargs={{'mode': 'w'}})
 
 # Fetch from the first mirror that succeeds, starting each call with the
 # one that last worked.
@@ -352,10 +331,9 @@ deterministic(
     data=data,
     io=io,
     output_coords={{
-        "variable": np.array({save_vars}),
+        "variable": np.array({all_vars}),
     }},
 )
-{post_run}
 print("Output written to {output_nc}", flush=True)
 
 print("Converting to CF-compliant format...", flush=True)

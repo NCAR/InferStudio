@@ -10,7 +10,7 @@ from functools import lru_cache
 from panel.theme.base import Inherit
 from panel.widgets.button import _ButtonBase
 
-from dimensions import LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME, resolve_nc_glob
+from dimensions import LEV_NAME, PRES_NAME, MODEL_LEV_NAME, LAT_NAME, LON_NAME, resolve_nc_glob, vertical_dim
 
 from visualization.datasetSelector2 import DatasetBrowser
 from visualization.metadata import DatasetMetadata
@@ -25,6 +25,7 @@ from visualization.earth2StudioPlot import close_dataset_cache
 
 from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
+from tabStyles import TAB_HEADER_CSS
 from job_status import job_clock, install_disconnect_notice
 
 # --- Static asset locations ------------------------------------------------
@@ -84,35 +85,38 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 stime = str(ds.time.values[0].astype("datetime64[s]"))
                 etime = str(ds.time.values[-1].astype("datetime64[s]"))
 
-            # CF-compliant files (post cf_convert.py) stack pressure levels
-            # into a real `pressure` dimension on each leveled variable,
+            # CF-compliant files (post cf_convert.py) stack levels into a
+            # real vertical dimension on each leveled variable - `pressure`,
+            # or `model_level` for a model's own levels (CAMulator) -
             # rather than earth2studio's original flattened per-level
             # variable names (u100, u850, ...). Capture which variables
-            # actually have this real dimension, and the real coordinate
-            # values, so the Level (hPa) dropdown can be populated
-            # correctly even though these variable names no longer end in
-            # a digit (parse_variable_groups can't detect levels from the
-            # name alone for these).
+            # actually have this real dimension, the real coordinate
+            # values, and which dimension it is, so the Level dropdown can
+            # be populated and labelled correctly even though these
+            # variable names no longer end in a digit
+            # (parse_variable_groups can't detect levels from the name
+            # alone for these).
             leveled_vars_cf = {}
-            if PRES_NAME in ds.coords:
-                pressure_values = sorted(float(x) for x in ds[PRES_NAME].values.tolist())
-                for v in ds.data_vars:
-                    if PRES_NAME in ds[v].dims:
-                        leveled_vars_cf[v] = pressure_values
+            level_dims = {}
+            for v in ds.data_vars:
+                dim = vertical_dim(ds[v])
+                if dim is not None and dim in ds.coords:
+                    leveled_vars_cf[v] = sorted(float(x) for x in ds[dim].values.tolist())
+                    level_dims[v] = dim
 
-            # Classify by whether a variable actually spans pressure levels,
-            # not by raw dimension count. The count test worked only by
-            # accident: pre-conversion, surface fields were
+            # Classify by whether a variable actually spans levels, not by
+            # raw dimension count. The count test worked only by accident:
+            # pre-conversion, surface fields were
             # (time=1, lead_time, lat, lon) = 4 dims, same as leveled ones
             # once you count the flattened name as its own variable - so
             # msl/sp/t2m were landing in vars3d. Post-conversion the counts
             # happen to come out right (3 vs 4), but testing for the
-            # pressure dimension says what is actually meant.
-            if PRES_NAME in ds.coords:
-                vars2d = [v for v in ds.data_vars if PRES_NAME not in ds[v].dims]
-                vars3d = [v for v in ds.data_vars if PRES_NAME in ds[v].dims]
+            # vertical dimension says what is actually meant.
+            if vertical_dim(ds) is not None:
+                vars2d = [v for v in ds.data_vars if v not in level_dims]
+                vars3d = [v for v in ds.data_vars if v in level_dims]
             else:
-                # Legacy files have no pressure coordinate at all; fall back
+                # Legacy files have no vertical coordinate at all; fall back
                 # to the original heuristic for those.
                 vars2d = [v for v in ds.data_vars if len(ds[v].dims) <= 3]
                 vars3d = [v for v in ds.data_vars if len(ds[v].dims) > 3]
@@ -120,7 +124,7 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
             return {
                 "path": str(dataset_dir),
                 "ntime": ntime,
-                "nlev": len(ds.get(LEV_NAME, [])),
+                "nlev": len(ds.get(LEV_NAME, [])) or int(ds.sizes.get(MODEL_LEV_NAME, 0)),
                 "nplev": int(ds.sizes.get(PRES_NAME, 0)),
                 "nlat": int(ds.sizes[lat_dim]) if lat_dim else 0,
                 "nlon": int(ds.sizes[lon_dim]) if lon_dim else 0,
@@ -129,6 +133,7 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 "vars2d": sorted(vars2d),
                 "vars3d": sorted(vars3d),
                 "leveled_vars_cf": leveled_vars_cf,
+                "level_dims": level_dims,
             }
 
 def scan_simulation_suite(sim_dir: Path) -> dict:
@@ -154,6 +159,9 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
         for var, levels in m.get("leveled_vars_cf", {}).items():
             leveled_vars_cf.setdefault(var, set()).update(levels)
     leveled_vars_cf = {k: sorted(v) for k, v in leveled_vars_cf.items()}
+    level_dims = {}
+    for m in model_meta.values():
+        level_dims.update(m.get("level_dims", {}))
 
     return {
         "path": str(sim_dir),
@@ -169,6 +177,7 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
         "vars2d": vars2d,
         "vars3d": vars3d,
         "leveled_vars_cf": leveled_vars_cf,
+        "level_dims": level_dims,
     }
 
 def scan_datasets(data_dir):
@@ -536,6 +545,7 @@ def link_controls(controls, state):
         "time_index": "time_index",
         "var_name": "variable",
         "level_value": "level",
+        "level_dim": "level_dim",
         "colormap": "cmap",
         "cmap_min": "cmap_min",
         "cmap_max": "cmap_max",
@@ -1070,13 +1080,7 @@ def build_app(data_dir):
         # comes from the .bk-tabs-content rule below instead.
         sizing_mode="stretch_width",
         styles={"height": "100%", "overflow": "hidden"},
-        stylesheets=["""
-            .bk-tab {
-                background: #f0f0f0; border-radius: 4px 4px 0 0;
-                font-size: 18px; font-weight: 600; padding: 12px 24px;
-            }
-            .bk-tab.bk-active { background: white; border-top: 3px solid #007bff; font-weight: 700; }
-            .bk-tabs-header { background: #e8e8e8; flex: 0 0 auto; }
+        stylesheets=[TAB_HEADER_CSS, """
             .bk-tabs-content {
                 border: 1px solid #ccc; padding: 10px; box-sizing: border-box;
                 flex: 1 1 auto; min-height: 0; overflow: hidden;

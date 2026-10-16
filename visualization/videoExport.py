@@ -35,6 +35,7 @@ import panel as pn
 import param
 from PIL import Image, ImageDraw
 
+from dimensions import level_text
 from visualization.earth2StudioPlot import plot_e2s_field
 
 DEFAULT_FRAMES_PER_SECOND = 2.0
@@ -595,6 +596,7 @@ class VideoExportPanel(param.Parameterized):
         snapshot = dict(
             var_name=self.controls.var_name,
             level=self.controls.level_value,
+            level_dim=self.controls.level_dim,
             nframes=self._nframes(),
             boundaries=self._boundaries(),
             fps=self.frames_per_second,
@@ -655,7 +657,8 @@ class VideoExportPanel(param.Parameterized):
             # --- pass 2: render frames ---------------------------------------
             stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
             out_path = snap["suite_dir"] / f"inferstudio_{var}_{stamp}.mp4"
-            level_txt = f" @ {level} hPa" if level else ""
+            level_txt = (f" @ {level_text(level, snap['level_dim'])}"
+                         if level else "")
 
             with tempfile.TemporaryDirectory(prefix="inferstudio_frames_") as tmp:
                 tmpdir = Path(tmp)

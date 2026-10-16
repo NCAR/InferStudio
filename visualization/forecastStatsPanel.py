@@ -49,13 +49,24 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dimensions import resolve_nc_glob
+from dimensions import resolve_nc_glob, PRES_NAME, vertical_dim
 from visualization.ncJobLock import NC_JOB_LOCK
 from visualization.earth2StudioVars import parse_variable_groups, resolve_var_name, _resolve_dim, LAT_NAMES, LON_NAMES
 
-# Same set used in datasetPlot.py — models whose output this verification
-# pipeline (and the earth2studio GFS datasource) can currently handle.
-EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "CAMulator"}
+# Models whose output this verification pipeline (and the earth2studio GFS
+# datasource) can currently handle.
+EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "FourCastNet3"}
+
+# Why a model can't be verified here, for those that never will be. Shown
+# in place of the Compute button's results, so a suite of only these
+# models doesn't just report an empty error.
+UNVERIFIABLE_REASONS = {
+    "CAMulator": (
+        "CAMulator is a climate model: it starts from CAM's own states, not "
+        "an analysis of the real atmosphere, so its runs don't follow the "
+        "observed weather, and they fall in 1980-2014, before GFS's archive."
+    ),
+}
 
 # Computed stats are saved inside each model's directory, at
 # <suite>/<Model>/stats/<var>[_<level>].csv plus a .json sidecar, so a new
@@ -64,7 +75,10 @@ EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "CAMulator"}
 # only look at the suite root). The sidecar records what the numbers were
 # computed from; if any of it no longer matches, the saved stats are ignored.
 STATS_DIRNAME = "stats"
-STATS_VERSION = 1           # bump when the error computation changes
+# 2: a leveled variable is verified at the selected level against GFS's
+# field for that level. Version 1 compared every level against a GFS
+# request for the bare base name (e.g. "q"), which GFS doesn't have.
+STATS_VERSION = 2           # bump when the error computation changes
 TRUTH_SOURCE = "GFS analysis"
 
 
@@ -134,6 +148,25 @@ def save_stats(model_dir, var_name, level, df):
     return computed_at
 
 
+def _gfs_name(var_name, da, level):
+    """GFS's name for the field being verified: the variable name itself for
+    a surface field (t2m, msl) or a flattened level (u500), or base + level
+    (u500) for a variable with a real pressure dimension.
+
+    Raises ValueError if GFS has no such field. earth2studio's GFS source
+    only logs a warning for an unknown name and returns a field it never
+    filled in, which would otherwise be verified against as if real.
+    """
+    from earth2studio.lexicon import GFSLexicon
+    dim = vertical_dim(da)
+    if dim is not None and dim != PRES_NAME:
+        raise ValueError(f"{var_name} is on {dim} levels, not pressure levels")
+    name = f"{var_name}{int(level)}" if dim == PRES_NAME else var_name
+    if name not in GFSLexicon.VOCAB:
+        raise ValueError(f"GFS analysis has no {name!r} to verify against")
+    return name
+
+
 def _load_gfs_truth(valid_time, var_name):
     """Fetch a single-variable GFS analysis field at a given valid time.
     See module docstring point 1 — verify this call signature."""
@@ -196,6 +229,10 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None) -> pd.DataFra
     with xr.open_mfdataset(resolve_nc_glob(model_dir), engine="netcdf4", autoclose=True, data_vars="all") as ds:
         level_vars, surface_vars = parse_variable_groups(list(ds.data_vars))
         var_name = resolve_var_name(level_vars, surface_vars, base_or_var, level)
+        field = ds[var_name]
+        gfs_name = _gfs_name(var_name, field, level)
+        if vertical_dim(field) == PRES_NAME:
+            field = field.sel({PRES_NAME: level})
 
         lat_dim = _resolve_dim(ds, *LAT_NAMES)
         lon_dim = _resolve_dim(ds, *LON_NAMES)
@@ -217,7 +254,7 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None) -> pd.DataFra
         else:
             select_dim = _resolve_dim(ds, "time")
             if select_dim is None:
-                candidates = [d for d in ds[var_name].dims if d not in (lat_dim, lon_dim)]
+                candidates = [d for d in field.dims if d not in (lat_dim, lon_dim)]
                 select_dim = candidates[0] if candidates else None
             if select_dim is None:
                 raise ValueError(f"Could not identify a time-like dimension for {var_name!r}")
@@ -227,7 +264,7 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None) -> pd.DataFra
 
         rows = []
         for i in range(n_steps):
-            model_field = ds[var_name].isel({select_dim: i})
+            model_field = field.isel({select_dim: i})
             for extra in [d for d in model_field.dims if d not in (lat_dim, lon_dim)]:
                 if model_field.sizes[extra] == 1:
                     model_field = model_field.isel({extra: 0})
@@ -251,7 +288,7 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None) -> pd.DataFra
                 continue
 
             try:
-                truth_field = _load_gfs_truth(valid_time, var_name)
+                truth_field = _load_gfs_truth(valid_time, gfs_name)
                 rmse, mae = _spatial_errors(model_field, truth_field)
                 error_msg = None
             except Exception as e:
@@ -291,6 +328,7 @@ class ForecastStatsPanel(param.Parameterized):
             self.models = [dataset_key]
             self.model_paths = {dataset_key: self.metadata["path"]}
         self.stats_models = [m for m in self.models if m in EARTH2STUDIO_FORMAT_MODELS]
+        self.skipped_models = [m for m in self.models if m not in EARTH2STUDIO_FORMAT_MODELS]
 
         self.compute_button = pn.widgets.Button(
             name="Compute Stats", button_type="primary", width=150
@@ -352,7 +390,10 @@ class ForecastStatsPanel(param.Parameterized):
         self.last_var_name = var_name if self.saved else None
         self.last_level = level_value if self.saved else None
 
-        if not self.saved:
+        if not self.stats_models:
+            self.plot_pane.object = None
+            self.status.object = self._skipped_note()
+        elif not self.saved:
             self.plot_pane.object = None
             self.status.object = (
                 "*Click \"Compute Stats\" to verify the current variable/level "
@@ -368,7 +409,17 @@ class ForecastStatsPanel(param.Parameterized):
                 msg += f" Not yet computed for: {', '.join(missing)}."
             msg += "".join("\n\n" + f for f in self._failure_summaries(self.results))
             self.status.object = msg
+        if self.stats_models and self.skipped_models:
+            self.status.object += "\n\n" + self._skipped_note()
         self._update_button()
+
+    def _skipped_note(self):
+        """Which of the suite's models aren't verified, and why."""
+        lines = []
+        for m in self.skipped_models:
+            lines.append(UNVERIFIABLE_REASONS.get(
+                m, f"Verification isn't supported for {m} yet."))
+        return "*" + " ".join(lines) + "*"
 
     def _incomplete_models(self):
         """Models whose saved stats are missing or have failed lead times."""
@@ -376,6 +427,7 @@ class ForecastStatsPanel(param.Parameterized):
                 if m not in self.saved or self.saved[m][0]["rmse"].isna().any()]
 
     def _update_button(self):
+        self.compute_button.disabled = not self.stats_models
         if not self.saved:
             self.compute_button.name = "Compute Stats"
         elif self._incomplete_models():

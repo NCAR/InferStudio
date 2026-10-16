@@ -6,7 +6,7 @@ from pathlib import Path
 import panel as pn
 import param
 
-from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, LAT_NAME, LON_NAME
+from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, MODEL_LEV_NAME, LAT_NAME, LON_NAME
 from cf_convert import variable_long_name
 from visualization.era5_plot import plot_png, NETCDF_FILE
 from visualization.earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
@@ -97,6 +97,9 @@ class SharedPlotControls(param.Parameterized):
 
     var_name = param.String(default="")
     level_value = param.Integer(default=0)
+    # The vertical dimension level_value is on: PRES_NAME (hPa) or
+    # MODEL_LEV_NAME (a model's own levels, CAMulator's).
+    level_dim = param.String(default=PRES_NAME)
     time_index = param.Integer(default=0)
     colormap = param.String(default="")
     # None means "auto" (matplotlib's own per-plot scaling). Once the user
@@ -127,6 +130,8 @@ class SharedPlotControls(param.Parameterized):
         # can't detect them from a CF file's plain variable names (e.g.
         # "q" has no trailing digit even though it now spans 13 levels).
         self._leveled_vars_cf = {}
+        # {variable: vertical dimension} for those same variables.
+        self._level_dims = {}
 
         self.time_slider = pn.widgets.IntSlider(
             name="",
@@ -288,7 +293,7 @@ class SharedPlotControls(param.Parameterized):
             self._var_description,
             pn.Row(
                 pn.pane.HTML(
-                    "<b>Level (hPa)</b>",
+                    pn.bind(self._level_label, self.param.level_dim),
                     styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
                     width=90,
                     margin=0,
@@ -386,6 +391,7 @@ class SharedPlotControls(param.Parameterized):
         all_vars = set()
         max_ntime = 0
         leveled_vars_cf = {}
+        level_dims = {}
         for key in dataset_keys:
             meta = dataset_metadata.get(key) or {}
             all_vars.update(meta.get("vars2d") or [])
@@ -395,7 +401,9 @@ class SharedPlotControls(param.Parameterized):
                 max_ntime = ntime
             for var, levels in (meta.get("leveled_vars_cf") or {}).items():
                 leveled_vars_cf.setdefault(var, set()).update(levels)
+            level_dims.update(meta.get("level_dims") or {})
         self._leveled_vars_cf = {k: sorted(v) for k, v in leveled_vars_cf.items()}
+        self._level_dims = level_dims
 
         # Time: use the longest checked dataset's range. Shorter datasets
         # get their time index clamped automatically in plot_e2s_field, so
@@ -455,12 +463,20 @@ class SharedPlotControls(param.Parameterized):
             levels = [int(round(lv)) for lv in cf_levels]
         else:
             levels = available_levels(self.level_vars, self.var_name)
+        # Set before the level, so whatever reacts to a level change
+        # already knows which kind of level it is.
+        self.level_dim = self._level_dims.get(self.var_name, PRES_NAME)
 
         if levels:
             self.level_selector.options = levels
             self.level_selector.disabled = False
             if self.level_value not in levels:
-                default_level = 500 if 500 in levels else levels[0]
+                # 500 hPa, or the lowest of a model's own levels (they're
+                # numbered from the top).
+                if self.level_dim == MODEL_LEV_NAME:
+                    default_level = levels[-1]
+                else:
+                    default_level = 500 if 500 in levels else levels[0]
                 self.level_selector.value = default_level
                 self.level_value = default_level
         else:
@@ -468,6 +484,11 @@ class SharedPlotControls(param.Parameterized):
             self.level_selector.disabled = True
             self.level_selector.value = 0
             self.level_value = 0
+
+    @staticmethod
+    def _level_label(level_dim):
+        text = "Model level" if level_dim == MODEL_LEV_NAME else "Level (hPa)"
+        return f"<b>{text}</b>"
 
     def panel(self):
         return self._row
@@ -512,8 +533,9 @@ class SharedPlotControls(param.Parameterized):
         """The Variable and Level controls for the Statistics tab's
         sidebar, mirroring the Visualization tab's (see _mirror_select)."""
         def label(text):
+            # text is a string, or a bound function that returns the HTML.
             return pn.pane.HTML(
-                f"<b>{text}</b>",
+                f"<b>{text}</b>" if isinstance(text, str) else text,
                 styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
                 width=90,
                 margin=0,
@@ -529,7 +551,8 @@ class SharedPlotControls(param.Parameterized):
                 sizing_mode="stretch_width",
                 margin=(0, 15, 5, 5),
             ),
-            pn.Row(label("Level (hPa)"), level_selector, align="start",
+            pn.Row(label(pn.bind(self._level_label, self.param.level_dim)),
+                   level_selector, align="start",
                    sizing_mode="stretch_width", css_classes=["widget-row"]),
             sizing_mode="stretch_width",
         )
