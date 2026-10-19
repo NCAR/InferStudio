@@ -1,0 +1,128 @@
+# WXFormer (1-hour, 0.25 degree) for CREDIT gen2: the published gen1 weights
+# (save_loc) run through rollout_realtime_gen2.py. Made from
+# model_predict_casper.yml with `credit convert -y`, then edited: gen1's
+# mean/std normalization (era5_normalizer) in place of bridgescaler scalers,
+# which would need `credit preprocess` on the training data and wouldn't
+# match these weights; GFS initial conditions under predict.realtime; and
+# training-only sections removed. InferStudio passes --init-time, --steps and
+# --save-dir on the command line.
+save_loc: /glade/campaign/cisl/vast/pearse/credit_arxiv_models/wxformer_1h/finetune_final
+seed: 1000
+data:
+  source:
+    ERA5:
+      dataset_type: local
+      level_coord: level
+      levels: [10, 30, 40, 50, 60, 70, 80, 90, 95, 100, 105, 110, 120, 130, 136, 137]
+      variables:
+        prognostic:
+          vars_3D: [U, V, T, Q]
+          vars_2D: [SP, t2m, V500, U500, T500, Z500, Q500]
+          path: /glade/derecho/scratch/pearse/gfs_init5/gfs_init_%Y%m%d_%H%M.zarr
+        dynamic_forcing:
+          vars_2D: [tsi]
+          path: /glade/campaign/cisl/vast/pearse/save_loc_dynamic_forcing/solar_irradiance_%Y-01-01_0000_*.nc
+        static:
+          vars_2D: [Z_GDS4_SFC, LSM]
+          path: /glade/campaign/cisl/vast/pearse/static_scalers/gfs_static_norm.nc
+        diagnostic: null
+  timestep: 1h
+  forecast_len: 1
+  start_datetime: '1979-01-01'
+  end_datetime: '2018-12-31'
+  valid_forecast_len: 1
+  mean_path: /glade/campaign/cisl/vast/pearse/static_scalers/mean_1h_1979_2018_16lev_0.25deg.nc
+  std_path: /glade/campaign/cisl/vast/pearse/static_scalers/std_residual_1h_1979_2018_16lev_0.25deg.nc
+  scaler_type: std_new
+  history_len: 1
+  lead_time_periods: 1
+  skip_periods: null
+  static_first: true
+trainer:
+  type: era5-gen2
+  parallelism: {data: none, tensor: 1, domain: 1}
+  use_ema: true
+  ema_decay: 0.9999
+  use_tensorboard: true
+model:
+  type: crossformer
+  frames: 1
+  image_height: 640
+  image_width: 1280
+  levels: 16
+  channels: 4
+  surface_channels: 7
+  input_only_channels: 3
+  output_only_channels: 0
+  patch_width: 1
+  patch_height: 1
+  frame_patch_size: 1
+  dim: [128, 256, 512, 1024]
+  depth: [2, 2, 8, 2]
+  global_window_size: [10, 5, 2, 1]
+  local_window_size: 10
+  cross_embed_kernel_sizes:
+  - [4, 8, 16, 32]
+  - [2, 4]
+  - [2, 4]
+  - [2, 4]
+  cross_embed_strides: [2, 2, 2, 2]
+  attn_dropout: 0.0
+  ff_dropout: 0.0
+  interp: false
+  padding_conf: {activate: true, mode: earth, pad_lon: [80, 80], pad_lat: [80, 80]}
+  post_conf:
+    activate: true
+    tracer_fixer:
+      activate: true
+      denorm: true
+      tracer_name: [Q, Q500]
+      tracer_thres: [1.0e-8, 1.0e-8]
+    # rollout_realtime_gen2 doesn't fill in defaults for the other fixers the
+    # way gen1's parser does, so each is listed. Gen1 runs with them all off.
+    skebs: {activate: false}
+    global_mass_fixer: {activate: false}
+    global_water_fixer: {activate: false}
+    global_energy_fixer: {activate: false}
+    global_energy_fixer_updown: {activate: false}
+loss: {use_latitude_weights: true, latitude_weights: /glade/campaign/cisl/vast/pearse/DataLoader/LSM_static_variables_ERA5_zhght.nc,
+  training_loss: mse}
+predict:
+  mode: none
+  forecasts:
+    type: custom
+    start_year: 2021
+    start_month: 2
+    start_day: 13
+    start_hours: [0]
+    duration: 1
+    days: 10
+  realtime: {use_gfs_init: true, initial_condition_path: /glade/derecho/scratch/pearse/gfs_init5/}
+  interp_pressure:
+    pressure_levels: [500.0, 700.0, 850.0]
+  ua_var_encoding:
+    zlib: true
+    complevel: 1
+    shuffle: true
+    chunksizes: [1, 16, 640, 1280]
+  pressure_var_encoding:
+    zlib: true
+    complevel: 1
+    shuffle: true
+    chunksizes: [1, 1, 640, 1280]
+  surface_var_encoding:
+    zlib: true
+    complevel: 1
+    shuffle: true
+    chunksizes: [1, 640, 1280]
+  static_fields: /glade/campaign/cisl/aiml/credit/static_scalers/gfs_static_whole.nc
+  metadata: /glade/campaign/cisl/vast/pearse/metadata/era5.yaml
+  save_forecast: /glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/wxformer_1h_gfs_demo/
+  use_laplace_filter: false
+preblocks:
+  per_step:
+    norm:
+      type: era5_normalizer
+      args: {mean_path: /glade/campaign/cisl/vast/pearse/static_scalers/mean_1h_1979_2018_16lev_0.25deg.nc,
+        std_path: /glade/campaign/cisl/vast/pearse/static_scalers/std_residual_1h_1979_2018_16lev_0.25deg.nc}
+    concat: {type: concat}
