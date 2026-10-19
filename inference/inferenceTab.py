@@ -732,7 +732,7 @@ class InferenceTab(param.Parameterized):
         # second line.
         return pn.Tabs(
             ("Weather", self.weatherTab.panel()),
-            ("Climate\n(experimental)", self.climateTab.panel()),
+            ("Climate\n(experimental!)", self.climateTab.panel()),
             stylesheets=[TAB_HEADER_CSS],
             sizing_mode='stretch_both',
             min_height=300,
