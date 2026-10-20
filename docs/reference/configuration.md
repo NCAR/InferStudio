@@ -92,5 +92,5 @@ are filing a bug.
 | `INFERSTUDIO_ACCOUNT` | Project account inference jobs are charged to (`qsub -A`). The Open OnDemand app sets it to the account chosen in its form. |
 | `INFERSTUDIO_CONDA_ENV` | Conda environment the inference job activates. Defaults to the one the server runs in. |
 | `INFERSTUDIO_SESSION_TYPE` | `dev` or `production`, set by the Open OnDemand app from which entry launched the session. Recorded in usage logs so dev sessions can be filtered out. |
-| `INFERSTUDIO_USAGE_DIR` | Drop-box directory usage logs are written to (one `<user>.<job>.jsonl` file per session). Defaults to `/glade/work/pearse/inferstudio_stats`; logging is off if it doesn't exist. See `usage_log.py`. |
+| `INFERSTUDIO_USAGE_DIR` | Drop-box directory usage logs are written to (one `<session type>.<user>.<job>.jsonl` file per session, e.g. `dev.…` or `production.…`). Defaults to `/glade/work/pearse/inferstudio_stats`; logging is off if it doesn't exist. See `usage_log.py`. |
 | `INFERSTUDIO_USAGE_LOG` | Set to `0` to turn usage logging off. |

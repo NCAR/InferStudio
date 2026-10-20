@@ -9,8 +9,10 @@ Set the directory up once, as its owner:
 
 1733 lets other users create files there but not list the directory, and
 the sticky bit stops them deleting or renaming anyone else's files. Each
-session writes <user>.<session job id>.jsonl, mode 644 so the owner can
-read it. Logging is off if the directory doesn't exist, and with
+session writes <session type>.<user>.<session job id>.jsonl (e.g.
+dev.pearse.1234567.casper-pbs.jsonl), mode 644 so the owner can read it.
+The session type leads the name, so dev and production files separate
+with a glob. Logging is off if the directory doesn't exist, and with
 INFERSTUDIO_USAGE_LOG=0.
 
 Every record has: ts (Unix seconds), user, session (the OOD session's PBS
@@ -63,7 +65,8 @@ def _base():
 
 
 def _path(base):
-    return os.path.join(USAGE_DIR, f"{base['user']}.{base['session']}.jsonl")
+    return os.path.join(
+        USAGE_DIR, f"{base['session_type']}.{base['user']}.{base['session']}.jsonl")
 
 
 def log_event(event, **fields):
