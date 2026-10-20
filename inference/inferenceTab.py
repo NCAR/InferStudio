@@ -1,13 +1,12 @@
 import panel as pn
 import param
-import subprocess
 import threading
 import os
 import time
-import signal
 import traceback
 
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 
@@ -21,6 +20,8 @@ from inference.commandRunner import CommandRunner
 
 from inference.milesCreditRunner import MilesCreditRunner, MilesCreditGen2Runner
 from inference.earth2StudioRunner import Earth2StudioRunner
+from inference.pbsJob import (SYSTEMS, LogTail, ModelRun, PBSJob, estimate_walltime,
+                              format_duration, model_seconds, project_account)
 
 # WXFormer runs on MILES-CREDIT's gen1 pipeline, WXFormerGen2 on gen2 (see
 # MilesCreditGen2Runner).
@@ -119,7 +120,9 @@ class ModelPicker(param.Parameterized):
             )
             button.on_click(partial(self._on_click, name))
             self._buttons[name] = button
-        self.row = pn.Row(*self._buttons.values(), margin=(0, 5, 5, 0))
+        # Wraps onto a second line rather than spilling out of a narrow box.
+        self.row = pn.FlexBox(*self._buttons.values(), flex_wrap='wrap',
+                              sizing_mode='stretch_width', margin=(0, 5, 5, 0))
 
     def _on_click(self, name, event):
         selected = set(self.value)
@@ -134,6 +137,36 @@ class ModelPicker(param.Parameterized):
 
     def panel(self):
         return self.row
+
+
+# Outline for each box in the settings grid; the accent is the app's
+# primary blue, as on the selected tab.
+SETTINGS_BOX_STYLES = {
+    'border': '1px solid #cfd6de',
+    'border-top': '4px solid #007bff',
+    'border-radius': '6px',
+}
+
+
+# PBS job states a job can wait in, as shown on the Launcher.
+_STATE_NAMES = {'Q': 'queued', 'H': 'held', 'W': 'waiting'}
+
+
+@dataclass
+class _Run:
+    """One press of Run Inference: the GPUs asked for, the PBS job once it's
+    submitted, and when it was submitted, started and ended (Unix seconds).
+    Each run has its own, so a cancelled run's thread winding down can't
+    touch the next run's state."""
+    system: str
+    gpu_type: str
+    n_gpus: int
+    job: PBSJob = None
+    submitted_at: float = None
+    started_at: float = None
+    ended_at: float = None
+    tick: object = None
+    cancel: threading.Event = field(default_factory=threading.Event)
 
 
 class ModelTab(param.Parameterized):
@@ -166,6 +199,28 @@ class ModelTab(param.Parameterized):
 
         self.timePicker = self._make_time_picker()
 
+        # --- Compute: where the PBS job runs --- #
+        self.systemPicker = pn.widgets.RadioButtonGroup(
+            name="System", options=list(SYSTEMS), value='Derecho',
+            button_type='primary', button_style='outline',
+        )
+        # Unnamed: the Compute Settings layout labels these three itself, so
+        # the labels and the widgets each line up on one row.
+        self.gpuTypePicker = pn.widgets.Select(width=220)
+        self.gpuCountPicker = pn.widgets.Select(width=80)
+        self.walltimeLabel = pn.widgets.StaticText(name="Wall time (estimated)", value="")
+        self._account = project_account()
+        self.accountLabel = pn.widgets.StaticText(
+            name="Project account",
+            value=self._account or "unknown - start InferStudio from NCAR Open OnDemand",
+        )
+        self.systemPicker.param.watch(self._update_gpu_options, 'value')
+        self.modelPicker.param.watch(self._update_gpu_options, 'value')
+        self.gpuCountPicker.param.watch(self._update_walltime, 'value')
+        self.modelPicker.param.watch(self._update_walltime, 'value')
+        self.timePicker.param.watch(self._update_walltime, 'end_date')
+        self._update_gpu_options()
+
         self.inferenceButton = pn.widgets.Button(
             name="Run Inference",
             button_type="success",
@@ -184,6 +239,8 @@ class ModelTab(param.Parameterized):
             width=30, height=30, value=False, color="primary", visible=False
         )
 
+        self.jobLabel = pn.widgets.StaticText(name="PBS job", value="N/A")
+        self.queueLabel = pn.widgets.StaticText(name="Time in queue", value="N/A")
         self.elapsedLabel = pn.widgets.StaticText(name="Elapsed", value="N/A")
         self.completionLabel = pn.widgets.StaticText(name="Completed at", value="N/A")
         self.completionPathLabel = pn.widgets.StaticText(name="", value="")
@@ -191,15 +248,13 @@ class ModelTab(param.Parameterized):
         self.commandRunner = CommandRunner()
 
         # Per-model state; populated fresh on each Run click
-        self._processes = {}        # model -> Popen
         self._log_widgets = {}      # model -> TextAreaInput
         self._spinners = {}         # model -> LoadingSpinner
         self._status_widgets = {}   # model -> HTML pane
         self._failed_models = []    # models that errored out this run
-        self._timer_running = False
-        self._active_count = 0
-        self._active_lock = threading.Lock()
-        self._cancel_event = threading.Event()
+        self._run = None            # the current _Run
+        self._periodic_cb = None
+        self._doc = None
 
         self.outputTabs = pn.Tabs(sizing_mode="stretch_width", height=350)
         self.statusRow = pn.Row(pn.pane.Markdown("", margin=0))
@@ -209,6 +264,47 @@ class ModelTab(param.Parameterized):
 
     def _make_time_picker(self):
         return TimePicker()
+
+    # ------------------------------------------------------------------ #
+    #  Compute settings                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _update_gpu_options(self, event=None):
+        system = SYSTEMS[self.systemPicker.value]
+        types = list(system.gpu_types)
+        if self.gpuTypePicker.value not in types:
+            self.gpuTypePicker.options = types
+            self.gpuTypePicker.value = types[0]
+        else:
+            self.gpuTypePicker.options = types
+        # More GPUs than models would sit idle: each GPU runs whole models.
+        most = max(1, min(system.max_gpus, len(self.modelPicker.value)))
+        count = min(self.gpuCountPicker.value or 1, most)
+        self.gpuCountPicker.options = list(range(1, most + 1))
+        self.gpuCountPicker.value = count
+        self._update_walltime()
+
+    def _estimates(self):
+        start, end = self.timePicker.start_time, self.timePicker.end_date
+        if start is None or end is None:
+            return []
+        return [(m, model_seconds(m, start, end)) for m in self.modelPicker.value]
+
+    def _walltime(self):
+        """(seconds to request, whether the system's limit cut it short)."""
+        return estimate_walltime(self._estimates(), self.gpuCountPicker.value or 1,
+                                 self.systemPicker.value)
+
+    def _update_walltime(self, event=None):
+        if not self.modelPicker.value:
+            self.walltimeLabel.value = "N/A"
+            return
+        seconds, capped = self._walltime()
+        text = format_duration(seconds)
+        if capped:
+            text += (f" ({self.systemPicker.value}'s limit; this run may need "
+                     "longer - shorten it or use more GPUs)")
+        self.walltimeLabel.value = text
 
     # ------------------------------------------------------------------ #
     #  Runner helpers                                                      #
@@ -268,25 +364,32 @@ class ModelTab(param.Parameterized):
                     self._highlight_error(self.outputParams.simulationNamePicker)
                 return
 
+        if not self._account:
+            self._set_single_log(
+                "Error: No project account to charge the inference job to. "
+                "InferStudio uses the one chosen when it was started from NCAR "
+                "Open OnDemand; outside Open OnDemand, set INFERSTUDIO_ACCOUNT "
+                "before starting it.")
+            return
+
         # Build tabs, spinners, and status indicators — one per model
         self._log_widgets = {}
         self._spinners = {}
         self._status_widgets = {}
-        self._processes = {}
         self._failed_models = []
         self.outputTabs.objects = []
         self.statusRow.objects = []
 
         for model, _ in runners:
+            # No name: the log's tab already shows the model.
             widget = pn.widgets.TextAreaInput(
-                name=model,
                 value="",
                 sizing_mode="stretch_width",
                 height=300,
             )
             widget.jscallback(value=LOG_AUTOSCROLL_JS)
             spinner = pn.indicators.LoadingSpinner(
-                width=25, height=25, value=True, color="primary", visible=True
+                width=25, height=25, value=False, color="primary", visible=False
             )
             pane = pn.pane.HTML(self._status_html(model, "pending"), width=100)
             self._log_widgets[model] = widget
@@ -299,44 +402,52 @@ class ModelTab(param.Parameterized):
         self.spinner.visible = True
         self.inferenceButton.disabled = True
         self.cancelButton.disabled = False
+        self.jobLabel.value = "Submitting..."
+        self.queueLabel.value = ""
         self.elapsedLabel.value = ""
         self.completionLabel.value = ""
         self.completionPathLabel.value = ""
-        self._cancel_event.clear()
 
-        # Shared elapsed timer
-        overall_start = time.time()
+        run = self._run = _Run(
+            system=self.systemPicker.value,
+            gpu_type=SYSTEMS[self.systemPicker.value].gpu_types[self.gpuTypePicker.value],
+            n_gpus=self.gpuCountPicker.value or 1,
+        )
         self._doc = pn.state.curdoc
 
+        # Time in queue runs from submission to the job starting, Elapsed
+        # from then to the end, so a long wait for GPUs isn't mistaken for
+        # slow inference.
         def _tick_update():
-            elapsed = time.time() - overall_start
-            mins, secs = divmod(int(elapsed), 60)
-            self.elapsedLabel.value = f"{mins}m {secs}s"
+            if run.submitted_at is None:
+                return
+            now = time.time()
+            queue_end = run.started_at or run.ended_at or now
+            self.queueLabel.value = format_duration(queue_end - run.submitted_at)
+            if run.started_at is not None:
+                self.elapsedLabel.value = format_duration((run.ended_at or now) - run.started_at)
+            else:
+                self.elapsedLabel.value = "waiting for the job to start"
 
+        if self._periodic_cb is not None:
+            self._periodic_cb.stop()
         self._periodic_cb = pn.state.add_periodic_callback(_tick_update, period=1000)
-
-        with self._active_lock:
-            self._active_count = len(runners)
+        run.tick = _tick_update
 
         def _all_done():
-            elapsed = time.time() - overall_start
-            mins, secs = divmod(int(elapsed), 60)
-
             sim_dir = Path(self.outputParams.pathDisplay.value) / self.outputParams.simulationNamePicker.value_input
 
             def _finish():
-                if self._cancel_event.is_set():
+                if run.cancel.is_set():
                     # _on_cancel_click already reset the button/spinner
                     # the moment Cancel was clicked -- this run never
                     # completed, so don't overwrite that with a
-                    # misleading "Files written to ..." success message
-                    # once the killed subprocess(es) finally exit and
-                    # this callback runs.
+                    # misleading "Files written to ..." success message.
                     return
                 try:
                     if self._periodic_cb is not None:
                         self._periodic_cb.stop()
-                    self.elapsedLabel.value = f"{mins}m {secs}s"
+                    _tick_update()
                     if self._failed_models:
                         self.completionLabel.value = "Completed with errors"
                         self.completionPathLabel.value = (
@@ -403,62 +514,54 @@ class ModelTab(param.Parameterized):
                             duration=0,
                         )
 
-            if self._doc is not None:
-                self._doc.add_next_tick_callback(_finish)
-            else:
-                _finish()
+            self._ui(_finish)
 
-        def _run_all_sequential():
+        def _run_job():
             try:
-                for model, runner in runners:
-                    if self._cancel_event.is_set():
-                        self._append_log(model, "Skipped (cancelled by user).\n")
-
-                        def _mark_skipped(model=model):
-                            pane = self._status_widgets.get(model)
-                            if pane is not None:
-                                pane.object = self._status_html(model, "cancelled")
-                            spinner = self._spinners.get(model)
-                            if spinner is not None:
-                                spinner.value = False
-                                spinner.visible = False
-
-                        self._ui(_mark_skipped)
-                        continue
-                    self._run_model(model, runner, lambda: None)
+                self._run_job(run, runners)
                 _all_done()
             except Exception:
                 tb = traceback.format_exc()
+                if run.job is not None:
+                    run.job.delete()
 
                 def _report():
                     for model in self._log_widgets:
                         self._append_log(model, f"\n\n[INTERNAL ERROR]\n{tb}\n")
+                    if self._periodic_cb is not None:
+                        self._periodic_cb.stop()
                     self.spinner.value = False
                     self.spinner.visible = False
                     self.inferenceButton.disabled = False
                     self.cancelButton.disabled = True
 
-                pn.state.execute(_report)
+                self._ui(_report)
 
-        threading.Thread(target=_run_all_sequential, daemon=True).start()
+        threading.Thread(target=_run_job, daemon=True).start()
 
     def _on_cancel_click(self, event):
-        self._cancel_event.set()
-        for model, proc in list(self._processes.items()):
-            if proc is not None and proc.poll() is None:
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                except Exception:
-                    proc.terminate()
-                self._append_log(model, "\n\nCancelled by user.")
+        run = self._run
+        if run is None:
+            return
+        run.cancel.set()
+        if run.ended_at is None:
+            run.ended_at = time.time()
+        job = run.job
+        if job is not None:
+            # qdel can take a few seconds; don't hold up the page for it.
+            def _delete():
+                error = job.delete()
+                for model in self._log_widgets:
+                    self._append_log(model, f"\n\nCancelled by user: deleted PBS job {job.job_id}"
+                                     + (f" ({error})" if error else "") + ".\n")
+            threading.Thread(target=_delete, daemon=True).start()
 
         # Reset the shared Run/Cancel controls right away, rather than
-        # waiting on _all_done() -- that only fires once every killed
-        # subprocess has actually exited and _run_all_sequential's loop
-        # falls through, which can lag well behind the SIGTERM above (or
-        # never happen at all for a process that ignores it).
+        # waiting for the job to be gone from PBS.
         if self._periodic_cb is not None:
             self._periodic_cb.stop()
+        if run.tick is not None:
+            run.tick()
         self.spinner.value = False
         self.spinner.visible = False
         self.inferenceButton.disabled = False
@@ -467,7 +570,7 @@ class ModelTab(param.Parameterized):
         self.completionPathLabel.value = ""
 
     # ------------------------------------------------------------------ #
-    #  Per-model execution                                                 #
+    #  The PBS job                                                         #
     # ------------------------------------------------------------------ #
 
     def _ui(self, fn):
@@ -483,119 +586,186 @@ class ModelTab(param.Parameterized):
             return
         def _do_append():
             widget.value += text
-        if self._doc is not None:
-            self._doc.add_next_tick_callback(_do_append)
-        else:
-            _do_append()
+        self._ui(_do_append)
 
-    def _run_model(self, model: str, runner, on_done):
-        """Prepare, build, and execute a single model in its own thread."""
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-
-        def _update_start():
+    def _set_status(self, model: str, state: str):
+        def _update():
             spinner = self._spinners.get(model)
             if spinner is not None:
-                spinner.value = True
-                spinner.visible = True
+                spinner.value = spinner.visible = state == "running"
             pane = self._status_widgets.get(model)
             if pane is not None:
-                pane.object = self._status_html(model, "running")
-            self.outputTabs.active = list(self._log_widgets.keys()).index(model)
+                pane.object = self._status_html(model, state)
+            if state == "running" and model in self._log_widgets:
+                self.outputTabs.active = list(self._log_widgets).index(model)
+        self._ui(_update)
 
-        self._ui(_update_start)
+    def _set_job_label(self, text: str):
+        def _update():
+            self.jobLabel.value = text
+        self._ui(_update)
 
-        config = self._build_config(model)
-        model_output = Path(config["output_path"]) / model
-        model_output.mkdir(parents=True, exist_ok=True)
-        config["output_path"] = str(model_output)
-
-        proc = None
-        try:
-            prepared = runner.prepare(config)
-            config.update(prepared)
-            cmd = runner.build_cmd(config)
-        except Exception as e:
-            self._append_log(model, f"Error during setup: {e}\n")
-            self._failed_models.append(model)
-            def _update_setup_error():
-                pane = self._status_widgets.get(model)
-                if pane is not None:
-                    pane.object = self._status_html(model, "error")
-                spinner = self._spinners.get(model)
-                if spinner is not None:
-                    spinner.value = False
-                    spinner.visible = False
-            self._ui(_update_setup_error)
-            on_done()
+    def _run_job(self, run, runners):
+        """Write each model's command, submit them as one PBS job and follow
+        it until it ends. Runs in a background thread."""
+        start, end = self.timePicker.start_time, self.timePicker.end_date
+        runs = []
+        for model, runner in runners:
+            config = self._build_config(model)
+            model_output = Path(config["output_path"]) / model
+            try:
+                model_output.mkdir(parents=True, exist_ok=True)
+                config["output_path"] = str(model_output)
+                config.update(runner.prepare(config))
+                cmd = runner.build_cmd(config)
+            except Exception as e:
+                self._append_log(model, f"Error during setup: {e}\n")
+                self._failed_models.append(model)
+                self._set_status(model, "error")
+                continue
+            # The job writes the log next to the results, so warnings (e.g.
+            # missing input variables) are still visible after the session.
+            runs.append(ModelRun(model, cmd, model_output / f"{model}_run.log",
+                                 model_seconds(model, start, end)))
+        if not runs or run.cancel.is_set():
+            self._set_job_label("not submitted")
             return
 
+        job = PBSJob.create(self.outputParams.simulationNamePicker.value_input, run.system)
+        # Fewer models than GPUs (can't happen from the picker, but a model
+        # can fail setup above) means fewer GPUs.
+        n_gpus = min(run.n_gpus, len(runs))
+        walltime, _ = estimate_walltime([(r.model, r.seconds) for r in runs], n_gpus, run.system)
+        script = job.write_script(runs, self._account, run.gpu_type, n_gpus,
+                                  walltime, os.getcwd())
+        gpus = f"{n_gpus} x {run.gpu_type}"
+        run.submitted_at = time.time()
         try:
-            proc = subprocess.Popen(
-                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, env=env, start_new_session=True,
-            )
-            self._processes[model] = proc
+            job.submit(script)
+        except RuntimeError as e:
+            run.submitted_at = None
+            for r in runs:
+                self._append_log(r.model, f"Could not submit the PBS job: {e}\nJob script: {script}\n")
+                self._failed_models.append(r.model)
+                self._set_status(r.model, "error")
+            self._set_job_label("submission failed")
+            return
+        run.job = job
+        if run.cancel.is_set():
+            job.delete()
+            return
 
-            # --- batched log flushing ---
-            buf = []
-            buf_lock = threading.Lock()
-            last_flush = time.time()
-            FLUSH_INTERVAL = 0.3  # seconds
+        self._set_job_label(f"{job.job_id} - queued on {run.system} ({gpus})")
+        for r in runs:
+            self._append_log(
+                r.model,
+                f"Submitted PBS job {job.job_id} to {run.system}: {gpus}, "
+                f"{format_duration(walltime)} wall time, account {self._account}.\n"
+                f"Job files: {job.job_dir}\n"
+                "Waiting in the queue...\n")
+        self._follow(run, job, runs)
 
-            def _flush(force=False):
-                nonlocal last_flush
-                now = time.time()
-                if not force and (now - last_flush) < FLUSH_INTERVAL:
-                    return
-                with buf_lock:
-                    if not buf:
-                        return
-                    text = "".join(buf)
-                    buf.clear()
-                last_flush = now
-                self._append_log(model, text)
+    # How often to ask PBS about the job; the files it writes are checked
+    # every second.
+    QSTAT_INTERVAL = 15
+    # Once every model has finished, how long the job gets to end by
+    # itself before it's deleted.
+    EXIT_GRACE = 30
 
-            # Keep a copy of the output next to the results, so warnings
-            # (e.g. missing input variables) are still visible after the session.
-            log_path = model_output / f"{model}_run.log"
-            with open(log_path, "w") as log_file:
-                for line in proc.stdout:
-                    log_file.write(line)
-                    with buf_lock:
-                        buf.append(line)
-                    _flush()
+    def _follow(self, run, job, runs):
+        tails = {r.model: LogTail(r.log_path) for r in runs}
+        states = {r.model: "pending" for r in runs}
+        last_qstat = 0.0
+        all_done_at = None
+        last = None
 
-            _flush(force=True)  # catch any remainder
-            proc.wait()
+        def check(m):
+            """Pass on the model's new output, and whether it has started
+            or finished."""
+            if states[m] == "pending" and job.model_started_at(m) is not None:
+                states[m] = "running"
+                self._set_status(m, "running")
+            if states[m] != "running":
+                return
+            code = job.model_exit(m)
+            text = tails[m].read()
+            if text:
+                self._append_log(m, text)
+            if code is not None:
+                states[m] = "done" if code == 0 else "error"
+                if code != 0:
+                    self._failed_models.append(m)
+                self._append_log(m, "\nDone.\n" if code == 0 else f"\nExited with code {code}\n")
+                self._set_status(m, states[m])
 
-            if proc.returncode != 0:
-                self._append_log(model, f"\nExited with code {proc.returncode}\n")
-            else:
-                self._append_log(model, "\nDone.\n")
+        while not run.cancel.is_set():
+            now = time.time()
+            if run.started_at is None:
+                started = job.started_at()
+                if started is not None:
+                    run.started_at = min(max(started, run.submitted_at), now)
+                    host = last.exec_host if last and last.exec_host else run.system
+                    self._set_job_label(f"{job.job_id} - running on {host}")
 
-        except Exception as e:
-            self._append_log(model, f"Error: {e}\n")
-        finally:
-            self._processes.pop(model, None)
-            try:
-                state = "done" if proc.returncode == 0 else "error"
-            except Exception:
-                state = "error"
-            if state == "error":
-                self._failed_models.append(model)
+            for r in runs:
+                check(r.model)
 
-            def _update_finish(state=state):
-                spinner = self._spinners.get(model)
-                if spinner is not None:
-                    spinner.value = False
-                    spinner.visible = False
-                pane = self._status_widgets.get(model)
-                if pane is not None:
-                    pane.object = self._status_html(model, state)
+            finished = all(s in ("done", "error") for s in states.values())
+            if finished and all_done_at is None:
+                all_done_at = now
+            interval = 5 if finished else self.QSTAT_INTERVAL
+            if now - last_qstat >= interval:
+                last_qstat = now
+                status = job.status()
+                if status is None or status.state == 'F':
+                    last = status or last
+                    break
+                if status.state != '?':
+                    last = status
+                if run.started_at is None and status.state in ('Q', 'H', 'W'):
+                    why = f" - {status.comment}" if status.comment else ""
+                    self._set_job_label(f"{job.job_id} - {_STATE_NAMES.get(status.state, status.state)}"
+                                        f" on {run.system}{why}")
+                if finished and now - all_done_at > self.EXIT_GRACE:
+                    # Every model is done; don't let a straggling process
+                    # keep the GPUs.
+                    job.delete()
+            run.cancel.wait(1)
 
-            self._ui(_update_finish)
-            on_done()
+        run.ended_at = run.ended_at or time.time()
+        if run.started_at is None and not run.cancel.is_set():
+            # Ended without ever starting (deleted from outside, held, ...)
+            run.started_at = run.ended_at
+
+        # Whatever the models wrote, and any that finished, after the last
+        # look.
+        for r in runs:
+            check(r.model)
+
+        unfinished = [m for m, s in states.items() if s in ("pending", "running")]
+        if not unfinished:
+            self._set_job_label(f"{job.job_id} - finished")
+            return
+        if run.cancel.is_set():
+            for m in unfinished:
+                self._set_status(m, "cancelled")
+            self._set_job_label(f"{job.job_id} - cancelled")
+            return
+
+        why = "The PBS job ended before this model finished"
+        if last is not None and last.comment:
+            why += f" ({last.comment})"
+        why += "."
+        if last is not None and last.exit_status is not None:
+            why += f" Job exit status: {last.exit_status}."
+        output = job.pbs_output().strip()
+        if output:
+            why += "\n\nPBS job output:\n" + "\n".join(output.splitlines()[-40:])
+        for m in unfinished:
+            self._failed_models.append(m)
+            self._append_log(m, f"\n{why}\n")
+            self._set_status(m, "error")
+        self._set_job_label(f"{job.job_id} - ended")
 
 
     # ------------------------------------------------------------------ #
@@ -639,22 +809,45 @@ class ModelTab(param.Parameterized):
     # ------------------------------------------------------------------ #
 
     def panel(self):
-        return pn.Column(
-            pn.WidgetBox(
-                '# AI Model',
-                self.modelPicker.panel(),
-                sizing_mode='stretch_width',
+        compute = pn.WidgetBox(
+            "### Compute Settings",
+            pn.pane.Markdown(
+                "The models run in their own PBS batch job, which ends as "
+                "soon as they finish.",
+                margin=(0, 10, 0, 10),
             ),
-            self.outputParams.panel(),
-            self.timePicker.panel(),
+            pn.Row(*(
+                pn.Column(pn.pane.Markdown(label, margin=(0, 10, -5, 10)), widget)
+                for label, widget in [("System", self.systemPicker),
+                                      ("GPU type", self.gpuTypePicker),
+                                      ("GPUs", self.gpuCountPicker)]
+            )),
+            pn.Row(self.walltimeLabel, self.accountLabel),
+            sizing_mode='stretch_width',
+        )
+        model = pn.WidgetBox(
+            '### AI Model',
+            self.modelPicker.panel(),
+        )
+        # A 2x2 grid of settings, so the Launcher's logs start higher up.
+        # Each box fills its cell, so the two in a row match in height, and
+        # gets an outline and an accent edge to set it apart.
+        boxes = [model, self.outputParams.panel(), self.timePicker.panel(), compute]
+        for box in boxes:
+            box.sizing_mode = 'stretch_both'
+            box.styles = dict(box.styles or {}, **SETTINGS_BOX_STYLES)
+        settings = pn.GridBox(*boxes, ncols=2, sizing_mode='stretch_width')
+        return pn.Column(
+            settings,
             pn.WidgetBox(
-                "# Launcher",
+                "### Launcher",
                 pn.Row(
                     self.inferenceButton, self.cancelButton,
-                    self.spinner,
-                    pn.Column(self.elapsedLabel, self.completionLabel, self.completionPathLabel)
+                    self.spinner, self.statusRow,
                 ),
-                self.statusRow,
+                pn.FlexBox(self.jobLabel, self.queueLabel, self.elapsedLabel,
+                           self.completionLabel, flex_wrap='wrap'),
+                self.completionPathLabel,
                 self.outputTabs,
                 sizing_mode='stretch_width',
             ),

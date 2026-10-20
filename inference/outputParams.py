@@ -171,7 +171,7 @@ class OutputParams:
 
     def panel(self):
         return pn.WidgetBox(
-            "# Output Parameters",
+            "### Output Parameters",
             self.simulationNamePicker,
             pn.Row(
                 self.browse_button,

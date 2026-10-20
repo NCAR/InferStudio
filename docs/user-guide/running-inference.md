@@ -2,18 +2,40 @@
 
 ## What happens when you press Run
 
+The InferStudio session itself runs on CPUs. Pressing **Run Inference** submits
+a separate PBS batch job that runs the selected models on GPUs, charged to the
+project account you chose when starting InferStudio from Open OnDemand.
+
+The **Compute Settings** section sets up that job:
+
+- **System** — Derecho (the default) or Casper. The session itself always runs on Casper, but
+  the job can go to either; output lands on GLADE either way.
+- **GPU type** — A100 40GB on Derecho; A100 80GB (Casper's default), H100 or
+  L40 on Casper. Some models, such as AIFS, need more memory than a 40-45 GB card has,
+  so they need one of the 80 GB types.
+- **GPUs** — with more than one, the models are split between the GPUs and run
+  side by side; each GPU still runs its own models one after another. There is
+  no point asking for more GPUs than models, so the choice stops there.
+- **Wall time** — estimated from the models and the forecast length, with a
+  safety margin, rounded up to 15 minutes, and capped at the system's limit
+  (24 h on Casper, 12 h on Derecho). If the cap cuts the estimate short, the
+  label says so.
+
+The job ends as soon as the last model finishes, so the GPUs aren't held for the
+rest of the wall time.
+
 InferStudio does not import the models into its own process. Doing so would be
-impossible — the dependency stacks conflict — so instead each run is a
-subprocess launched with a *different Python interpreter*.
+impossible — the dependency stacks conflict — so instead the job runs each model
+with a *different Python interpreter*.
 
 ```text
-Panel app  (conda: creditJun3)
+PBS job  (conda: the session's environment)
     │
-    ├─ subprocess.Popen(  /glade/work/$USER/E2S/envs/pangu/bin/python  -c "<script>" )
-    ├─ subprocess.Popen(  /glade/work/$USER/E2S/envs/sfno/bin/python   -c "<script>" )
-    └─ subprocess.Popen(  <credit env>/bin/python  ... )               # WXFormer
+    ├─ GPU 0:  /glade/work/$USER/E2S/envs/aifs/bin/python   <script>   then the next model on GPU 0
+    ├─ GPU 1:  /glade/work/$USER/E2S/envs/pangu/bin/python  <script>
+    └─ ...
              │
-             └─ stdout/stderr ──▶ streamed into the model's log tab
+             └─ <output>/<model>/<model>_run.log ──▶ followed into the model's log tab
 ```
 
 The mapping from model to interpreter lives in a `MODEL_ENV_MAP` dictionary in
@@ -21,9 +43,21 @@ the Earth2Studio runner module. The generated script is what actually calls
 `earth2studio.run.deterministic()` (or the ensemble equivalent) with the model
 package, the data source, and the IO backend.
 
-Each process is started in a new session so that **Cancel** can signal the whole
-process group. Killing only the parent would orphan the CUDA-holding child and
-leave the GPU occupied.
+The job's own files — the batch script, each model's command, and PBS's output —
+go in `~/.inferstudio/jobs/<simulation name>_<time>/`. The first lines of each
+model's log tab give the job ID and that directory.
+
+### Queue time and elapsed time
+
+The Launcher shows the job's ID and state, and two timers: **Time in queue**,
+from submission until the job starts, and **Elapsed**, from then until it ends.
+A long wait for GPUs is a busy queue, not slow inference.
+
+**Cancel** deletes the job (`qdel`), whether it is still queued or running.
+
+If the browser tab is closed, or the session ends, while the job is running, the
+job carries on and writes its output; load it later with **Load Existing
+Suite**.
 
 ## Choosing an initialization time
 
@@ -76,7 +110,7 @@ Things worth recognizing in the log:
 
 ## Cancelling and re-running
 
-**Cancel** sends a termination signal to the process group. Partial output may
+**Cancel** deletes the PBS job, stopping every model in it. Partial output may
 remain in the output directory; delete it before re-running with the same
 simulation name, or pick a new name.
 
@@ -86,8 +120,7 @@ not impossible when you iterate on the same case.
 
 ## Running several models at once
 
-Selecting multiple models fans out into concurrent subprocesses on the same node.
-This is the intended comparison workflow, but be aware of the resource
-arithmetic: several models on one GPU will contend for memory. If you see
-out-of-memory errors that do not occur when models run alone, either request more
-GPUs in your allocation or run the models sequentially.
+Several models in one job share the job's GPUs. With one GPU they run one after
+another; with more, they are split between the GPUs (longest-running first) so
+that no two models share a GPU at the same time, and run side by side. Each
+extra GPU makes the job bigger, which can mean a longer wait in the queue.

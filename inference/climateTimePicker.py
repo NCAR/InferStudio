@@ -107,7 +107,7 @@ class ClimateTimePicker(param.Parameterized):
 
     def panel(self):
         return pn.WidgetBox(
-            "# Time Settings",
+            "### Time Settings",
             self.startDatePicker,
             pn.Column(
                 self.runLengthLabel,
@@ -122,4 +122,5 @@ class ClimateTimePicker(param.Parameterized):
                 sizing_mode='stretch_width'
             ),
             self._summary,
+            sizing_mode='stretch_width',
         )

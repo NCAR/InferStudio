@@ -88,4 +88,6 @@ are filing a bug.
 | --- | --- |
 | `USER` | Used to construct the default output path. |
 | `CUDA_VISIBLE_DEVICES` | Restricts which GPUs child processes see. Useful for running two models on distinct GPUs of a multi-GPU node. |
-| `PBS_JOBID` | Present when running inside a batch or interactive allocation; useful for confirming which job the server belongs to. |
+| `PBS_JOBID` | Present when running inside a batch or interactive allocation; useful for confirming which job the server belongs to. If `INFERSTUDIO_ACCOUNT` is unset, the inference job is charged to this job's account. |
+| `INFERSTUDIO_ACCOUNT` | Project account inference jobs are charged to (`qsub -A`). The Open OnDemand app sets it to the account chosen in its form. |
+| `INFERSTUDIO_CONDA_ENV` | Conda environment the inference job activates. Defaults to the one the server runs in. |

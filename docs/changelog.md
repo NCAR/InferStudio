@@ -13,6 +13,11 @@ for deciding whether to upgrade.
 
 ### Added
 
+- Inference runs in its own PBS batch job instead of on the session's node. The
+  Inference tab's new Compute Settings section picks Derecho (the default) or Casper, the GPU
+  type (Casper's A100 80GB by default) and the number of GPUs; the wall time is
+  estimated, and the job ends when the last model finishes. The Launcher shows the time spent in the queue separately from
+  the elapsed run time.
 - Forecast statistics panel: RMSE, CRPS, and spread/error ratio computed against a
   GFS reference.
 - Earth2Studio output plotting via `earth2StudioPlot.py`, handling the flattened
