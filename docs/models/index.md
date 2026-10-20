@@ -1,6 +1,7 @@
 # Supported models
 
-InferStudio wires up two model families. They differ in more than provenance:
+InferStudio wires up two families of AI models, plus physical (NWP) models
+fetched for comparison. They differ in more than provenance:
 they use different Python stacks, different output conventions, and different
 runner classes inside the application.
 
@@ -58,6 +59,26 @@ weather-modelling framework.
 runner and writes **ERA5-style** output: variables keep their bare names and the
 vertical coordinate is a real dimension.
 
+## Physical models
+
+**GFS**, NOAA's operational Global Forecast System, is the physics-based
+reference. It isn't run: `ForecastSourceRunner` downloads GFS's published
+forecast for the same initialization, lead times and variables through
+earth2studio's `GFS_FX` source, and writes it into the suite in the same layout
+as the Earth2Studio models. Plots, differences, video export and statistics
+then treat it as one more model.
+
+- Forecasts are on NOAA's AWS archive from the 2021-02-27 00Z cycle on, out to
+  384 h: hourly to 120 h, 3-hourly after.
+- It needs no GPU. Alongside AI models it runs in a CPU lane of the same job;
+  on its own it goes to a small CPU-only job on Casper.
+- Verified against GFS analysis it is scored against its own starting point;
+  see {doc}`../user-guide/statistics`.
+
+Another earth2studio forecast source (`IFS_FX`, `GEFS_FX`, ...) is an entry in
+`FORECAST_SOURCES` in `inference/forecastSourceRunner.py`, plus its date and
+lead-time checks.
+
 ## Runner architecture
 
 Both families share an abstract base:
@@ -65,7 +86,8 @@ Both families share an abstract base:
 ```text
 ModelRunner  (abstract)
 ├── Earth2StudioRunner   — dispatches into per-model uv venvs via MODEL_ENV_MAP
-└── MilesCreditRunner    — dispatches into the CREDIT environment
+├── MilesCreditRunner    — dispatches into the CREDIT environment
+└── ForecastSourceRunner — fetches a physical model's published forecast
 ```
 
 A runner is responsible for:

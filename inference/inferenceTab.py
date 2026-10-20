@@ -21,7 +21,9 @@ from inference.commandRunner import CommandRunner
 
 from inference.milesCreditRunner import MilesCreditRunner, MilesCreditGen2Runner
 from inference.earth2StudioRunner import Earth2StudioRunner
-from inference.pbsJob import (SYSTEMS, LogTail, ModelRun, PBSJob, estimate_walltime,
+from inference.forecastSourceRunner import (ForecastSourceRunner, PHYSICAL_MODEL_LIST,
+                                            PHYSICAL_MODELS)
+from inference.pbsJob import (SYSTEMS, CPU_ONLY_SYSTEM, LogTail, ModelRun, PBSJob, estimate_walltime,
                               format_duration, model_seconds, project_account)
 
 # WXFormer runs on MILES-CREDIT's gen1 pipeline, WXFormerGen2 on gen2 (see
@@ -90,6 +92,12 @@ MODEL_DESCRIPTIONS = {
         "NVIDIA's FourCastNet 3, a spherical Fourier Neural Operator model, "
         "run through Earth2Studio (PyTorch + makani)."
     ),
+    'GFS': (
+        "NOAA's operational Global Forecast System, a physics-based model. "
+        "Not run here: its published forecast for the same start time is "
+        "downloaded from NOAA's archive (2021 on), so it needs no GPU. "
+        "Verified against GFS analysis, it starts with no error."
+    ),
     'CAMulator': (
         "NSF NCAR's emulator of the CAM6 climate model (1 degree, 6-hourly), "
         "run through Earth2Studio (PyTorch). Output is on its 32 model "
@@ -105,7 +113,9 @@ class ModelPicker(param.Parameterized):
 
     value = param.List(default=[])
 
-    def __init__(self, options, descriptions=None, labels=None, **params):
+    def __init__(self, options, descriptions=None, labels=None, groups=None, **params):
+        """groups: optional [(heading, names)] to show the buttons in
+        headed rows; options still sets their order in `value`."""
         super().__init__(**params)
         descriptions = descriptions or {}
         labels = labels or {}
@@ -122,8 +132,15 @@ class ModelPicker(param.Parameterized):
             button.on_click(partial(self._on_click, name))
             self._buttons[name] = button
         # Wraps onto a second line rather than spilling out of a narrow box.
-        self.row = pn.FlexBox(*self._buttons.values(), flex_wrap='wrap',
+        def row(names):
+            return pn.FlexBox(*(self._buttons[n] for n in names), flex_wrap='wrap',
                               sizing_mode='stretch_width', margin=(0, 5, 5, 0))
+        if groups:
+            self.row = pn.Column(*(item for heading, names in groups for item in (
+                pn.pane.Markdown(f"**{heading}**", margin=(0, 5, 0, 0)), row(names))),
+                sizing_mode='stretch_width')
+        else:
+            self.row = row(options)
 
     def _on_click(self, name, event):
         selected = set(self.value)
@@ -177,16 +194,22 @@ class ModelTab(param.Parameterized):
     outputDirectory = param.String(default="")
 
     MODELS = []
+    # Fetched rather than run, and shown in a row of their own.
+    PHYSICAL_MODELS = []
     DEFAULT_MODELS = []
 
     def __init__(self, **params):
         super().__init__(**params)
 
+        groups = None
+        if self.PHYSICAL_MODELS:
+            groups = [("AI models", self.MODELS), ("Physical models", self.PHYSICAL_MODELS)]
         self.modelPicker = ModelPicker(
             value=list(self.DEFAULT_MODELS),
-            options=self.MODELS,
+            options=self.MODELS + self.PHYSICAL_MODELS,
             descriptions=MODEL_DESCRIPTIONS,
             labels=MODEL_LABELS,
+            groups=groups,
         )
 
         self.outputParams = self._make_output_params(
@@ -279,22 +302,35 @@ class ModelTab(param.Parameterized):
         else:
             self.gpuTypePicker.options = types
         # More GPUs than models would sit idle: each GPU runs whole models.
-        most = max(1, min(system.max_gpus, len(self.modelPicker.value)))
+        most = max(1, min(system.max_gpus, len(self._gpu_models())))
         count = min(self.gpuCountPicker.value or 1, most)
         self.gpuCountPicker.options = list(range(1, most + 1))
         self.gpuCountPicker.value = count
+        # Physical models alone need no GPU (see pbsJob.CPU_ONLY_SYSTEM).
+        cpu_only = bool(self.modelPicker.value) and not self._gpu_models()
+        for w in (self.systemPicker, self.gpuTypePicker, self.gpuCountPicker):
+            w.disabled = cpu_only
         self._update_walltime()
 
-    def _estimates(self):
+    def _gpu_models(self):
+        return [m for m in self.modelPicker.value if m not in PHYSICAL_MODELS]
+
+    def _system(self):
+        """Where the job goes: a CPU-only job always goes to Casper."""
+        return self.systemPicker.value if self._gpu_models() else CPU_ONLY_SYSTEM
+
+    def _estimates(self, models):
         start, end = self.timePicker.start_time, self.timePicker.end_date
         if start is None or end is None:
             return []
-        return [(m, model_seconds(m, start, end)) for m in self.modelPicker.value]
+        return [(m, model_seconds(m, start, end)) for m in models]
 
     def _walltime(self):
         """(seconds to request, whether the system's limit cut it short)."""
-        return estimate_walltime(self._estimates(), self.gpuCountPicker.value or 1,
-                                 self.systemPicker.value)
+        cpu = [m for m in self.modelPicker.value if m in PHYSICAL_MODELS]
+        return estimate_walltime(self._estimates(self._gpu_models()),
+                                 self.gpuCountPicker.value or 1, self._system(),
+                                 self._estimates(cpu))
 
     def _update_walltime(self, event=None):
         if not self.modelPicker.value:
@@ -303,8 +339,10 @@ class ModelTab(param.Parameterized):
         seconds, capped = self._walltime()
         text = format_duration(seconds)
         if capped:
-            text += (f" ({self.systemPicker.value}'s limit; this run may need "
+            text += (f" ({self._system()}'s limit; this run may need "
                      "longer - shorten it or use more GPUs)")
+        if not self._gpu_models():
+            text += f" (downloads only: a CPU job on {CPU_ONLY_SYSTEM})"
         self.walltimeLabel.value = text
 
     # ------------------------------------------------------------------ #
@@ -321,6 +359,8 @@ class ModelTab(param.Parameterized):
                 runners.append((model, MilesCreditRunner()))
             elif model in EARTH2STUDIO_MODELS:
                 runners.append((model, Earth2StudioRunner()))
+            elif model in PHYSICAL_MODELS:
+                runners.append((model, ForecastSourceRunner()))
         return runners
 
     def _build_config(self, model: str) -> dict:
@@ -410,7 +450,7 @@ class ModelTab(param.Parameterized):
         self.completionPathLabel.value = ""
 
         run = self._run = _Run(
-            system=self.systemPicker.value,
+            system=self._system(),
             gpu_type=SYSTEMS[self.systemPicker.value].gpu_types[self.gpuTypePicker.value],
             n_gpus=self.gpuCountPicker.value or 1,
         )
@@ -627,7 +667,8 @@ class ModelTab(param.Parameterized):
             # The job writes the log next to the results, so warnings (e.g.
             # missing input variables) are still visible after the session.
             runs.append(ModelRun(model, cmd, model_output / f"{model}_run.log",
-                                 model_seconds(model, start, end)))
+                                 model_seconds(model, start, end),
+                                 gpu=model not in PHYSICAL_MODELS))
         if not runs or run.cancel.is_set():
             self._set_job_label("not submitted")
             return
@@ -635,17 +676,19 @@ class ModelTab(param.Parameterized):
         job = PBSJob.create(self.outputParams.simulationNamePicker.value_input, run.system)
         # Fewer models than GPUs (can't happen from the picker, but a model
         # can fail setup above) means fewer GPUs.
-        n_gpus = min(run.n_gpus, len(runs))
-        walltime, _ = estimate_walltime([(r.model, r.seconds) for r in runs], n_gpus, run.system)
+        n_gpus = min(run.n_gpus, sum(r.gpu for r in runs))
+        walltime, _ = estimate_walltime([(r.model, r.seconds) for r in runs if r.gpu], n_gpus,
+                                        run.system,
+                                        [(r.model, r.seconds) for r in runs if not r.gpu])
         script = job.write_script(runs, self._account, run.gpu_type, n_gpus,
                                   walltime, os.getcwd())
-        gpus = f"{n_gpus} x {run.gpu_type}"
+        gpus = f"{n_gpus} x {run.gpu_type}" if n_gpus else "CPU only"
         config = self._build_config(runs[0].model)
         usage = dict(
             tab=type(self).__name__.removesuffix("Tab").lower(),
             models=[r.model for r in runs],
             setup_failed=list(self._failed_models),
-            system=run.system, gpu_type=run.gpu_type, gpus=n_gpus,
+            system=run.system, gpu_type=run.gpu_type if n_gpus else None, gpus=n_gpus,
             walltime_s=walltime, start_time=start, end_time=end,
             timestep=config["timestep"],
             ua_vars=config["ua_vars"], surface_vars=config["surface_vars"],
@@ -861,7 +904,7 @@ class ModelTab(param.Parameterized):
             sizing_mode='stretch_width',
         )
         model = pn.WidgetBox(
-            '### AI Model',
+            '### Models' if self.PHYSICAL_MODELS else '### AI Model',
             self.modelPicker.panel(),
         )
         # A 2x2 grid of settings, so the Launcher's logs start higher up.
@@ -893,6 +936,7 @@ class ModelTab(param.Parameterized):
 
 class WeatherTab(ModelTab):
     MODELS = WEATHER_MODEL_LIST
+    PHYSICAL_MODELS = PHYSICAL_MODEL_LIST
     DEFAULT_MODELS = ['AIFS', 'Aurora']
 
 

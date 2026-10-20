@@ -57,7 +57,7 @@ from visualization.earth2StudioVars import parse_variable_groups, resolve_var_na
 
 # Models whose output this verification pipeline (and the earth2studio GFS
 # datasource) can currently handle.
-EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "FourCastNet3"}
+EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "FourCastNet3", "GFS"}
 
 # Why a model can't be verified here, for those that never will be. Shown
 # in place of the Compute button's results, so a suite of only these
@@ -67,6 +67,16 @@ UNVERIFIABLE_REASONS = {
         "CAMulator is a climate model: it starts from CAM's own states, not "
         "an analysis of the real atmosphere, so its runs don't follow the "
         "observed weather, and they fall in 1980-2014, before GFS's archive."
+    ),
+}
+
+# Shown above the plots when one of these models is in the suite: their
+# scores against GFS analysis mean something different from the others'.
+REFERENCE_NOTES = {
+    "GFS": (
+        "GFS is verified against GFS analysis, its own starting point, so its "
+        "error starts at zero and stays low early on. That favours GFS: read "
+        "its line as a reference, not as a fair skill comparison."
     ),
 }
 
@@ -628,8 +638,10 @@ class ForecastStatsPanel(param.Parameterized):
         return []
 
     def panel(self):
+        notes = [REFERENCE_NOTES[m] for m in self.stats_models if m in REFERENCE_NOTES]
         return pn.Column(
             pn.pane.Markdown(f"### {self.TITLE}"),
+            *(pn.pane.Alert(n, alert_type="info") for n in notes),
             pn.Row(
                 self.compute_button,
                 self.spinner,

@@ -129,6 +129,7 @@ RUN_TIME = {
     'AIFS':         (420, 20, 6),
     'Aurora':       (300, 8, 6),
     'Pangu':        (180, 3, 6),
+    'GFS':          (60, 5, 6),     # a download, ~2 s per lead time measured
     'FourCastNet3': (180, 8, 6),
     'CAMulator':    (180, 1, 6),
     'WXFormer':     (600, 6, 1),
@@ -163,12 +164,14 @@ def assign_lanes(estimates, n_gpus):
     return [lane for lane in lanes if lane]
 
 
-def estimate_walltime(estimates, n_gpus, system):
+def estimate_walltime(estimates, n_gpus, system, cpu_estimates=()):
     """Wall time to request, in seconds, and whether the queue's limit cut
-    it short."""
+    it short. cpu_estimates are runs that need no GPU; they share one lane
+    running beside the GPU lanes."""
     seconds = dict(estimates)
     lanes = assign_lanes(estimates, max(1, n_gpus))
     longest = max((sum(seconds[m] for m in lane) for lane in lanes), default=0)
+    longest = max(longest, sum(s for _, s in cpu_estimates))
     wall = (JOB_SETUP_SECONDS + longest) * SAFETY_FACTOR
     wall = max(MIN_WALLTIME, -(-wall // WALLTIME_STEP) * WALLTIME_STEP)
     limit = SYSTEMS[system].max_hours * 3600
@@ -196,6 +199,14 @@ class ModelRun:
     cmd: str
     log_path: Path
     seconds: float
+    gpu: bool = True        # False for a fetch (see forecastSourceRunner)
+
+
+# A job with no GPU runs only downloads, so it goes to Casper whatever the
+# System picker says: there it gets a few cores, where on Derecho it would
+# be charged for a whole 128-core node.
+CPU_ONLY_SYSTEM = 'Casper'
+CPU_ONLY_SELECT = 'select=1:ncpus=2:mem=16GB'
 
 
 @dataclass
@@ -256,10 +267,13 @@ class PBSJob:
 
     def write_script(self, runs, account, gpu_type, n_gpus, walltime, workdir):
         """Write the batch script that runs `runs` ([ModelRun]) on n_gpus
-        GPUs, and return its path."""
+        GPUs, and return its path. Runs that need no GPU share one more
+        lane, with no GPU; with only those, the job asks for no GPU."""
         system = SYSTEMS[self.system]
         self.models = [r.model for r in runs]
-        lanes = assign_lanes([(r.model, r.seconds) for r in runs], n_gpus)
+        gpu_runs = [r for r in runs if r.gpu]
+        cpu_lane = [r.model for r in runs if not r.gpu]
+        lanes = assign_lanes([(r.model, r.seconds) for r in gpu_runs], n_gpus)
         n_gpus = len(lanes)
         by_model = {r.model: r for r in runs}
 
@@ -268,9 +282,12 @@ class PBSJob:
 
         d = shlex.quote(str(self.job_dir))
         h, rem = divmod(int(walltime), 3600)
-        select = (f"select=1:ncpus={system.ncpus_per_gpu * n_gpus}"
-                  f":mem={system.mem_gb_per_gpu * n_gpus}GB"
-                  f":ngpus={n_gpus}:gpu_type={gpu_type}")
+        if n_gpus:
+            select = (f"select=1:ncpus={system.ncpus_per_gpu * n_gpus}"
+                      f":mem={system.mem_gb_per_gpu * n_gpus}GB"
+                      f":ngpus={n_gpus}:gpu_type={gpu_type}")
+        else:
+            select = CPU_ONLY_SELECT
         job_name = 'InferStudio-' + '-'.join(self.models)
         job_name = re.sub(r'[^A-Za-z0-9_-]', '_', job_name)[:60]
 
@@ -311,6 +328,11 @@ class PBSJob:
             calls = '; '.join(
                 f'run_model {m} "${{GPUS[{i}]}}" {shlex.quote(str(by_model[m].log_path))}'
                 for m in lane)
+            lines.append(f'( {calls} ) &')
+        if cpu_lane:
+            calls = '; '.join(
+                f'run_model {m} "" {shlex.quote(str(by_model[m].log_path))}'
+                for m in cpu_lane)
             lines.append(f'( {calls} ) &')
         lines += [
             'wait',

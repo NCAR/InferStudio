@@ -13,6 +13,11 @@ for deciding whether to upgrade.
 
 ### Added
 
+- Physical models for comparison: GFS can be selected on the Weather tab. Its
+  published forecast for the same start time is downloaded into the suite,
+  with no GPU, and shows up in plots, differences and statistics like the AI
+  models.
+
 - Inference runs in its own PBS batch job instead of on the session's node. The
   Inference tab's new Compute Settings section picks Derecho (the default) or Casper, the GPU
   type (Casper's A100 80GB by default) and the number of GPUs; the wall time is
@@ -46,6 +51,10 @@ for deciding whether to upgrade.
 - Default output path is `/glade/scratch/$USER`.
 
 ### Fixed
+
+- Model output is CF-converted again. The job scripts imported `cf_convert`
+  from `/glade/work/pearse/InferStudio`, which no longer exists, so recent runs
+  only had their raw output.
 
 - Threading deadlock caused by background threads mutating Bokeh and Panel widgets
   directly; updates are now scheduled through the document's next-tick callback.

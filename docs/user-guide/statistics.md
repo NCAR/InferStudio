@@ -106,6 +106,13 @@ those controls across the models you select. If you load output from separate
 sessions with different initializations, the table will still compute, and the
 comparison will be meaningless.
 
+## Physical models in the table
+
+When a suite includes GFS, it is scored against GFS analysis like the AI
+models, but that analysis is GFS's own starting point: its error starts at zero
+and stays low at short leads. Read the GFS line as a reference, not as a fair
+skill comparison. The panel says so above the plots.
+
 ## Caveats worth stating in a paper
 
 1. Scores against an analysis are not scores against observations.

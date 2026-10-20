@@ -2,6 +2,15 @@ from inference.modelRunner import ModelRunner
 from datetime import datetime, timedelta
 import os
 
+# This checkout (SandboxInferStudio or ProductionInferStudio), where the
+# job scripts import cf_convert from.
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def step_hours(timestep):
+    """Hours in a TimePicker timestep such as "6h"."""
+    return int(timestep.replace("h", ""))
+
 #EARTH2STUDIO_PYTHON = f"/glade/work/{os.environ['USER']}/conda-envs/earth2studio/bin/python"
 #EARTH2STUDIO_PYTHON = f"/glade/work/pearse/conda-envs/earth2studio/bin/python"
 MODEL_ENV_MAP = {
@@ -139,6 +148,22 @@ MODEL_VAR_MAP = {
         'SP':   ['sp'],
         't2m':  ['t2m'],
     },
+    # GFS (fetched, not run - see forecastSourceRunner) has every field
+    # the AI models write, so SP gives both sp and msl, to compare with
+    # the models that have either.
+    'GFS': {
+        'U':    ['u50','u100','u150','u200','u250','u300','u400','u500','u600','u700','u850','u925','u1000'],
+        'V':    ['v50','v100','v150','v200','v250','v300','v400','v500','v600','v700','v850','v925','v1000'],
+        'T':    ['t50','t100','t150','t200','t250','t300','t400','t500','t600','t700','t850','t925','t1000'],
+        'Q':    ['q50','q100','q150','q200','q250','q300','q400','q500','q600','q700','q850','q925','q1000'],
+        'SP':   ['sp', 'msl'],
+        't2m':  ['t2m'],
+        'U500': ['u500'],
+        'V500': ['v500'],
+        'T500': ['t500'],
+        'Z500': ['z500'],
+        'Q500': ['q500'],
+    },
     # GraphCast, SFNO — add their maps as you test them.
     # Fallback for unmapped models: pass vars through lowercased.
 }
@@ -209,7 +234,7 @@ class Earth2StudioRunner(ModelRunner):
         all_vars = list(dict.fromkeys(ua_vars + sfc_vars))
 
         # Compute number of steps from start/end/timestep
-        hours = int(timestep.replace("h", ""))
+        hours = step_hours(timestep)
         if isinstance(start, str):
             start = datetime.fromisoformat(start)
         if isinstance(end, str):
@@ -338,7 +363,7 @@ print("Output written to {output_nc}", flush=True)
 
 print("Converting to CF-compliant format...", flush=True)
 try:
-    sys.path.insert(0, "/glade/work/pearse/InferStudio")
+    sys.path.insert(0, {APP_DIR!r})
     from cf_convert import make_cf_compliant
     cf_path = make_cf_compliant("{output_nc}")
     print(f"CF-compliant file written: {{cf_path}}", flush=True)

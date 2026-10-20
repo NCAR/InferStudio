@@ -118,6 +118,19 @@ Re-running with an identical name overwrites. The auto-generated names include
 the model and initialization time, which makes accidental collisions unlikely but
 not impossible when you iterate on the same case.
 
+## Physical models
+
+The model box has a second row, **Physical models**, with GFS. Selecting it
+doesn't run GFS: InferStudio downloads NOAA's published GFS forecast from the
+same start time, for the same lead times and output variables, so it can be
+compared with the AI models in every tab. GFS's archive starts in February 2021,
+its forecasts go out to 384 h, and beyond 120 h its output is 3-hourly, so a
+longer run needs an output frequency of 3 h or a multiple of it.
+
+The download needs no GPU. With AI models selected it runs beside them in the
+same job. On its own, the GPU settings are greyed out and it goes to a small
+CPU-only job on Casper.
+
 ## Running several models at once
 
 Several models in one job share the job's GPUs. With one GPU they run one after
