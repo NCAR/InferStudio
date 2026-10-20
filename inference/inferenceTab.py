@@ -14,6 +14,7 @@ from inference.outputParams import OutputParams
 from dimensions import model_file_stem
 from tooltips import below_tooltip
 from tabStyles import TAB_HEADER_CSS
+from usage_log import log_event, short_error
 from inference.timePicker import TimePicker
 from inference.climateTimePicker import ClimateTimePicker
 from inference.commandRunner import CommandRunner
@@ -639,10 +640,22 @@ class ModelTab(param.Parameterized):
         script = job.write_script(runs, self._account, run.gpu_type, n_gpus,
                                   walltime, os.getcwd())
         gpus = f"{n_gpus} x {run.gpu_type}"
+        config = self._build_config(runs[0].model)
+        usage = dict(
+            tab=type(self).__name__.removesuffix("Tab").lower(),
+            models=[r.model for r in runs],
+            setup_failed=list(self._failed_models),
+            system=run.system, gpu_type=run.gpu_type, gpus=n_gpus,
+            walltime_s=walltime, start_time=start, end_time=end,
+            timestep=config["timestep"],
+            ua_vars=config["ua_vars"], surface_vars=config["surface_vars"],
+            **({"forcing_mode": config["forcing_mode"]} if "forcing_mode" in config else {}),
+        )
         run.submitted_at = time.time()
         try:
             job.submit(script)
         except RuntimeError as e:
+            log_event("inference_submit", outcome="error", error=short_error(e), **usage)
             run.submitted_at = None
             for r in runs:
                 self._append_log(r.model, f"Could not submit the PBS job: {e}\nJob script: {script}\n")
@@ -651,8 +664,11 @@ class ModelTab(param.Parameterized):
             self._set_job_label("submission failed")
             return
         run.job = job
+        log_event("inference_submit", outcome="submitted", job=job.job_id, **usage)
         if run.cancel.is_set():
             job.delete()
+            log_event("inference_end", job=job.job_id, outcome="cancelled",
+                      models={r.model: "cancelled" for r in runs})
             return
 
         self._set_job_label(f"{job.job_id} - queued on {run.system} ({gpus})")
@@ -663,7 +679,22 @@ class ModelTab(param.Parameterized):
                 f"{format_duration(walltime)} wall time, account {self._account}.\n"
                 f"Job files: {job.job_dir}\n"
                 "Waiting in the queue...\n")
-        self._follow(run, job, runs)
+        states = self._follow(run, job, runs)
+
+        # Models still pending or running when the job ended were cancelled
+        # or cut short.
+        cut = "cancelled" if run.cancel.is_set() else "error"
+        outcomes = {m: cut if st in ("pending", "running") else st
+                    for m, st in states.items()}
+        log_event(
+            "inference_end", job=job.job_id,
+            outcome=("cancelled" if run.cancel.is_set() else
+                     "done" if all(o == "done" for o in outcomes.values()) else "error"),
+            models=outcomes,
+            queue_wait_s=round((run.started_at or run.ended_at) - run.submitted_at),
+            run_s=round(run.ended_at - run.started_at) if run.started_at else None,
+            walltime_s=walltime,
+        )
 
     # How often to ask PBS about the job; the files it writes are checked
     # every second.
@@ -704,6 +735,9 @@ class ModelTab(param.Parameterized):
                 started = job.started_at()
                 if started is not None:
                     run.started_at = min(max(started, run.submitted_at), now)
+                    log_event("inference_start", job=job.job_id,
+                              queue_wait_s=round(run.started_at - run.submitted_at),
+                              exec_host=last.exec_host if last and last.exec_host else None)
                     host = last.exec_host if last and last.exec_host else run.system
                     self._set_job_label(f"{job.job_id} - running on {host}")
 
@@ -745,12 +779,12 @@ class ModelTab(param.Parameterized):
         unfinished = [m for m, s in states.items() if s in ("pending", "running")]
         if not unfinished:
             self._set_job_label(f"{job.job_id} - finished")
-            return
+            return states
         if run.cancel.is_set():
             for m in unfinished:
                 self._set_status(m, "cancelled")
             self._set_job_label(f"{job.job_id} - cancelled")
-            return
+            return states
 
         why = "The PBS job ended before this model finished"
         if last is not None and last.comment:
@@ -766,6 +800,7 @@ class ModelTab(param.Parameterized):
             self._append_log(m, f"\n{why}\n")
             self._set_status(m, "error")
         self._set_job_label(f"{job.job_id} - ended")
+        return states
 
 
     # ------------------------------------------------------------------ #

@@ -15,6 +15,7 @@ import numpy as np
 import panel as pn
 import matplotlib.pyplot as plt
 
+from usage_log import log_event
 from third_party.credit_verify.deterministic import deterministic_scores, latitude_slices
 from visualization.earth2StudioVars import _resolve_dim, LAT_NAMES, LON_NAMES
 from visualization.forecastStatsPanel import (
@@ -57,6 +58,7 @@ class WB2StatsPanel(ForecastStatsPanel):
     saved together."""
 
     TITLE = "WeatherBench2 Verification (credit-verify)"
+    METHOD = "credit-verify"
     STATS_SUBDIR = f"{STATS_DIRNAME}/wb2"
     STATS_VERSION = 1
     COLUMNS = COLUMNS
@@ -74,6 +76,8 @@ class WB2StatsPanel(ForecastStatsPanel):
         return [self.region_picker]
 
     def _on_region_change(self, event):
+        log_event("stats_region", suite=self.dataset_key,
+                  variable=self.controls.var_name, region=event.new)
         if self.results:
             self._render(self.results, self.last_var_name)
 

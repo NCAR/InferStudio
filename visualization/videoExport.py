@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -37,6 +38,7 @@ from PIL import Image, ImageDraw
 
 from dimensions import level_text
 from visualization.earth2StudioPlot import plot_e2s_field
+from usage_log import log_event, short_error
 
 DEFAULT_FRAMES_PER_SECOND = 2.0
 MP4_FRAME_RATE = 30
@@ -621,6 +623,9 @@ class VideoExportPanel(param.Parameterized):
     # -- worker ------------------------------------------------------------
 
     def _worker(self, rows, snap):
+        # For the usage log; each early return below is a cancel.
+        usage = {"outcome": "cancelled"}
+        started = time.time()
         try:
             exe = _ffmpeg_exe()
 
@@ -733,6 +738,7 @@ class VideoExportPanel(param.Parameterized):
                     raise RuntimeError(f"ffmpeg failed:\n```\n{tail}\n```")
 
             mb = out_path.stat().st_size / 1e6
+            usage.update(outcome="done", mb=round(mb, 1))
             _ui(setattr, self._progress, "value", 100)
             _ui(setattr, self._status, "object",
                 f"**Done** \u2014 {total} frames, {mb:.1f} MB. Saved in the "
@@ -745,8 +751,17 @@ class VideoExportPanel(param.Parameterized):
             _ui(setattr, self._browser_download, "data", data)
 
         except Exception as exc:
+            usage.update(outcome="error", error=short_error(exc))
             _ui(setattr, self._status, "object", f"**Export failed:** {exc}")
         finally:
+            log_event(
+                "video_export", suite=snap["suite_dir"].name,
+                variable=snap["var_name"], level=snap["level"] or None,
+                panels=[label for row in rows for label, *_ in row],
+                differences=sum(is_diff for row in rows for _, _, is_diff, *_ in row),
+                frames=snap["nframes"], fps=snap["fps"],
+                resolution=snap["resolution"],
+                seconds=round(time.time() - started, 1), **usage)
             _ui(self._finish)
 
     def _finish(self):

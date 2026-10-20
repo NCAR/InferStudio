@@ -87,6 +87,7 @@ from visualization.modelDiff import (
 )
 from dimensions import diff_file_path
 from cf_convert import variable_long_name
+from usage_log import log_event, short_error
 
 hv.extension("bokeh")
 
@@ -1779,6 +1780,11 @@ class PlotGrid(param.Parameterized):
                 m: (None if w.value == "None" else w.value)
                 for m, w in widgets.items()
             }
+            # Pairs computed here are logged when they finish.
+            for a, b in pairs.items():
+                if b and self.state.diff_pairs.get(a) != b and self._diff_exists(a, b):
+                    log_event("diff", suite=Path(self.model_dirs[a]).parent.name,
+                              model=a, minus=b, outcome="saved")
             self.state.diff_pairs = pairs
             for a, b in pairs.items():
                 if b:
@@ -1850,21 +1856,30 @@ class PlotGrid(param.Parameterized):
 
         self._set_status(a, "computing")
 
+        suite = Path(self.model_dirs[a]).parent.name
+
         def work():
+            started = time.time()
+            def logged(outcome, **fields):
+                log_event("diff", suite=suite, model=a, minus=b, outcome=outcome,
+                          seconds=round(time.time() - started, 1), **fields)
             try:
                 compute_model_difference(
                     self.model_dirs[a], self.model_dirs[b], a, b,
                     cancel=cancel,
                 )
+                logged("computed")
                 if self._torn_down:
                     return
                 self._set_status(a, "ready")
                 self.refresh_diff_clim_async()
             except DiffCancelled:
+                logged("cancelled")
                 if not self._torn_down:
                     _schedule(partial(self._clear_cancelled, a))
             except Exception as exc:
                 traceback.print_exc()
+                logged("error", error=short_error(exc))
                 if not self._torn_down:
                     self._set_status(a, f"error: {exc}")
             finally:

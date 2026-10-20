@@ -29,6 +29,7 @@ from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
 from tabStyles import TAB_HEADER_CSS
 from job_status import job_clock, install_disconnect_notice
+from usage_log import log_event, log_session_start, Debounced
 
 # --- Static asset locations ------------------------------------------------
 # Resolved relative to THIS module, not the process working directory, so the
@@ -869,6 +870,30 @@ def build_app(data_dir):
 
     browser.param.watch(_on_checked, "checked_items")
 
+    # Usage logging: what's on the Visualization tab, once the user has
+    # settled on it. The time step is left out - scrubbing it would log a
+    # record per step.
+    log_view = Debounced("view")
+
+    def _log_view(*_):
+        if not shown.datasets:
+            return
+        ds = shown.datasets[0]
+        log_view(
+            dataset=ds,
+            models=sorted(model_dirs_for(dataset_metadata.get(ds, {}))),
+            variable=controls.var_name,
+            level=controls.level_value or None,
+            level_dim=controls.level_dim,
+            differences={a: b for a, b in grid_state.diff_pairs.items() if b},
+            colormap=controls.colormap,
+            boundaries=controls.boundaries,
+        )
+
+    shown.param.watch(_log_view, "datasets")
+    controls.param.watch(_log_view, ["var_name", "level_value", "colormap", "boundaries"])
+    grid_state.param.watch(_log_view, "diff_pairs")
+
     @pn.depends(shown.param.datasets)
     def plot_grid(datasets):
         # Detach the outgoing grid before building its replacement. Its
@@ -1108,6 +1133,9 @@ def build_app(data_dir):
                 "position": "relative"},
     )
 
+    log_session_start()
+    log_event("page_open")
+
     tabs = pn.Tabs(
         ("Visualization", vis),
         ("Statistics", statistics),
@@ -1123,6 +1151,8 @@ def build_app(data_dir):
             }
         """],
     )
+    tab_names = ["Visualization", "Statistics", "Inference"]
+    tabs.param.watch(lambda e: log_event("tab", tab=tab_names[e.new]), "active")
     # `title` now only drives the browser tab text - the header title text is
     # supplied by the wordmark image below, so it is no longer set to "".
     template = pn.template.BootstrapTemplate(

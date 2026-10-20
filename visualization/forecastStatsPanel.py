@@ -38,6 +38,7 @@ from pathlib import Path
 import json
 import os
 import threading
+import time
 import weakref
 
 import numpy as np
@@ -51,6 +52,7 @@ import matplotlib.pyplot as plt
 
 from dimensions import resolve_nc_glob, PRES_NAME, vertical_dim
 from visualization.ncJobLock import NC_JOB_LOCK
+from usage_log import log_event, short_error
 from visualization.earth2StudioVars import parse_variable_groups, resolve_var_name, _resolve_dim, LAT_NAMES, LON_NAMES
 
 # Models whose output this verification pipeline (and the earth2studio GFS
@@ -325,6 +327,7 @@ class ForecastStatsPanel(param.Parameterized):
     class attributes and score/_render/_controls below."""
 
     TITLE = "Forecast Verification Statistics"
+    METHOD = "basic"            # names the sub-tab in usage logs
     # Where in each model's directory results are saved, and the version
     # they're saved under.
     STATS_SUBDIR = STATS_DIRNAME
@@ -500,7 +503,9 @@ class ForecastStatsPanel(param.Parameterized):
 
         # "Recompute" (everything already saved) starts from scratch;
         # otherwise saved lead times are reused and only the gaps fetched.
-        recompute = self.compute_button.name == "Recompute"
+        mode = self.compute_button.name
+        recompute = mode == "Recompute"
+        started = time.time()
         prior = {} if recompute else {m: df for m, (df, _) in self.saved.items()}
 
         # Capture the document on this (correct) callback thread before
@@ -554,6 +559,18 @@ class ForecastStatsPanel(param.Parameterized):
                         save_errors[model] = str(e)
             finally:
                 NC_JOB_LOCK.release()
+
+            log_event(
+                "stats_compute", method=self.METHOD, suite=self.dataset_key,
+                variable=var_name, level=level_value or None, mode=mode,
+                models=self.stats_models, skipped=self.skipped_models,
+                lead_times={m: len(df) for m, df in results.items()},
+                failed_lead_times={m: int(df[self.COLUMNS[0]].isna().sum())
+                                   for m, df in results.items()},
+                errors={m: short_error(e) for m, e in errors.items()},
+                save_failed=sorted(save_errors),
+                seconds=round(time.time() - started, 1),
+            )
 
             def _finish():
                 self.compute_button.disabled = False
