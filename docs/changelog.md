@@ -13,6 +13,11 @@ for deciding whether to upgrade.
 
 ### Added
 
+- A spinner next to a tab's title while it's computing: Visualization while a
+  dataset loads, a difference computes or a video exports; Statistics (and
+  its Basic or credit-verify sub-tab) while stats compute; Inference (and its
+  Weather or Climate sub-tab) while a run is going.
+
 - Physical models for comparison: GFS can be selected on the Weather tab. Its
   published forecast for the same start time is downloaded into the suite,
   with no GPU, and shows up in plots, differences and statistics like the AI
@@ -51,6 +56,14 @@ for deciding whether to upgrade.
 - Default output path is `/glade/scratch/$USER`.
 
 ### Fixed
+
+- A model run that died part way no longer breaks the plots. Its unwritten
+  steps hold netCDF's default fill value (9.97e+36), which was read as data and
+  stretched the shared colorbar so every model looked flat. They're now treated
+  as missing in plots, differences and statistics.
+
+- The Models card on the Inference tab is indented to line up with the other
+  cards.
 
 - Model output is CF-converted again. The job scripts imported `cf_convert`
   from `/glade/work/pearse/InferStudio`, which no longer exists, so recent runs

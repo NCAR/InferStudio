@@ -265,6 +265,14 @@ class Earth2StudioRunner(ModelRunner):
                 f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
                 "import fcn3ChunkedDisco\n"
                 "fcn3ChunkedDisco.apply(n_chunks=4)")
+        # AIFS's graph-transformer message passing overflows a 40 GB A100
+        # unless anemoi splits its edges into chunks, which it does at
+        # inference when ANEMOI_INFERENCE_NUM_CHUNKS is set before anemoi is
+        # imported. The chunks are summed, so the output is unchanged.
+        elif model_name == 'AIFS':
+            alloc_env = ('os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"\n'
+                         'os.environ["ANEMOI_INFERENCE_NUM_CHUNKS"] = "16"')
+            model_patch = ""
         else:
             alloc_env = model_patch = ""
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from inference.outputParams import OutputParams
 from dimensions import model_file_stem
 from tooltips import below_tooltip
-from tabStyles import TAB_HEADER_CSS
+from tabStyles import TAB_HEADER_CSS, BUSY_TAB_CSS, set_tab_busy
 from usage_log import log_event, short_error
 from inference.timePicker import TimePicker
 from inference.climateTimePicker import ClimateTimePicker
@@ -134,10 +134,10 @@ class ModelPicker(param.Parameterized):
         # Wraps onto a second line rather than spilling out of a narrow box.
         def row(names):
             return pn.FlexBox(*(self._buttons[n] for n in names), flex_wrap='wrap',
-                              sizing_mode='stretch_width', margin=(0, 5, 5, 0))
+                              sizing_mode='stretch_width', margin=(0, 5, 5, 10))
         if groups:
             self.row = pn.Column(*(item for heading, names in groups for item in (
-                pn.pane.Markdown(f"**{heading}**", margin=(0, 5, 0, 0)), row(names))),
+                pn.pane.Markdown(f"**{heading}**", margin=(0, 5, 0, 10)), row(names))),
                 sizing_mode='stretch_width')
         else:
             self.row = row(options)
@@ -983,6 +983,8 @@ class InferenceTab(param.Parameterized):
     app can load the new suite into the Visualization tab."""
 
     outputDirectory = param.String(default="")
+    # True while either sub-tab has a run going, for the main tab's spinner.
+    busy = param.Boolean(default=False)
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -1002,10 +1004,19 @@ class InferenceTab(param.Parameterized):
     def panel(self):
         # Styled like the app's main tabs; see tabStyles for the title's
         # second line.
-        return pn.Tabs(
+        tabs = pn.Tabs(
             ("Weather", self.weatherTab.panel()),
             ("Climate\n(experimental!)", self.climateTab.panel()),
-            stylesheets=[TAB_HEADER_CSS],
+            stylesheets=[TAB_HEADER_CSS, BUSY_TAB_CSS],
             sizing_mode='stretch_both',
             min_height=300,
         )
+        # A sub-tab's Launcher spinner runs for exactly as long as its run.
+        subtabs = (self.weatherTab, self.climateTab)
+        def _sync_busy(*_):
+            for i, tab in enumerate(subtabs):
+                set_tab_busy(tabs, i, tab.spinner.value)
+            self.busy = any(tab.spinner.value for tab in subtabs)
+        for tab in subtabs:
+            tab.spinner.param.watch(_sync_busy, 'value')
+        return tabs

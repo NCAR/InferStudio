@@ -50,7 +50,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dimensions import resolve_nc_glob, PRES_NAME, vertical_dim
+from dimensions import resolve_nc_glob, PRES_NAME, vertical_dim, mask_unwritten
 from visualization.ncJobLock import NC_JOB_LOCK
 from usage_log import log_event, short_error
 from visualization.earth2StudioVars import parse_variable_groups, resolve_var_name, _resolve_dim, LAT_NAMES, LON_NAMES
@@ -255,6 +255,7 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None,
         gfs_name = _gfs_name(var_name, field, level)
         if vertical_dim(field) == PRES_NAME:
             field = field.sel({PRES_NAME: level})
+        field = mask_unwritten(field)
 
         lat_dim = _resolve_dim(ds, *LAT_NAMES)
         lon_dim = _resolve_dim(ds, *LON_NAMES)

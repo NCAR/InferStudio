@@ -92,3 +92,15 @@ def resolve_nc_glob(model_dir) -> list:
                    if not p.name.endswith(DIFF_SUFFIX))
     cf = [p for p in files if p.name.endswith("_cf.nc")]
     return [str(p) for p in (cf or files)]
+
+
+# netCDF's default fill value for floats is 9.969e+36. A run that dies part
+# way (e.g. out of GPU memory) leaves its unwritten steps holding it, with no
+# _FillValue attribute, so xarray reads them as data.
+UNWRITTEN_THRESHOLD = 9e36
+
+
+def mask_unwritten(obj):
+    """NaN out the unwritten (netCDF default fill) values of a Dataset or
+    DataArray. Lazy on dask-backed data."""
+    return obj.where(abs(obj) < UNWRITTEN_THRESHOLD)

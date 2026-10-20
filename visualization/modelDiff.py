@@ -32,7 +32,7 @@ import dask
 import xarray as xr
 from dask.callbacks import Callback
 
-from dimensions import resolve_nc_glob, diff_file_path
+from dimensions import resolve_nc_glob, diff_file_path, mask_unwritten
 from visualization.earth2StudioVars import _resolve_dim, LAT_NAMES, LON_NAMES
 from visualization.earth2StudioPlot import invalidate_dataset, load_e2s_field
 from visualization.ncJobLock import NC_JOB_LOCK
@@ -161,6 +161,7 @@ def compute_model_difference(model_a_dir, model_b_dir,
             # Waiting for NC_JOB_LOCK can take a while if Statistics holds it.
             if cancel.is_set():
                 raise DiffCancelled()
+            ds_a, ds_b = mask_unwritten(ds_a), mask_unwritten(ds_b)
 
             shared_vars = sorted(set(ds_a.data_vars) & set(ds_b.data_vars))
             if not shared_vars:

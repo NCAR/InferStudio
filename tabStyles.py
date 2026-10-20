@@ -18,3 +18,29 @@ TAB_HEADER_CSS = """
     .bk-tab.bk-active::first-line { font-weight: 700; }
     .bk-tabs-header { background: #e8e8e8; flex: 0 0 auto; }
 """
+
+
+# A spinning ring after a tab's title while that tab is computing. Toggled
+# by set_tab_busy, which adds a tab-busy-<index> class to the Tabs; the
+# ring is CSS-animated in the browser, so it costs no traffic while it spins.
+_MAX_BUSY_TABS = 8
+BUSY_TAB_CSS = """
+    @keyframes tab-busy-spin { to { transform: rotate(360deg); } }
+""" + "".join(f"""
+    :host(.tab-busy-{i}) .bk-tab:nth-child({i + 1})::after""" + ("," if i < _MAX_BUSY_TABS - 1 else "")
+               for i in range(_MAX_BUSY_TABS)) + """ {
+        content: ""; display: inline-block; vertical-align: middle;
+        width: 14px; height: 14px; margin-left: 10px; box-sizing: border-box;
+        border: 2.5px solid #c8d2dc; border-top-color: #007bff; border-radius: 50%;
+        animation: tab-busy-spin 0.9s linear infinite;
+    }
+"""
+
+
+def set_tab_busy(tabs, index, busy):
+    """Show or hide the spinner on tab `index` of a pn.Tabs that has
+    BUSY_TAB_CSS among its stylesheets."""
+    cls = f"tab-busy-{index}"
+    classes = [c for c in tabs.css_classes if c != cls] + ([cls] if busy else [])
+    if classes != list(tabs.css_classes):
+        tabs.css_classes = classes

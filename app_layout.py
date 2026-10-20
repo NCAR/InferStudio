@@ -7,7 +7,7 @@ import param
 import pandas as pd
 import xarray as xr
 from pathlib import Path
-from functools import lru_cache
+from functools import lru_cache, partial
 from panel.theme.base import Inherit
 from panel.widgets.button import _ButtonBase
 
@@ -27,7 +27,7 @@ from visualization.earth2StudioPlot import close_dataset_cache
 
 from inference.commandRunner import CommandRunner
 from inference.inferenceTab import InferenceTab
-from tabStyles import TAB_HEADER_CSS
+from tabStyles import TAB_HEADER_CSS, BUSY_TAB_CSS, set_tab_busy
 from job_status import job_clock, install_disconnect_notice
 from usage_log import log_event, log_session_start, Debounced
 
@@ -938,6 +938,24 @@ def build_app(data_dir):
     # Which Statistics sub-tab is showing, kept across the rebuild on each
     # dataset change.
     _stats_tab = {"active": 0}
+    # Stats panels computing right now, for the Statistics tab's spinner.
+    # Kept by id rather than per rebuild: a panel replaced by a dataset
+    # change finishes its compute in the background, and clears itself.
+    _stats_busy = set()
+    _main_tabs = {}     # "tabs", once the main tabs exist
+
+    def _sync_tab_spinners(*_):
+        """Spinner on each main tab that's computing: Visualization while a
+        dataset loads, a difference computes or a video exports;
+        Statistics while a dataset loads or stats compute; Inference while
+        a run is going."""
+        tabs = _main_tabs.get("tabs")
+        if tabs is None:
+            return
+        diffing = any(st == "computing" for st in grid_state.diff_status.values())
+        set_tab_busy(tabs, 0, bool(shown.loading) or diffing or video_export.busy)
+        set_tab_busy(tabs, 1, bool(shown.loading) or bool(_stats_busy))
+        set_tab_busy(tabs, 2, inference_tab.busy)
 
     @pn.depends(shown.param.datasets)
     def stats_reactive(datasets):
@@ -953,9 +971,17 @@ def build_app(data_dir):
             ("credit-verify", wb2.panel()),
             active=_stats_tab["active"],
             sizing_mode="stretch_width",
-            stylesheets=[TAB_HEADER_CSS],
+            stylesheets=[TAB_HEADER_CSS, BUSY_TAB_CSS],
         )
         tabs.param.watch(lambda e: _stats_tab.update(active=e.new), "active")
+
+        def _on_spin(event, panel, index):
+            set_tab_busy(tabs, index, event.new)
+            (_stats_busy.add if event.new else _stats_busy.discard)(id(panel))
+            _sync_tab_spinners()
+
+        for i, panel in enumerate((basic, wb2)):
+            panel.spinner.param.watch(partial(_on_spin, panel=panel, index=i), "value")
         return tabs
 
     # Export Video - sweeps the shared time index across the full forecast
@@ -1144,7 +1170,7 @@ def build_app(data_dir):
         # comes from the .bk-tabs-content rule below instead.
         sizing_mode="stretch_width",
         styles={"height": "100%", "overflow": "hidden"},
-        stylesheets=[TAB_HEADER_CSS, """
+        stylesheets=[TAB_HEADER_CSS, BUSY_TAB_CSS, """
             .bk-tabs-content {
                 border: 1px solid #ccc; padding: 10px; box-sizing: border-box;
                 flex: 1 1 auto; min-height: 0; overflow: hidden;
@@ -1153,6 +1179,14 @@ def build_app(data_dir):
     )
     tab_names = ["Visualization", "Statistics", "Inference"]
     tabs.param.watch(lambda e: log_event("tab", tab=tab_names[e.new]), "active")
+    _main_tabs["tabs"] = tabs
+
+    # Busy spinners on the tab titles.
+    shown.param.watch(_sync_tab_spinners, "loading")
+    grid_state.param.watch(_sync_tab_spinners, "diff_status")
+    video_export.param.watch(_sync_tab_spinners, "busy")
+    inference_tab.param.watch(_sync_tab_spinners, "busy")
+    _sync_tab_spinners()
     # `title` now only drives the browser tab text - the header title text is
     # supplied by the wordmark image below, so it is no longer set to "".
     template = pn.template.BootstrapTemplate(

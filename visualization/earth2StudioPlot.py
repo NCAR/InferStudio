@@ -29,7 +29,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dimensions import resolve_nc_glob, vertical_dim
+from dimensions import resolve_nc_glob, vertical_dim, mask_unwritten
 from visualization.boundaries import (
     boundary_lines, NONE as BOUNDARIES_NONE, BOUNDARY_COLOR,
     BOUNDARY_HALO_COLOR, BOUNDARY_HALO_ALPHA, MPL_BOUNDARY_WIDTH,
@@ -88,6 +88,7 @@ def _open_dataset(model_dir) -> xr.Dataset:
                 data_vars="all",
                 chunks={},          # dask-backed: defer the actual read
             )
+            ds = mask_unwritten(ds)
         _DS_CACHE[key] = ds        # reinsert at MRU end
         while len(_DS_CACHE) > _DS_CACHE_MAX:
             _, evicted = _DS_CACHE.popitem(last=False)

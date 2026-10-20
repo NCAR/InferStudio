@@ -340,6 +340,9 @@ class VideoExportPanel(param.Parameterized):
             "rarely matches the target's.",
     )
 
+    # True while an export runs, for the tab's busy spinner.
+    busy = param.Boolean(default=False, precedence=-1)
+
     def __init__(self, controls, active_plot_fn, suite_dir_fn, **params):
         """`suite_dir_fn` returns the directory of the suite on screen,
         which is where the finished MP4 is saved."""
@@ -619,6 +622,7 @@ class VideoExportPanel(param.Parameterized):
             daemon=True, name="video-export",
         )
         self._thread.start()
+        self.busy = True
 
     # -- worker ------------------------------------------------------------
 
@@ -765,6 +769,7 @@ class VideoExportPanel(param.Parameterized):
             _ui(self._finish)
 
     def _finish(self):
+        self.busy = False
         self._cancel_btn.disabled = True
         for check in self._model_checks.values():
             check.disabled = False
