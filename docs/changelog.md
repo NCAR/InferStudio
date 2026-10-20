@@ -18,6 +18,12 @@ for deciding whether to upgrade.
   type (Casper's A100 80GB by default) and the number of GPUs; the wall time is
   estimated, and the job ends when the last model finishes. The Launcher shows the time spent in the queue separately from
   the elapsed run time.
+- The Statistics tab has a credit-verify sub-tab beside the existing Basic one:
+  WeatherBench2-style latitude-weighted RMSE and bias against GFS analysis,
+  globally and for the tropics and extratropics, using credit-verify's scoring
+  code.
+- The Visualization tab's time slider tooltip shows the selected step's valid
+  time (e.g. 2026-10-19 12:00 UTC) instead of its index.
 - Forecast statistics panel: RMSE, CRPS, and spread/error ratio computed against a
   GFS reference.
 - Earth2Studio output plotting via `earth2StudioPlot.py`, handling the flattened

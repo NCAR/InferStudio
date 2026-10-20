@@ -98,8 +98,9 @@ variable, level, and lead time.
 
 ### Statistics
 
-RMSE, CRPS, and spread/error ratio against a GFS reference. See
-{doc}`statistics`.
+Scores against a GFS reference, in two sub-tabs: **Basic** (RMSE and CRPS) and
+**credit-verify** (WeatherBench2-style latitude-weighted RMSE and bias, by
+region). See {doc}`statistics`.
 
 ## Notifications
 

@@ -5,6 +5,7 @@ from functools import partial
 from pathlib import Path
 import panel as pn
 import param
+from bokeh.models import CustomJSTickFormatter
 
 from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, MODEL_LEV_NAME, LAT_NAME, LON_NAME
 from cf_convert import variable_long_name
@@ -390,6 +391,7 @@ class SharedPlotControls(param.Parameterized):
         (typically browser.checked_items)."""
         all_vars = set()
         max_ntime = 0
+        times = []
         leveled_vars_cf = {}
         level_dims = {}
         for key in dataset_keys:
@@ -399,6 +401,7 @@ class SharedPlotControls(param.Parameterized):
             ntime = meta.get("ntime") or 0
             if ntime > max_ntime:
                 max_ntime = ntime
+                times = meta.get("times") or []
             for var, levels in (meta.get("leveled_vars_cf") or {}).items():
                 leveled_vars_cf.setdefault(var, set()).update(levels)
             level_dims.update(meta.get("level_dims") or {})
@@ -412,6 +415,12 @@ class SharedPlotControls(param.Parameterized):
         if end <= 0:
             end = 1  # avoid Bokeh's zero-width slider error; stays disabled below regardless
         self.time_slider.end = end
+        # The tooltip shown while dragging gives the step's valid time
+        # rather than its index.
+        self.time_slider.format = CustomJSTickFormatter(
+            args=dict(labels=times),
+            code="return labels[Math.round(tick)] ?? tick.toFixed(0);",
+        )
         self.time_slider.disabled = not bool(dataset_keys) or max_ntime <= 0
         if self.time_index > end:
             self.time_slider.value = 0

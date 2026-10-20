@@ -4,6 +4,7 @@ import base64
 import warnings
 import panel as pn
 import param
+import pandas as pd
 import xarray as xr
 from pathlib import Path
 from functools import lru_cache
@@ -16,6 +17,7 @@ from visualization.datasetSelector2 import DatasetBrowser
 from visualization.metadata import DatasetMetadata
 from visualization.datasetPlot import DatasetPlot2, SharedPlotControls
 from visualization.forecastStatsPanel import ForecastStatsPanel
+from visualization.wb2StatsPanel import WB2StatsPanel
 from visualization.loadSuiteDialog import LoadSuiteDialog
 from visualization.videoExport import VideoExportPanel
 from visualization.plotGrid import (
@@ -58,6 +60,19 @@ def _resolve_dim(ds, *candidates):
             return name
     return None
 
+def _time_labels(times) -> list:
+    """Format valid times as e.g. '2026-10-19 12:00 UTC'. cftime dates
+    (CAMulator's calendars) format themselves; anything that isn't a date
+    falls back to str()."""
+    labels = []
+    for t in times:
+        try:
+            t = t if hasattr(t, "strftime") else pd.Timestamp(t)
+            labels.append(t.strftime("%Y-%m-%d %H:%M UTC"))
+        except (TypeError, ValueError):
+            labels.append(str(t))
+    return labels
+
 def scan_single_dataset(dataset_dir: Path) -> dict:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
@@ -80,10 +95,12 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 lead_times = ds.lead_time.values
                 stime = str((init_time + lead_times.min()).astype("datetime64[s]"))
                 etime = str((init_time + lead_times.max()).astype("datetime64[s]"))
+                valid_times = init_time + lead_times
             else:
                 ntime = len(ds.time)
                 stime = str(ds.time.values[0].astype("datetime64[s]"))
                 etime = str(ds.time.values[-1].astype("datetime64[s]"))
+                valid_times = ds.time.values
 
             # CF-compliant files (post cf_convert.py) stack levels into a
             # real vertical dimension on each leveled variable - `pressure`,
@@ -130,6 +147,7 @@ def scan_single_dataset(dataset_dir: Path) -> dict:
                 "nlon": int(ds.sizes[lon_dim]) if lon_dim else 0,
                 "stime": stime,
                 "etime": etime,
+                "times": _time_labels(valid_times),
                 "vars2d": sorted(vars2d),
                 "vars3d": sorted(vars3d),
                 "leveled_vars_cf": leveled_vars_cf,
@@ -151,6 +169,9 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
         raise RuntimeError(f"No scannable model outputs found under {sim_dir}")
 
     any_model = next(iter(model_meta.values()))
+    # The Visualization time slider spans the longest model's run, so label
+    # its steps with that model's times.
+    longest = max(model_meta.values(), key=lambda m: m["ntime"])
     vars2d = sorted(set().union(*(m["vars2d"] for m in model_meta.values())))
     vars3d = sorted(set().union(*(m["vars3d"] for m in model_meta.values())))
 
@@ -174,6 +195,7 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
         "nlon": any_model["nlon"],
         "stime": any_model["stime"],
         "etime": any_model["etime"],
+        "times": longest.get("times", []),
         "vars2d": vars2d,
         "vars3d": vars3d,
         "leveled_vars_cf": leveled_vars_cf,
@@ -888,14 +910,28 @@ def build_app(data_dir):
         grid.refresh_clims_async()
         return grid.card(title=ds)
 
+    # Which Statistics sub-tab is showing, kept across the rebuild on each
+    # dataset change.
+    _stats_tab = {"active": 0}
+
     @pn.depends(shown.param.datasets)
     def stats_reactive(datasets):
         if not datasets:
             return pn.pane.Markdown("### Select one or more datasets")
         ds = datasets[0]
-        stats = ForecastStatsPanel(
+        basic = ForecastStatsPanel(
             controls=controls, dataset_key=ds, metadata=dataset_metadata)
-        return stats.panel()
+        wb2 = WB2StatsPanel(
+            controls=controls, dataset_key=ds, metadata=dataset_metadata)
+        tabs = pn.Tabs(
+            ("Basic", basic.panel()),
+            ("credit-verify", wb2.panel()),
+            active=_stats_tab["active"],
+            sizing_mode="stretch_width",
+            stylesheets=[TAB_HEADER_CSS],
+        )
+        tabs.param.watch(lambda e: _stats_tab.update(active=e.new), "active")
+        return tabs
 
     # Export Video - sweeps the shared time index across the full forecast
     # and encodes the current rendering to MP4 with ffmpeg.

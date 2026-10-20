@@ -82,9 +82,9 @@ STATS_VERSION = 2           # bump when the error computation changes
 TRUTH_SOURCE = "GFS analysis"
 
 
-def _stats_paths(model_dir, var_name, level):
+def _stats_paths(model_dir, var_name, level, subdir=STATS_DIRNAME):
     stem = f"{var_name}_{level}" if level else var_name
-    stats_dir = Path(model_dir) / STATS_DIRNAME
+    stats_dir = Path(model_dir) / subdir
     return stats_dir / f"{stem}.csv", stats_dir / f"{stem}.json"
 
 
@@ -99,15 +99,16 @@ def _source_fingerprint(model_dir):
     return fingerprint
 
 
-def load_saved_stats(model_dir, var_name, level):
+def load_saved_stats(model_dir, var_name, level, subdir=STATS_DIRNAME,
+                     version=STATS_VERSION):
     """(DataFrame, computed_at) for saved stats that are still current,
     or None if there are none or they are stale."""
-    csv_path, meta_path = _stats_paths(model_dir, var_name, level)
+    csv_path, meta_path = _stats_paths(model_dir, var_name, level, subdir)
     if not (csv_path.exists() and meta_path.exists()):
         return None
     with open(meta_path) as f:
         meta = json.load(f)
-    if (meta.get("version") != STATS_VERSION
+    if (meta.get("version") != version
             or meta.get("truth") != TRUTH_SOURCE
             or meta.get("sources") != _source_fingerprint(model_dir)):
         return None
@@ -125,14 +126,15 @@ def _write_atomically(path, write):
     os.replace(tmp_path, path)
 
 
-def save_stats(model_dir, var_name, level, df):
+def save_stats(model_dir, var_name, level, df, subdir=STATS_DIRNAME,
+               version=STATS_VERSION):
     """Save one model's stats; returns the computed_at timestamp. Raises
     OSError if the suite isn't writable."""
-    csv_path, meta_path = _stats_paths(model_dir, var_name, level)
-    csv_path.parent.mkdir(exist_ok=True)
+    csv_path, meta_path = _stats_paths(model_dir, var_name, level, subdir)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
     computed_at = datetime.now().isoformat(timespec="minutes")
     meta = {
-        "version": STATS_VERSION,
+        "version": version,
         "truth": TRUTH_SOURCE,
         "variable": var_name,
         "level": level,
@@ -177,10 +179,10 @@ def _load_gfs_truth(valid_time, var_name):
     return da
 
 
-def _spatial_errors(model_da, truth_da):
-    """Return (rmse, mae) between two 2D fields, interpolating the model
-    field onto the truth field's grid first if they don't already match
-    (e.g. Aurora's 720-point latitude grid vs GFS's 721-point grid)."""
+def on_truth_grid(model_da, truth_da):
+    """The model field with the truth field's dimension names and grid,
+    interpolated onto it if they don't already match (e.g. Aurora's
+    720-point latitude grid vs GFS's 721-point grid)."""
     # Match dimension names first — interp_like matches by name, so if the
     # model and GFS use different names for the same axis (e.g. "lat" vs
     # "latitude"), rename the model's dims to whatever truth_da uses before
@@ -203,27 +205,35 @@ def _spatial_errors(model_da, truth_da):
         # interpolate the model field onto the truth field's actual grid
         # rather than assuming they already match.
         model_da = model_da.interp_like(truth_da)
+    return model_da
 
+
+def basic_scores(model_da, truth_da):
+    """{"rmse", "crps"} between two 2D fields: plain grid-point means, with
+    no latitude weighting. CRPS is the MAE - see module docstring point 3."""
+    model_da = on_truth_grid(model_da, truth_da)
     diff = np.asarray(model_da.values) - np.asarray(truth_da.values)
-    rmse = float(np.sqrt(np.nanmean(diff ** 2)))
-    mae = float(np.nanmean(np.abs(diff)))
-    return rmse, mae
+    return {"rmse": float(np.sqrt(np.nanmean(diff ** 2))),
+            "crps": float(np.nanmean(np.abs(diff)))}
 
 
-def compute_model_stats(model_dir, base_or_var, level, reuse=None) -> pd.DataFrame:
-    """Compute RMSE and CRPS(=MAE) at every lead time for one model's
-    output, verified against GFS analysis at each corresponding valid time.
+def compute_model_stats(model_dir, base_or_var, level, reuse=None,
+                        score=basic_scores, columns=("rmse", "crps")) -> pd.DataFrame:
+    """Score one model's output at every lead time against GFS analysis at
+    the corresponding valid time. `score(model_field, truth_field)` returns
+    a dict with `columns` as its keys; by default RMSE and CRPS(=MAE).
 
     `reuse` is an earlier result for the same model and variable; lead
-    times that succeeded there are copied rather than refetched, so only
-    missing or failed ones are computed.
+    times that succeeded there (columns[0] is set) are copied rather than
+    refetched, so only missing or failed ones are computed.
 
-    Returns a DataFrame with columns: lead_hours, rmse, crps, error
+    Returns a DataFrame with columns: lead_hours, *columns, error
     """
     model_dir = Path(model_dir)
+    columns = list(columns)
     done = {}
     if reuse is not None:
-        for row in reuse[reuse["rmse"].notna()].to_dict("records"):
+        for row in reuse[reuse[columns[0]].notna()].to_dict("records"):
             done[float(row["lead_hours"])] = row
 
     with xr.open_mfdataset(resolve_nc_glob(model_dir), engine="netcdf4", autoclose=True, data_vars="all") as ds:
@@ -283,24 +293,20 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None) -> pd.DataFra
 
             if lead_hours in done:
                 prev = done[lead_hours]
-                rows.append({"lead_hours": lead_hours, "rmse": prev["rmse"],
-                             "crps": prev["crps"], "error": None})
+                rows.append({"lead_hours": lead_hours,
+                             **{c: prev[c] for c in columns}, "error": None})
                 continue
 
             try:
                 truth_field = _load_gfs_truth(valid_time, gfs_name)
-                rmse, mae = _spatial_errors(model_field, truth_field)
+                scores = score(model_field, truth_field)
                 error_msg = None
             except Exception as e:
-                rmse, mae = np.nan, np.nan
+                scores = {c: np.nan for c in columns}
                 error_msg = repr(e)
 
-            rows.append({
-                "lead_hours": lead_hours,
-                "rmse": rmse,
-                "crps": mae,
-                "error": error_msg,
-            })
+            rows.append({"lead_hours": lead_hours,
+                         **{c: scores[c] for c in columns}, "error": error_msg})
 
     return pd.DataFrame(rows)
 
@@ -313,7 +319,19 @@ class ForecastStatsPanel(param.Parameterized):
     GFS analysis data over the network for every lead time and can be
     slow. Results are saved in the suite (see save_stats), and saved
     results for the selected variable/level are shown as soon as it is
-    selected."""
+    selected.
+
+    Subclasses verify differently (see wb2StatsPanel) by overriding the
+    class attributes and score/_render/_controls below."""
+
+    TITLE = "Forecast Verification Statistics"
+    # Where in each model's directory results are saved, and the version
+    # they're saved under.
+    STATS_SUBDIR = STATS_DIRNAME
+    STATS_VERSION = STATS_VERSION
+    # Score columns; the first is the one checked for a failed lead time.
+    COLUMNS = ("rmse", "crps")
+    score = staticmethod(basic_scores)
 
     def __init__(self, controls, dataset_key, metadata, **params):
         super().__init__(**params)
@@ -380,7 +398,8 @@ class ForecastStatsPanel(param.Parameterized):
         self.saved = {}
         for model in self.stats_models:
             try:
-                saved = load_saved_stats(self.model_paths[model], var_name, level_value)
+                saved = load_saved_stats(self.model_paths[model], var_name, level_value,
+                                             self.STATS_SUBDIR, self.STATS_VERSION)
             except Exception:
                 saved = None    # unreadable or half-written: treat as missing
             if saved is not None:
@@ -424,7 +443,7 @@ class ForecastStatsPanel(param.Parameterized):
     def _incomplete_models(self):
         """Models whose saved stats are missing or have failed lead times."""
         return [m for m in self.stats_models
-                if m not in self.saved or self.saved[m][0]["rmse"].isna().any()]
+                if m not in self.saved or self.saved[m][0][self.COLUMNS[0]].isna().any()]
 
     def _update_button(self):
         self.compute_button.disabled = not self.stats_models
@@ -435,11 +454,10 @@ class ForecastStatsPanel(param.Parameterized):
         else:
             self.compute_button.name = "Recompute"
 
-    @staticmethod
-    def _failure_summaries(results):
+    def _failure_summaries(self, results):
         summaries = []
         for model, df in results.items():
-            failed = df[df["rmse"].isna()]
+            failed = df[df[self.COLUMNS[0]].isna()]
             if not failed.empty:
                 sample_errors = failed["error"].dropna().unique()
                 sample = sample_errors[0] if len(sample_errors) else "unknown error"
@@ -516,12 +534,13 @@ class ForecastStatsPanel(param.Parameterized):
             try:
                 for model in self.stats_models:
                     reuse = prior.get(model)
-                    if reuse is not None and reuse["rmse"].notna().all():
+                    if reuse is not None and reuse[self.COLUMNS[0]].notna().all():
                         results[model] = reuse      # already complete
                         continue
                     try:
                         df = compute_model_stats(self.model_paths[model], var_name,
-                                                 level_value, reuse=reuse)
+                                                 level_value, reuse=reuse,
+                                                 score=self.score, columns=self.COLUMNS)
                     except Exception as e:
                         errors[model] = str(e)
                         continue
@@ -529,7 +548,8 @@ class ForecastStatsPanel(param.Parameterized):
                     # Save each model as it finishes, so an interrupted
                     # run keeps what it got.
                     try:
-                        save_stats(self.model_paths[model], var_name, level_value, df)
+                        save_stats(self.model_paths[model], var_name, level_value, df,
+                                   self.STATS_SUBDIR, self.STATS_VERSION)
                     except OSError as e:
                         save_errors[model] = str(e)
             finally:
@@ -561,7 +581,8 @@ class ForecastStatsPanel(param.Parameterized):
                 self.saved = {}
                 for model in results:
                     try:
-                        saved = load_saved_stats(self.model_paths[model], var_name, level_value)
+                        saved = load_saved_stats(self.model_paths[model], var_name, level_value,
+                                             self.STATS_SUBDIR, self.STATS_VERSION)
                     except Exception:
                         saved = None
                     if saved is not None:
@@ -585,12 +606,17 @@ class ForecastStatsPanel(param.Parameterized):
 
         threading.Thread(target=_do_compute, daemon=True).start()
 
+    def _controls(self):
+        """Widgets shown beside the compute button."""
+        return []
+
     def panel(self):
         return pn.Column(
-            pn.pane.Markdown("### Forecast Verification Statistics"),
+            pn.pane.Markdown(f"### {self.TITLE}"),
             pn.Row(
                 self.compute_button,
                 self.spinner,
+                *self._controls(),
                 align="center",
             ),
             self.status,

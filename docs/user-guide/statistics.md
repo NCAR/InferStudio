@@ -4,6 +4,17 @@ The statistics panel scores loaded forecast output against a reference analysis
 and tabulates the result by lead time. It is the quantitative half of the
 comparison workflow that the plots handle qualitatively.
 
+It has two sub-tabs, each with its own **Compute Stats** button:
+
+- **Basic** — RMSE and CRPS, as plain averages over the grid.
+- **credit-verify** — WeatherBench2-style latitude-weighted RMSE and bias,
+  globally and by latitude band, computed with the scoring code from
+  [credit-verify](https://github.com/NCAR/credit-verify). See
+  [below](#credit-verify-weatherbench2).
+
+Both are saved with the suite, separately, so each sub-tab shows its own saved
+results as soon as you select a variable.
+
 ## The reference
 
 By default the reference is **GFS analysis** at the forecast's valid times. This
@@ -17,19 +28,20 @@ matched valid times. Mismatched grids are interpolated; mismatched valid times
 are dropped rather than nearest-neighboured, so a partial overlap yields a
 partial score table rather than a silently wrong one.
 
-## Metrics
+## Basic metrics
 
 ### RMSE
 
-Root-mean-square error, computed per lead time over the selected domain:
+Root-mean-square error, computed per lead time over the whole grid:
 
 $$
 \mathrm{RMSE}(\tau) = \sqrt{ \frac{\sum_i w_i \left( f_i(\tau) - a_i(\tau) \right)^2}{\sum_i w_i} }
 $$
 
-where $f$ is the forecast, $a$ the analysis, $\tau$ the lead time, and $w_i$ a
-latitude weight ($\cos\phi$) so that the dense polar grid points do not dominate
-a global average.
+where $f$ is the forecast, $a$ the analysis and $\tau$ the lead time. The Basic
+tab gives every grid point the same weight ($w_i = 1$), so on a regular
+latitude-longitude grid the closely spaced points near the poles count for more
+than their area. For an area-weighted score, use the credit-verify sub-tab.
 
 Available for deterministic and ensemble-mean output.
 
@@ -62,10 +74,31 @@ calibration diagnostic, not a skill score:
 Read it alongside CRPS. An underdispersive ensemble can still have a good CRPS,
 and reporting one without the other overstates the result.
 
-## Reading the table
+## credit-verify (WeatherBench2)
+
+The credit-verify sub-tab scores each lead time the way
+[WeatherBench2](https://sites.research.google/weatherbench/) does, using
+`deterministic.py` from credit-verify (copied into `third_party/credit_verify`):
+
+- **RMSE** — the squared error is averaged over longitude, then over latitude
+  with $w_i = \cos\phi_i$, so each point counts in proportion to its area.
+- **Bias** — the mean of forecast minus analysis, weighted the same way. Positive
+  means the forecast runs high.
+
+Each is computed for four regions, chosen with the selector beside the button:
+global, the tropics (20°S–20°N), and the northern (20–90°N) and southern
+(90–20°S) extratropics. All four are computed and saved together, so switching
+regions doesn't recompute.
+
+The reference is still GFS analysis, not ERA5 as in WeatherBench2 itself, so
+these scores aren't directly comparable with published WeatherBench2 results.
+Anomaly correlation (ACC) isn't offered yet: it needs an ERA5 climatology.
+
+## Reading the plots
 
 Scores are reported per lead time for the currently selected variable, so the
-sidebar controls determine what is being scored. Switching variables recomputes.
+sidebar controls determine what is being scored. Switching variables shows that
+variable's saved scores, if any; otherwise press **Compute Stats**.
 
 Comparing models fairly requires that all of them were run from the **same
 initialization time** to the **same lead time** — which is why the sidebar shares
