@@ -29,7 +29,9 @@ environment per model, each pinned independently.
 ├── aifs/         bin/python
 ├── aurora/       bin/python
 ├── sfno/         bin/python
-└── fcn3/         bin/python
+├── fcn3/         bin/python
+├── camulator/    bin/python
+└── dlesym/       bin/python
 ```
 
 The application's `MODEL_ENV_MAP` maps each model name to the corresponding
@@ -105,6 +107,28 @@ uv pip install flash_attn --no-build-isolation
 ```
 
 Expect a long compile. Build it on a compute node, not a login node.
+
+### DLESyM
+
+Earth2Studio at the commit CAMulator's environment uses (`159298b`), with the
+revisions Earth2Studio's `pyproject.toml` pins. The pinned `physicsnemo` needs
+PyTorch 2.10; the cu126 build stays within the driver's 12.7 ceiling.
+`earth2grid` compiles against the installed PyTorch, so it goes in before
+Earth2Studio, without build isolation:
+
+```bash
+export UV_CACHE_DIR=/glade/derecho/scratch/$USER/uv-cache   # not $HOME: it gets big
+module load cuda/12.9.0
+uv venv --python 3.12 dlesym && source dlesym/bin/activate
+uv pip install --index-url https://download.pytorch.org/whl/cu126 torch==2.10.0
+uv pip install setuptools wheel ninja numpy
+uv pip install --no-build-isolation \
+    "earth2grid @ git+https://github.com/NVlabs/earth2grid.git@11dcf1b0787a7eb6a8497a3a5a5e1fdcc31232d3"
+uv pip install -c <(echo torch==2.10.0) setuptools wheel ninja packaging \
+    "earth2studio @ git+https://github.com/NVIDIA/earth2studio.git@159298b00fc30e17272a1e4f57665316a7d03739" \
+    "nvidia-physicsnemo @ git+https://github.com/NVIDIA/physicsnemo.git@426f7552da4b4fa675e404e8a4f437e27681b668" \
+    "omegaconf>=2.3.0" "hydra-core>=1.3.2"
+```
 
 ## Validating an environment
 

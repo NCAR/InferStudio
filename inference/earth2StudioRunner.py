@@ -16,6 +16,7 @@ def step_hours(timestep):
 MODEL_ENV_MAP = {
     'AIFS':         f"/glade/work/pearse/E2S/envs/aifs/bin/python",
     'CAMulator':    f"/glade/work/pearse/E2S/envs/camulator/bin/python",
+    'DLESyMv0_ISCCP_ERA5': f"/glade/work/pearse/E2S/envs/dlesym/bin/python",
     'Aurora':       f"/glade/work/pearse/E2S/envs/aurora/bin/python",
     'FourCastNet3': f"/glade/work/pearse/E2S/envs/fcn3/bin/python",
     'GraphCast':    f"/glade/work/pearse/E2S/envs/graphcast/bin/python",
@@ -26,6 +27,9 @@ MODEL_ENV_MAP = {
 MODEL_MAP = {
     'AIFS':         'earth2studio.models.px.AIFS',
     'CAMulator':    'earth2studio.models.px.CAMulator',
+    # The lat/lon wrapper takes ERA5 on its 0.25 degree grid and regrids
+    # to and from the model's HEALPix grid itself.
+    'DLESyMv0_ISCCP_ERA5': 'earth2studio.models.px.DLESyMv0_ISCCP_ERA5LatLon',
     'Aurora':       'earth2studio.models.px.Aurora',
     'FourCastNet3': 'earth2studio.models.px.FCN3',      # was FourCastNetv2Small — wrong model entirely
     'GraphCast':    'earth2studio.models.px.GraphCastSmall',
@@ -49,6 +53,9 @@ MODEL_DATA_SOURCE = {
     'CAMulator': [
         (datetime.min,         'CAMulatorInitialConditions'),
     ],
+    'DLESyMv0_ISCCP_ERA5': [
+        (datetime.min,         'ARCO'),
+    ],
 }
 
 # Sources that live in this directory rather than in earth2studio.data,
@@ -68,6 +75,48 @@ CAMULATOR_START_TIMES = frozenset(
 # CAMulatorForcing's transient record covers 1980-2014. A step reads the
 # forcing at its input time, so a run can end 6 hours after the last record.
 CAMULATOR_TRANSIENT_END = datetime(2015, 1, 1)
+
+# DLESyM starts from ERA5, reaching back 48 hours, so from 3 January 1940.
+# The Climate tab offers the 1st of each month through 2022.
+DLESYM_FIRST_START = datetime(1940, 1, 3)
+DLESYM_LAST_START = datetime(2022, 12, 1)
+
+
+def climate_start_times(model):
+    """The start times (00Z on the 1st of a month) the Climate tab offers
+    for a model."""
+    if model == 'CAMulator':
+        return CAMULATOR_START_TIMES
+    return frozenset(
+        datetime(y, m, 1)
+        for y in range(DLESYM_FIRST_START.year, DLESYM_LAST_START.year + 1)
+        for m in range(1, 13)
+        if DLESYM_FIRST_START <= datetime(y, m, 1) <= DLESYM_LAST_START)
+
+
+def run_end_limit(model, forcing_mode=None):
+    """The latest a run of the model may end, or None."""
+    if model == 'CAMulator' and forcing_mode == 'transient':
+        return CAMULATOR_TRANSIENT_END
+    return None
+
+
+# Models whose output is on a 0.25 degree grid interpolated from a native
+# HEALPix grid of about 1 degree. They're saved every 4th point, on a
+# 1 degree grid, which keeps all they resolve at 1/16th the size.
+ONE_DEGREE_OUTPUT = {'DLESyMv0_ISCCP_ERA5'}
+
+# Everything a climate model can write. A variable the Climate tab offers
+# that its model doesn't have is left out, with a warning.
+MODEL_OUTPUT_VARS = {
+    'CAMulator': frozenset(
+        [f'{v}{k}k' for v in ('u', 'v', 't', 'qtot') for k in range(32)]
+        + ['sp', 't2m', 'tp06', 'skt', 'hcc', 'lcc', 'mcc', 'iews', 'inss',
+           'ws10m', 'e06', 'msdwswrf', 'msdwlwrf', 'msuwswrf', 'msuwlwrf',
+           'msshf', 'mslhf', 'mtuwswrf', 'mtuwlwrf']),
+    'DLESyMv0_ISCCP_ERA5': frozenset(
+        ['z500', 'z1000', 'z250', 't2m', 'tcwv', 't850', 'ws10m', 'rlut', 'sst']),
+}
 
 # ECMWF publishes IFS open data on three mirrors that throttle independently
 # (AWS answered "503 Slow Down" until the fetch timed out, while Azure served
@@ -148,6 +197,11 @@ MODEL_VAR_MAP = {
         'SP':   ['sp'],
         't2m':  ['t2m'],
     },
+    # DLESyM has no 3D fields or surface pressure; its OLR is rlut.
+    'DLESyMv0_ISCCP_ERA5': {
+        'U': [], 'V': [], 'T': [], 'Q': [], 'SP': [],
+        'mtuwlwrf': ['rlut'],
+    },
     # GFS (fetched, not run - see forecastSourceRunner) has every field
     # the AI models write, so SP gives both sp and msl, to compare with
     # the models that have either.
@@ -205,6 +259,20 @@ class Earth2StudioRunner(ModelRunner):
                 return ("Error: CAMulator's transient forcing ends at "
                         f"{CAMULATOR_TRANSIENT_END:%Y-%m-%d %H}Z; this run ends "
                         f"{end:%Y-%m-%d %H}Z. Shorten it or use cyclic forcing.")
+        elif config["model"] == 'DLESyMv0_ISCCP_ERA5':
+            start = config["start_time"]
+            if isinstance(start, str):
+                start = datetime.fromisoformat(start)
+            if start not in climate_start_times(config["model"]):
+                return ("Error: DLESyM starts at 00Z on the 1st of a month, from "
+                        f"{min(climate_start_times(config['model'])):%Y-%m} to "
+                        f"{DLESYM_LAST_START:%Y-%m}; got {start:%Y-%m-%d %H}Z.")
+        if config["model"] in MODEL_OUTPUT_VARS:
+            model = config["model"]
+            chosen = self._translateVars(config["ua_vars"] + config["surface_vars"], model)
+            if not [v for v in chosen if v in MODEL_OUTPUT_VARS[model]]:
+                return (f"Error: {model} writes none of the selected variables. "
+                        "See its button's tooltip for what it has.")
 #        if not selected:
 #            return "Error: No recognized Earth2Studio model selected."
 #        if len(selected) > 1:
@@ -232,6 +300,14 @@ class Earth2StudioRunner(ModelRunner):
         ua_vars    = self._translateVars(config["ua_vars"], model_name)
         sfc_vars   = self._translateVars(config["surface_vars"], model_name)
         all_vars = list(dict.fromkeys(ua_vars + sfc_vars))
+        # Selected variables the model doesn't write, reported in its log.
+        missing = [label for label in config["ua_vars"] + config["surface_vars"]
+                   if not self._translateVars([label], model_name)]
+        if model_name in MODEL_OUTPUT_VARS:
+            missing += [v for v in all_vars if v not in MODEL_OUTPUT_VARS[model_name]]
+            all_vars = [v for v in all_vars if v in MODEL_OUTPUT_VARS[model_name]]
+        missing_warning = (f"print('WARNING: {model_name} has no {', '.join(missing)}; "
+                           "not saved.', flush=True)" if missing else "")
 
         # Compute number of steps from start/end/timestep
         hours = step_hours(timestep)
@@ -289,6 +365,22 @@ class Earth2StudioRunner(ModelRunner):
             forcing_import = model_kwargs = ""
         script_path = os.path.join(config["output_dir"], f"{file_stem}_run.py")
 
+        output_coords = f'OrderedDict(variable=np.array({all_vars!r}))'
+        if model_name in ONE_DEGREE_OUTPUT:
+            output_coords = (f'OrderedDict(variable=np.array({all_vars!r}), '
+                             'lat=np.linspace(90, -90, 181), lon=np.arange(360.0))')
+
+        if model_name == 'DLESyMv0_ISCCP_ERA5':
+            run_block = self._dlesym_run_block(start, n_steps, hours, output_coords)
+        else:
+            run_block = f"""deterministic(
+    time=[datetime.fromisoformat("{start.isoformat()}")],
+    nsteps={n_steps},
+    prognostic=model,
+    data=data,
+    io=io,
+    output_coords={output_coords},
+)"""
 
         script = f"""
 # Direct tqdm logging to stdout so messages get forwarded to the Output Log
@@ -303,6 +395,7 @@ import logging
 import torch
 import importlib
 import numpy as np
+from collections import OrderedDict
 from datetime import datetime
 from earth2studio.io import NetCDF4Backend
 from earth2studio.run import deterministic
@@ -356,17 +449,9 @@ class MirroredSource:
 print("Setting up data source: {data_source}...", flush=True)
 {data_source_setup}
 
+{missing_warning}
 print(f"Running inference: {n_steps} steps from {start.isoformat()}...", flush=True)
-deterministic(
-    time=[datetime.fromisoformat("{start.isoformat()}")],
-    nsteps={n_steps},
-    prognostic=model,
-    data=data,
-    io=io,
-    output_coords={{
-        "variable": np.array({all_vars}),
-    }},
-)
+{run_block}
 print("Output written to {output_nc}", flush=True)
 
 print("Converting to CF-compliant format...", flush=True)
@@ -385,6 +470,56 @@ except Exception as e:
         #return f"python {script_path}"
         #return f"{EARTH2STUDIO_PYTHON} {script_path}"
         return f"{python_bin} {script_path}"
+
+    def _dlesym_run_block(self, start, n_steps, hours, output_coords):
+        """The rollout for DLESyM, which earth2studio's deterministic() can't
+        run: each step is 4 days of 6-hourly atmosphere from 2 days of
+        history, with the ocean's SST only valid every 48 hours. SST is
+        held at its last valid value in between, so every saved lead time
+        has all its variables."""
+        return f"""from earth2studio.data.utils import fetch_data
+from earth2studio.utils.coords import map_coords, split_coords
+
+out_coords = {output_coords}
+step = np.timedelta64({hours}, "h")
+last_lead = {n_steps} * step
+t0 = np.array([np.datetime64("{start.isoformat()}")])
+ic = model.input_coords()
+x, coords = fetch_data(source=data, time=t0, variable=ic["variable"],
+                       lead_time=ic["lead_time"], device=device)
+print("Fetched the initial state", flush=True)
+io.add_array(OrderedDict(time=t0, lead_time=np.arange({n_steps} + 1) * step,
+                         lat=out_coords["lat"], lon=out_coords["lon"]),
+             out_coords["variable"])
+
+ocean_step = model.ocean_output_times[0]
+lead_dim = list(coords).index("lead_time")
+sst = None
+
+def save(x, coords):
+    \"\"\"Write the lead times from 0 to the run's end, SST filled in.\"\"\"
+    global sst
+    leads = coords["lead_time"].astype("timedelta64[h]")
+    s = list(coords["variable"]).index("sst")
+    for j, lead in enumerate(leads):
+        if lead % ocean_step == np.timedelta64(0, "h"):
+            sst = x[:, j, s].clone()
+        else:
+            x[:, j, s] = sst
+    keep = np.flatnonzero((leads >= np.timedelta64(0, "h")) & (leads <= last_lead))
+    x = x.index_select(lead_dim, torch.as_tensor(keep, device=x.device))
+    coords = coords.copy()
+    coords["lead_time"] = coords["lead_time"][keep]
+    x, coords = map_coords(x, coords, out_coords)
+    io.write(*split_coords(x, coords))
+    return leads[keep][-1]
+
+iterator = model.create_iterator(x, coords)
+save(*next(iterator))           # the initial state
+n_chunks = -(-last_lead // model.atmos_output_times[-1])
+for i in range(n_chunks):
+    lead = save(*next(iterator))
+    print(f"Step {{i + 1}}/{{n_chunks}}: saved through {{lead.astype(int)}} h", flush=True)"""
 
     def _dataSource(self, model_name, start):
         source = DEFAULT_DATA_SOURCE

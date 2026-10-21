@@ -30,9 +30,10 @@ from inference.pbsJob import (SYSTEMS, CPU_ONLY_SYSTEM, LogTail, ModelRun, PBSJo
 # MilesCreditGen2Runner).
 MILES_CREDIT_MODEL_LIST = ['WXFormer', 'WXFormerGen2']
 MILES_CREDIT_MODELS = frozenset(MILES_CREDIT_MODEL_LIST)
-EARTH2STUDIO_MODEL_LIST = ['AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'CAMulator']
+EARTH2STUDIO_MODEL_LIST = ['AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'CAMulator',
+                           'DLESyMv0_ISCCP_ERA5']
 EARTH2STUDIO_MODELS = frozenset(EARTH2STUDIO_MODEL_LIST)
-CLIMATE_MODEL_LIST = ['CAMulator']
+CLIMATE_MODEL_LIST = ['CAMulator', 'DLESyMv0_ISCCP_ERA5']
 WEATHER_MODEL_LIST = [m for m in MILES_CREDIT_MODEL_LIST + EARTH2STUDIO_MODEL_LIST
                       if m not in CLIMATE_MODEL_LIST]
 #EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'GraphCast', 'SFNO'}
@@ -61,6 +62,7 @@ if (el._stick) {
 MODEL_LABELS = {
     'WXFormer': 'WXFormer (gen 1)',
     'WXFormerGen2': 'WXFormer (gen 2)',
+    'DLESyMv0_ISCCP_ERA5': 'DLESyM v0',
 }
 
 # Short, hover-friendly descriptions shown as a tooltip on each model button.
@@ -103,6 +105,14 @@ MODEL_DESCRIPTIONS = {
         "run through Earth2Studio (PyTorch). Output is on its 32 model "
         "levels, 1 at the model top; Q is total water. Starts only "
         "from its shipped CAM states: 00Z on 1 January or 1 July, 1980-2014."
+    ),
+    'DLESyMv0_ISCCP_ERA5': (
+        "University of Washington's DLESyM (ISCCP-ERA5 checkpoints), a "
+        "coupled atmosphere-ocean model on a ~1 degree HEALPix grid built "
+        "for century-long runs, run through Earth2Studio (PyTorch + "
+        "physicsnemo). Starts from ERA5, any month 1940-2022. Has no 3D "
+        "fields or surface pressure: saves t2m, 10 m wind speed, OLR (rlut), "
+        "Z500, T850, TCWV and SST (updated every 48 hours, held in between)."
     ),
 }
 
@@ -940,9 +950,11 @@ class WeatherTab(ModelTab):
     DEFAULT_MODELS = ['AIFS', 'Aurora']
 
 
-# CAMulator diagnostics offered on the Climate tab, button label -> output
-# name. Names ending in digits (tp06, e06) would be read as pressure levels
-# by the Visualization tab, so they aren't offered yet.
+# Diagnostics offered on the Climate tab, button label -> output name, which
+# earth2StudioRunner's MODEL_VAR_MAP translates for models that call it
+# something else; a model without one leaves it out. Names ending in digits
+# are read as pressure levels by the Visualization tab, which suits Z500 and
+# T850 but not tp06 or e06, so those aren't offered yet.
 CLIMATE_SURFACE_VARS = {
     'SP': 'SP',
     't2m': 't2m',
@@ -952,6 +964,10 @@ CLIMATE_SURFACE_VARS = {
     'High Cloud': 'hcc',
     'Mid Cloud': 'mcc',
     'Low Cloud': 'lcc',
+    'Z500': 'z500',
+    'T850': 't850',
+    'TCWV': 'tcwv',
+    'SST': 'sst',
 }
 
 
@@ -966,8 +982,13 @@ class ClimateTab(ModelTab):
             surface_default=['SP', 't2m'],
         )
 
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.modelPicker.param.watch(
+            lambda e: self.timePicker.set_models(e.new), 'value')
+
     def _make_time_picker(self):
-        return ClimateTimePicker()
+        return ClimateTimePicker(models=self.modelPicker.value)
 
     def _build_config(self, model: str) -> dict:
         config = super()._build_config(model)
@@ -977,7 +998,7 @@ class ClimateTab(ModelTab):
 
 class InferenceTab(param.Parameterized):
     """The Inference tab: a Weather sub-tab for the weather models, and a
-    Climate sub-tab for climate models such as CAMulator.
+    Climate sub-tab for the climate models (CAMulator, DLESyM).
 
     outputDirectory is set whenever either sub-tab finishes a run, so the
     app can load the new suite into the Visualization tab."""

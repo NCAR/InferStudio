@@ -132,6 +132,9 @@ RUN_TIME = {
     'GFS':          (60, 5, 6),     # a download, ~2 s per lead time measured
     'FourCastNet3': (180, 8, 6),
     'CAMulator':    (180, 1, 6),
+    # A guess: about CAMulator's speed, but it fetches 2 days of ERA5 at
+    # 0.25 degrees to start.
+    'DLESyMv0_ISCCP_ERA5': (900, 1, 6),
     'WXFormer':     (600, 6, 1),
     'WXFormerGen2': (600, 6, 1),
 }

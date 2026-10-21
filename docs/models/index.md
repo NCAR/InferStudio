@@ -50,6 +50,36 @@ everything Earth2Studio supports upstream. Availability of a new upstream model
 is a matter of building its environment — see {doc}`adding-a-model`.
 :::
 
+## Climate models
+
+The Inference tab's **Climate** sub-tab runs climate emulators for months to
+years, 6-hourly, from 00Z on the 1st of a month. Its start-date picker only
+offers months that every selected model can start from.
+
+:::{list-table}
+:header-rows: 1
+:widths: 18 30 52
+
+* - Model
+  - Starts from
+  - Notes
+* - **CAMulator**
+  - CAM states shipped with it: 1 January or 1 July, 1980-2014
+  - NSF NCAR's CAM6 emulator, 1 degree, 32 model levels. Cyclic or transient
+    (1980-2014) forcing.
+* - **DLESyM v0** (`DLESyMv0_ISCCP_ERA5`)
+  - ERA5 (ARCO), any month from February 1940 to December 2022
+  - University of Washington's coupled atmosphere-ocean model on a HEALPix
+    grid of about 1 degree. No 3D fields or surface pressure. Each step is 4
+    days, so it runs through earth2studio's iterator rather than
+    `deterministic()`; the ocean's SST is valid every 48 hours and is held at
+    its last value in between. Its 0.25 degree output is interpolated from
+    the HEALPix grid, so it's saved every 4th point, on a 1 degree grid.
+:::
+
+A variable the Climate tab offers that a model doesn't have is left out of its
+output, with a warning in its log.
+
 ## MILES-CREDIT models
 
 [MILES-CREDIT](https://github.com/NCAR/miles-credit) is NCAR's own AI

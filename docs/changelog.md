@@ -13,6 +13,11 @@ for deciding whether to upgrade.
 
 ### Added
 
+- DLESyM v0 (ISCCP-ERA5) on the Climate tab, beside CAMulator. The start date
+  is now a year and month that every selected model can start from; Z500,
+  T850, TCWV and SST can be saved; and a variable a model lacks is skipped
+  with a warning.
+
 - A spinner next to a tab's title while it's computing: Visualization while a
   dataset loads, a difference computes or a video exports; Statistics (and
   its Basic or credit-verify sub-tab) while stats compute; Inference (and its

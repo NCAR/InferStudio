@@ -68,6 +68,10 @@ UNVERIFIABLE_REASONS = {
         "an analysis of the real atmosphere, so its runs don't follow the "
         "observed weather, and they fall in 1980-2014, before GFS's archive."
     ),
+    "DLESyMv0_ISCCP_ERA5": (
+        "DLESyM is a climate model, run here for months to years from the 1st "
+        "of a month; verification against GFS isn't wired up for it."
+    ),
 }
 
 # Shown above the plots when one of these models is in the suite: their
