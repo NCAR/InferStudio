@@ -23,8 +23,9 @@ from inference.milesCreditRunner import MilesCreditRunner, MilesCreditGen2Runner
 from inference.earth2StudioRunner import Earth2StudioRunner
 from inference.forecastSourceRunner import (ForecastSourceRunner, PHYSICAL_MODEL_LIST,
                                             PHYSICAL_MODELS)
-from inference.pbsJob import (SYSTEMS, CPU_ONLY_SYSTEM, LogTail, ModelRun, PBSJob, estimate_walltime,
-                              format_duration, model_seconds, project_account)
+from inference.pbsJob import (SYSTEMS, CPU_ONLY_QUEUE, CPU_ONLY_SYSTEM, LogTail, ModelRun, PBSJob,
+                              default_gpu_count, estimate_walltime, format_duration,
+                              model_seconds, project_account)
 
 # WXFormer runs on MILES-CREDIT's gen1 pipeline, WXFormerGen2 on gen2 (see
 # MilesCreditGen2Runner).
@@ -187,6 +188,7 @@ class _Run:
     Each run has its own, so a cancelled run's thread winding down can't
     touch the next run's state."""
     system: str
+    queue: str
     gpu_type: str
     n_gpus: int
     job: PBSJob = None
@@ -238,22 +240,31 @@ class ModelTab(param.Parameterized):
             name="System", options=list(SYSTEMS), value='Derecho',
             button_type='primary', button_style='outline',
         )
-        # Unnamed: the Compute Settings layout labels these three itself, so
-        # the labels and the widgets each line up on one row.
+        # Unnamed: the Compute Settings layout labels these itself, so the
+        # labels and the widgets each line up on one row.
+        self.queuePicker = pn.widgets.RadioButtonGroup(
+            button_type='primary', button_style='outline',
+        )
+        self.queueColumn = pn.Column(
+            pn.pane.Markdown("Queue", margin=(0, 10, -5, 10)), self.queuePicker)
         self.gpuTypePicker = pn.widgets.Select(width=220)
         self.gpuCountPicker = pn.widgets.Select(width=80)
         self.walltimeLabel = pn.widgets.StaticText(name="Wall time (estimated)", value="")
+        self.nodeWarning = pn.pane.Alert("", alert_type="warning", visible=False,
+                                         sizing_mode='stretch_width')
         self._account = project_account()
         self.accountLabel = pn.widgets.StaticText(
             name="Project account",
             value=self._account or "unknown - start InferStudio from NCAR Open OnDemand",
         )
-        self.systemPicker.param.watch(self._update_gpu_options, 'value')
+        # Changing the models, the forecast or where it runs resets the GPU
+        # count to the default for them; the user can still change it after.
+        self.systemPicker.param.watch(self._update_queue_options, 'value')
+        self.queuePicker.param.watch(self._update_gpu_options, 'value')
         self.modelPicker.param.watch(self._update_gpu_options, 'value')
+        self.timePicker.param.watch(self._update_gpu_options, 'end_date')
         self.gpuCountPicker.param.watch(self._update_walltime, 'value')
-        self.modelPicker.param.watch(self._update_walltime, 'value')
-        self.timePicker.param.watch(self._update_walltime, 'end_date')
-        self._update_gpu_options()
+        self._update_queue_options()
 
         self.inferenceButton = pn.widgets.Button(
             name="Run Inference",
@@ -303,6 +314,16 @@ class ModelTab(param.Parameterized):
     #  Compute settings                                                    #
     # ------------------------------------------------------------------ #
 
+    def _update_queue_options(self, event=None):
+        """A system with one queue has no Queue picker."""
+        queues = list(SYSTEMS[self.systemPicker.value].queues)
+        self.queueColumn.visible = len(queues) > 1
+        keep = self.queuePicker.value in queues
+        self.queuePicker.options = queues
+        if not keep:
+            self.queuePicker.value = queues[0]
+        self._update_gpu_options()
+
     def _update_gpu_options(self, event=None):
         system = SYSTEMS[self.systemPicker.value]
         types = list(system.gpu_types)
@@ -312,13 +333,17 @@ class ModelTab(param.Parameterized):
         else:
             self.gpuTypePicker.options = types
         # More GPUs than models would sit idle: each GPU runs whole models.
-        most = max(1, min(system.max_gpus, len(self._gpu_models())))
-        count = min(self.gpuCountPicker.value or 1, most)
+        gpu_models = self._gpu_models()
+        most = max(1, min(system.max_gpus, len(gpu_models)))
+        cpu = [m for m in self.modelPicker.value if m in PHYSICAL_MODELS]
+        count = default_gpu_count(self._estimates(gpu_models), self.systemPicker.value,
+                                  self._queue_spec(), self._estimates(cpu))
         self.gpuCountPicker.options = list(range(1, most + 1))
-        self.gpuCountPicker.value = count
+        self.gpuCountPicker.value = min(count, most)
         # Physical models alone need no GPU (see pbsJob.CPU_ONLY_SYSTEM).
-        cpu_only = bool(self.modelPicker.value) and not self._gpu_models()
-        for w in (self.systemPicker, self.gpuTypePicker, self.gpuCountPicker):
+        cpu_only = bool(self.modelPicker.value) and not gpu_models
+        for w in (self.systemPicker, self.queuePicker, self.gpuTypePicker,
+                  self.gpuCountPicker):
             w.disabled = cpu_only
         self._update_walltime()
 
@@ -328,6 +353,18 @@ class ModelTab(param.Parameterized):
     def _system(self):
         """Where the job goes: a CPU-only job always goes to Casper."""
         return self.systemPicker.value if self._gpu_models() else CPU_ONLY_SYSTEM
+
+    def _queue(self):
+        """The queue's label in SYSTEMS[self._system()].queues."""
+        if not self._gpu_models():
+            return CPU_ONLY_QUEUE
+        queues = SYSTEMS[self._system()].queues
+        # The picker can briefly hold the last system's queue while it's
+        # being switched over.
+        return self.queuePicker.value if self.queuePicker.value in queues else next(iter(queues))
+
+    def _queue_spec(self):
+        return SYSTEMS[self._system()].queues[self._queue()]
 
     def _estimates(self, models):
         start, end = self.timePicker.start_time, self.timePicker.end_date
@@ -339,21 +376,46 @@ class ModelTab(param.Parameterized):
         """(seconds to request, whether the system's limit cut it short)."""
         cpu = [m for m in self.modelPicker.value if m in PHYSICAL_MODELS]
         return estimate_walltime(self._estimates(self._gpu_models()),
-                                 self.gpuCountPicker.value or 1, self._system(),
+                                 self.gpuCountPicker.value or 1, self._queue_spec(),
                                  self._estimates(cpu))
 
     def _update_walltime(self, event=None):
+        self._update_node_warning()
         if not self.modelPicker.value:
             self.walltimeLabel.value = "N/A"
             return
         seconds, capped = self._walltime()
         text = format_duration(seconds)
         if capped:
-            text += (f" ({self._system()}'s limit; this run may need "
-                     "longer - shorten it or use more GPUs)")
+            text += (f" ({self._system()} {self._queue()}'s limit; this run may "
+                     "need longer - shorten it, use more GPUs or another queue)")
         if not self._gpu_models():
             text += f" (downloads only: a CPU job on {CPU_ONLY_SYSTEM})"
         self.walltimeLabel.value = text
+
+    def _update_node_warning(self):
+        """Warn that a whole-node queue charges for GPUs the job won't use."""
+        system = SYSTEMS[self._system()]
+        if not (self._gpu_models() and self._queue_spec().whole_node):
+            self.nodeWarning.visible = False
+            return
+        total = system.max_gpus
+        n = self.gpuCountPicker.value or 1
+        queue = self._queue_spec().queue.split('@')[0]
+        text = (f"**Whole node:** {self._system()}'s {queue} queue gives each job "
+                f"a whole node of {total} GPUs and "
+                f"charges the project for all {total}, and the job waits until a "
+                "whole node is free.")
+        if n < total:
+            shared = [(label, q) for label, q in system.queues.items() if not q.whole_node]
+            text += (f" This job uses {n} of them, so {total - n} would sit idle "
+                     "but still be charged.")
+            if shared:
+                _, q = shared[0]
+                text += (f" The {q.queue.split('@')[0]} queue shares nodes and charges only for "
+                         f"the GPUs used, for jobs up to {q.max_hours} hours.")
+        self.nodeWarning.object = text
+        self.nodeWarning.visible = True
 
     # ------------------------------------------------------------------ #
     #  Runner helpers                                                      #
@@ -461,6 +523,7 @@ class ModelTab(param.Parameterized):
 
         run = self._run = _Run(
             system=self._system(),
+            queue=self._queue(),
             gpu_type=SYSTEMS[self.systemPicker.value].gpu_types[self.gpuTypePicker.value],
             n_gpus=self.gpuCountPicker.value or 1,
         )
@@ -683,12 +746,13 @@ class ModelTab(param.Parameterized):
             self._set_job_label("not submitted")
             return
 
-        job = PBSJob.create(self.outputParams.simulationNamePicker.value_input, run.system)
+        job = PBSJob.create(self.outputParams.simulationNamePicker.value_input, run.system,
+                            run.queue)
         # Fewer models than GPUs (can't happen from the picker, but a model
         # can fail setup above) means fewer GPUs.
         n_gpus = min(run.n_gpus, sum(r.gpu for r in runs))
         walltime, _ = estimate_walltime([(r.model, r.seconds) for r in runs if r.gpu], n_gpus,
-                                        run.system,
+                                        SYSTEMS[run.system].queues[run.queue],
                                         [(r.model, r.seconds) for r in runs if not r.gpu])
         script = job.write_script(runs, self._account, run.gpu_type, n_gpus,
                                   walltime, os.getcwd())
@@ -698,7 +762,7 @@ class ModelTab(param.Parameterized):
             tab=type(self).__name__.removesuffix("Tab").lower(),
             models=[r.model for r in runs],
             setup_failed=list(self._failed_models),
-            system=run.system, gpu_type=run.gpu_type if n_gpus else None, gpus=n_gpus,
+            system=run.system, queue=run.queue, gpu_type=run.gpu_type if n_gpus else None, gpus=n_gpus,
             walltime_s=walltime, start_time=start, end_time=end,
             timestep=config["timestep"],
             ua_vars=config["ua_vars"], surface_vars=config["surface_vars"],
@@ -896,6 +960,10 @@ class ModelTab(param.Parameterized):
     #  Layout                                                              #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _labelled(label, widget):
+        return pn.Column(pn.pane.Markdown(label, margin=(0, 10, -5, 10)), widget)
+
     def panel(self):
         compute = pn.WidgetBox(
             "### Compute Settings",
@@ -904,13 +972,14 @@ class ModelTab(param.Parameterized):
                 "soon as they finish.",
                 margin=(0, 10, 0, 10),
             ),
-            pn.Row(*(
-                pn.Column(pn.pane.Markdown(label, margin=(0, 10, -5, 10)), widget)
-                for label, widget in [("System", self.systemPicker),
-                                      ("GPU type", self.gpuTypePicker),
-                                      ("GPUs", self.gpuCountPicker)]
-            )),
+            pn.Row(
+                self._labelled("System", self.systemPicker),
+                self.queueColumn,
+                self._labelled("GPU type", self.gpuTypePicker),
+                self._labelled("GPUs", self.gpuCountPicker),
+            ),
             pn.Row(self.walltimeLabel, self.accountLabel),
+            self.nodeWarning,
             sizing_mode='stretch_width',
         )
         model = pn.WidgetBox(
