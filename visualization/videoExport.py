@@ -15,8 +15,10 @@ container frame rate. ffmpeg reads the PNG sequence at the user's rate
 still yields a smooth 30 fps file rather than a 2 fps one that some players
 stutter on.
 
-The finished MP4 is saved in the simulation suite's own directory and then
-handed to the browser as a download.
+The finished MP4 is saved in the simulation suite's own directory when the
+user owns it, otherwise in the user's scratch directory (so exports of a
+shared suite such as ExampleDataset don't land in someone else's space),
+and then handed to the browser as a download.
 """
 
 from __future__ import annotations
@@ -76,6 +78,19 @@ _RENDER_LOCK = threading.Lock()
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+
+def _output_dir(suite_dir: Path) -> Path:
+    """Where to save the MP4: the suite's own directory if the user owns
+    it, otherwise their scratch directory. Shared suites (ExampleDataset,
+    or one loaded from a colleague's space) would otherwise collect every
+    user's exports in the owner's directory."""
+    try:
+        if suite_dir.stat().st_uid == os.getuid():
+            return suite_dir
+    except OSError:
+        pass
+    return Path(f"/glade/derecho/scratch/{os.environ['USER']}")
+
 
 def _ffmpeg_exe() -> str:
     """Locate a working ffmpeg.
@@ -345,7 +360,7 @@ class VideoExportPanel(param.Parameterized):
 
     def __init__(self, controls, active_plot_fn, suite_dir_fn, **params):
         """`suite_dir_fn` returns the directory of the suite on screen,
-        which is where the finished MP4 is saved."""
+        which is where the finished MP4 is saved if the user owns it."""
         super().__init__(**params)
         self.controls = controls
         self._active_plot_fn = active_plot_fn
@@ -588,10 +603,11 @@ class VideoExportPanel(param.Parameterized):
         if suite_dir is None:
             self._status.object = "**Nothing to export** \u2014 no suite selected."
             return
-        if not os.access(suite_dir, os.W_OK):
+        out_dir = _output_dir(Path(suite_dir))
+        if not os.access(out_dir, os.W_OK):
             self._status.object = (
                 f"**Can't save the video** \u2014 you don't have write "
-                f"permission in the suite's directory:\n\n`{suite_dir}`")
+                f"permission in:\n\n`{out_dir}`")
             return
 
         # Snapshot the controls now. The user is free to keep scrubbing the
@@ -607,6 +623,7 @@ class VideoExportPanel(param.Parameterized):
             fps=self.frames_per_second,
             resolution=RESOLUTIONS[self.resolution],
             suite_dir=Path(suite_dir),
+            out_dir=out_dir,
         )
 
         self._cancel.clear()
@@ -665,7 +682,7 @@ class VideoExportPanel(param.Parameterized):
 
             # --- pass 2: render frames ---------------------------------------
             stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-            out_path = snap["suite_dir"] / f"inferstudio_{var}_{stamp}.mp4"
+            out_path = snap["out_dir"] / f"inferstudio_{var}_{stamp}.mp4"
             level_txt = (f" @ {level_text(level, snap['level_dim'])}"
                          if level else "")
 
