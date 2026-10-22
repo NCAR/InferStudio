@@ -184,7 +184,8 @@ _STATE_NAMES = {'Q': 'queued', 'H': 'held', 'W': 'waiting'}
 @dataclass
 class _Run:
     """One press of Run Inference: the GPUs asked for, the PBS job once it's
-    submitted, and when it was submitted, started and ended (Unix seconds).
+    submitted, and when it was submitted, started and ended (Unix seconds),
+    along with each model's own state and start/end times.
     Each run has its own, so a cancelled run's thread winding down can't
     touch the next run's state."""
     system: str
@@ -197,6 +198,19 @@ class _Run:
     ended_at: float = None
     tick: object = None
     cancel: threading.Event = field(default_factory=threading.Event)
+    model_states: dict = field(default_factory=dict)
+    model_started: dict = field(default_factory=dict)
+    model_ended: dict = field(default_factory=dict)
+
+    def model_seconds(self, model, now=None):
+        """How long `model` has run (or ran), or None if it hasn't started.
+        A model cut off by a cancel or the job ending stops at the job's
+        end."""
+        start = self.model_started.get(model)
+        if start is None:
+            return None
+        end = self.model_ended.get(model) or self.ended_at or now or time.time()
+        return max(0.0, end - start)
 
 
 class ModelTab(param.Parameterized):
@@ -286,7 +300,6 @@ class ModelTab(param.Parameterized):
 
         self.jobLabel = pn.widgets.StaticText(name="PBS job", value="N/A")
         self.queueLabel = pn.widgets.StaticText(name="Time in queue", value="N/A")
-        self.elapsedLabel = pn.widgets.StaticText(name="Elapsed", value="N/A")
         self.completionLabel = pn.widgets.StaticText(name="Completed at", value="N/A")
         self.completionPathLabel = pn.widgets.StaticText(name="", value="")
 
@@ -517,7 +530,6 @@ class ModelTab(param.Parameterized):
         self.cancelButton.disabled = False
         self.jobLabel.value = "Submitting..."
         self.queueLabel.value = ""
-        self.elapsedLabel.value = ""
         self.completionLabel.value = ""
         self.completionPathLabel.value = ""
 
@@ -529,19 +541,21 @@ class ModelTab(param.Parameterized):
         )
         self._doc = pn.state.curdoc
 
-        # Time in queue runs from submission to the job starting, Elapsed
-        # from then to the end, so a long wait for GPUs isn't mistaken for
-        # slow inference.
+        # Time in queue runs from submission to the job starting; after
+        # that each model shows its own run time under its status icon, so
+        # a long wait for GPUs isn't mistaken for slow inference, and one
+        # slow model isn't hidden in a total for all of them.
         def _tick_update():
             if run.submitted_at is None:
                 return
             now = time.time()
             queue_end = run.started_at or run.ended_at or now
             self.queueLabel.value = format_duration(queue_end - run.submitted_at)
-            if run.started_at is not None:
-                self.elapsedLabel.value = format_duration((run.ended_at or now) - run.started_at)
-            else:
-                self.elapsedLabel.value = "waiting for the job to start"
+            for model, state in list(run.model_states.items()):
+                if state == "running":
+                    pane = self._status_widgets.get(model)
+                    if pane is not None:
+                        pane.object = self._status_html(model, state, run.model_seconds(model, now))
 
         if self._periodic_cb is not None:
             self._periodic_cb.stop()
@@ -703,13 +717,17 @@ class ModelTab(param.Parameterized):
         self._ui(_do_append)
 
     def _set_status(self, model: str, state: str):
+        run = self._run
+        if run is not None:
+            run.model_states[model] = state
         def _update():
             spinner = self._spinners.get(model)
             if spinner is not None:
                 spinner.value = spinner.visible = state == "running"
             pane = self._status_widgets.get(model)
             if pane is not None:
-                pane.object = self._status_html(model, state)
+                seconds = run.model_seconds(model) if run is not None else None
+                pane.object = self._status_html(model, state, seconds)
             if state == "running" and model in self._log_widgets:
                 self.outputTabs.active = list(self._log_widgets).index(model)
         self._ui(_update)
@@ -810,6 +828,8 @@ class ModelTab(param.Parameterized):
             models=outcomes,
             queue_wait_s=round((run.started_at or run.ended_at) - run.submitted_at),
             run_s=round(run.ended_at - run.started_at) if run.started_at else None,
+            model_run_s={r.model: round(run.model_seconds(r.model))
+                         for r in runs if r.model in run.model_started},
             walltime_s=walltime,
         )
 
@@ -830,9 +850,12 @@ class ModelTab(param.Parameterized):
         def check(m):
             """Pass on the model's new output, and whether it has started
             or finished."""
-            if states[m] == "pending" and job.model_started_at(m) is not None:
-                states[m] = "running"
-                self._set_status(m, "running")
+            if states[m] == "pending":
+                started = job.model_started_at(m)
+                if started is not None:
+                    states[m] = "running"
+                    run.model_started[m] = started
+                    self._set_status(m, "running")
             if states[m] != "running":
                 return
             code = job.model_exit(m)
@@ -841,9 +864,12 @@ class ModelTab(param.Parameterized):
                 self._append_log(m, text)
             if code is not None:
                 states[m] = "done" if code == 0 else "error"
+                run.model_ended[m] = job.model_ended_at(m) or time.time()
+                took = format_duration(run.model_seconds(m))
                 if code != 0:
                     self._failed_models.append(m)
-                self._append_log(m, "\nDone.\n" if code == 0 else f"\nExited with code {code}\n")
+                self._append_log(m, f"\nDone in {took}.\n" if code == 0
+                                 else f"\nExited with code {code} after {took}.\n")
                 self._set_status(m, states[m])
 
         while not run.cancel.is_set():
@@ -932,13 +958,17 @@ class ModelTab(param.Parameterized):
         self.outputTabs.objects = []
         self.outputTabs.append(("Log", widget))
 
-    def _status_html(self, model: str, state: str) -> str:
+    def _status_html(self, model: str, state: str, seconds=None) -> str:
+        """A model's status icon, with how long it has run (or ran) once it
+        has started."""
         symbol = {"pending": "◷", "running": "⟳", "done": "✓", "error": "✗", "cancelled": "⊘"}[state]
         color  = {"pending": "#cccccc", "running": "#888888", "done": "#2ecc71", "error": "#e74c3c", "cancelled": "#999999"}[state]
+        took = format_duration(seconds) if seconds is not None else "&nbsp;"
         return (
             f'<div style="text-align:center;line-height:1.4">'
             f'<span style="font-size:11px;color:#555">{model}</span><br>'
-            f'<span style="font-size:20px;color:{color}">{symbol}</span>'
+            f'<span style="font-size:20px;color:{color}">{symbol}</span><br>'
+            f'<span style="font-size:12px;color:#555;font-variant-numeric:tabular-nums">{took}</span>'
             f'</div>'
         )
 
@@ -1002,7 +1032,7 @@ class ModelTab(param.Parameterized):
                     self.inferenceButton, self.cancelButton,
                     self.spinner, self.statusRow,
                 ),
-                pn.FlexBox(self.jobLabel, self.queueLabel, self.elapsedLabel,
+                pn.FlexBox(self.jobLabel, self.queueLabel,
                            self.completionLabel, flex_wrap='wrap'),
                 self.completionPathLabel,
                 self.outputTabs,

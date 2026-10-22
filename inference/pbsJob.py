@@ -290,6 +290,14 @@ class PBSJob:
         code = self._read_number(self.job_dir / f'{model}.exit')
         return None if code is None else int(code)
 
+    def model_ended_at(self, model):
+        """When the model finished: the .exit file is written the moment it
+        does, so its modification time is the end time."""
+        try:
+            return (self.job_dir / f'{model}.exit').stat().st_mtime
+        except OSError:
+            return None
+
     def pbs_output(self):
         try:
             return (self.job_dir / 'pbs.out').read_text(errors='replace')
