@@ -38,8 +38,9 @@ import panel as pn
 import param
 from PIL import Image, ImageDraw
 
+from cf_convert import variable_long_name
 from dimensions import level_text
-from visualization.earth2StudioPlot import plot_e2s_field
+from visualization.earth2StudioPlot import load_e2s_field, plot_e2s_field
 from usage_log import log_event, short_error
 
 DEFAULT_FRAMES_PER_SECOND = 2.0
@@ -65,9 +66,10 @@ DEFAULT_RESOLUTION = "1080p (1920×1080)"
 
 _PAD = 10
 _LABEL_H = 30
-_HEADER_H = 34
+_HEADER_H = 92
 _BG = (255, 255, 255)
 _INK = (20, 20, 20)
+_INK_SOFT = (70, 70, 70)
 
 # plot_e2s_field renders through matplotlib's pyplot state machine, which is
 # not thread safe. The export worker must not race the live session's own
@@ -146,7 +148,7 @@ def _ui(fn, *args, **kwargs):
 
 
 @lru_cache(maxsize=8)
-def _font(size):
+def _font(size, bold=False):
     """A real TrueType font at `size`, falling back to PIL's bitmap default.
 
     PIL's load_default() ignores size entirely, so labels would come out
@@ -156,7 +158,9 @@ def _font(size):
     from PIL import ImageFont
     try:
         from matplotlib import font_manager
-        return ImageFont.truetype(font_manager.findfont("DejaVu Sans"), size)
+        face = font_manager.FontProperties(
+            family="DejaVu Sans", weight="bold" if bold else "normal")
+        return ImageFont.truetype(font_manager.findfont(face), size)
     except Exception:
         return ImageFont.load_default()
 
@@ -258,11 +262,35 @@ class _Tile:
         return img
 
 
-def _compose(rows, header):
+def _header_lines(var, level, level_dim, units, meta, t, total):
+    """The two header lines above every frame: what the field is, then when.
+
+    Mirrors the Visualization tab's readout headline -- long name, level and
+    short name -- with the units added, since a video has no hover readout
+    or colorbar title to carry them.
+    """
+    long_name = variable_long_name(var) or var
+    where = f" at {level_text(level, level_dim)}" if level else ""
+    title = f"{long_name}{where} ({var})"
+    if units:
+        title += f"  [{units}]"
+
+    when = []
+    if meta is not None:
+        if meta.valid_time is not None:
+            when.append(f"Valid {meta.time_label()}")
+        if meta.lead_hours is not None:
+            when.append(f"Forecast +{meta.lead_hours:.0f}h")
+    when.append(f"Step {t + 1} of {total}")
+    return title, "   \u00b7   ".join(when)
+
+
+def _compose(rows, title, subtitle):
     """Tile rendered panels into one frame, mirroring the on-screen grid.
 
     `rows` is a list of rows, each a list of (label, PIL.Image) -- one row
-    per model, with its difference card alongside when active.
+    per model, with its difference card alongside when active. `title` and
+    `subtitle` are centred above the panels (see _header_lines).
     """
     row_dims = []
     for row in rows:
@@ -278,7 +306,10 @@ def _compose(rows, header):
 
     canvas = Image.new("RGB", (width, height), _BG)
     draw = ImageDraw.Draw(canvas)
-    draw.text((_PAD, 8), header, fill=_INK, font=_font(17))
+    draw.text((width // 2, 10), title, fill=_INK,
+              font=_font(30, bold=True), anchor="ma")
+    draw.text((width // 2, 52), subtitle, fill=_INK_SOFT,
+              font=_font(22), anchor="ma")
 
     y = _HEADER_H
     for row, (row_w, row_h) in zip(rows, row_dims):
@@ -393,6 +424,11 @@ class VideoExportPanel(param.Parameterized):
             value=0, max=100, sizing_mode="stretch_width", visible=False,
         )
         self._status = pn.pane.Markdown("", sizing_mode="stretch_width")
+        # Shown once the browser has been handed the MP4; the progress
+        # status alone was easy to miss.
+        self._done = pn.pane.Alert(
+            "", alert_type="success", sizing_mode="stretch_width",
+            visible=False)
         self._browser_download = BrowserDownload(
             mime="video/mp4", width=0, height=0, margin=0)
         self._export_btn = pn.widgets.Button(
@@ -419,6 +455,7 @@ class VideoExportPanel(param.Parameterized):
                 pn.Row(self._export_btn, self._cancel_btn),
                 self._progress,
                 self._status,
+                self._done,
                 self._browser_download,
                 width=460,
                 sizing_mode="stretch_width",
@@ -559,6 +596,8 @@ class VideoExportPanel(param.Parameterized):
             # run's progress rather than a fresh form.
             self._status.object = ""
             self._progress.visible = False
+            self._done.visible = False
+            self._reset_open_button()
             self._build_model_checks()
             self._refresh_summary()
         self.modal.open = True
@@ -633,6 +672,8 @@ class VideoExportPanel(param.Parameterized):
             check.disabled = True
         self._progress.value = 0
         self._progress.visible = True
+        self._done.visible = False
+        self._reset_open_button()
         self._status.object = "_Starting\u2026_"
         self._thread = threading.Thread(
             target=self._worker, args=(rows, snapshot),
@@ -683,8 +724,7 @@ class VideoExportPanel(param.Parameterized):
             # --- pass 2: render frames ---------------------------------------
             stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
             out_path = snap["out_dir"] / f"inferstudio_{var}_{stamp}.mp4"
-            level_txt = (f" @ {level_text(level, snap['level_dim'])}"
-                         if level else "")
+            units = None
 
             with tempfile.TemporaryDirectory(prefix="inferstudio_frames_") as tmp:
                 tmpdir = Path(tmp)
@@ -699,9 +739,20 @@ class VideoExportPanel(param.Parameterized):
                              for tile in row]
                             for row in tiles
                         ]
+                        # The first panel's valid time and units speak for
+                        # the frame, as the first panel's do on screen. The
+                        # dataset is already cached by the render above.
+                        try:
+                            da, meta = load_e2s_field(
+                                flat[0].model_dir, var, level, t)
+                            units = units or da.attrs.get("units")
+                        except Exception:
+                            meta = None
 
-                    header = f"{var}{level_txt}   \u2014   step {t + 1} of {total}"
-                    _compose(composed, header).save(tmpdir / f"frame_{t:05d}.png")
+                    title, subtitle = _header_lines(
+                        var, level, snap["level_dim"], units, meta, t, total)
+                    _compose(composed, title, subtitle).save(
+                        tmpdir / f"frame_{t:05d}.png")
 
                     _ui(setattr, self._progress, "value",
                         render_base + int(render_span * (t + 1) / total))
@@ -761,15 +812,12 @@ class VideoExportPanel(param.Parameterized):
             mb = out_path.stat().st_size / 1e6
             usage.update(outcome="done", mb=round(mb, 1))
             _ui(setattr, self._progress, "value", 100)
-            _ui(setattr, self._status, "object",
-                f"**Done** \u2014 {total} frames, {mb:.1f} MB. Saved in the "
-                f"suite's directory as:\n\n`{out_path}`\n\nYour browser "
-                "is downloading a copy.")
-            _ui(self._notify_saved, out_path)
+            _ui(setattr, self._status, "object", "")
             # filename first: the browser saves as soon as data arrives.
             data = base64.b64encode(out_path.read_bytes()).decode("ascii")
             _ui(setattr, self._browser_download, "filename", out_path.name)
             _ui(setattr, self._browser_download, "data", data)
+            _ui(self._show_downloaded, out_path, total, mb)
 
         except Exception as exc:
             usage.update(outcome="error", error=short_error(exc))
@@ -795,10 +843,27 @@ class VideoExportPanel(param.Parameterized):
         self._thread = None
         self._refresh_summary()
 
-    @staticmethod
-    def _notify_saved(out_path):
+    def _show_downloaded(self, out_path, frames, mb):
+        """Tell the user the video has been downloaded, in the dialog, as a
+        toast, and on the sidebar button -- the dialog may well have been
+        closed while the export ran."""
+        self._done.object = (
+            f"### \u2705 Video downloaded\n\n"
+            f"**{out_path.name}** ({frames} frames, {mb:.1f} MB) has been "
+            "sent to your browser \u2014 check your Downloads folder.\n\n"
+            f"A copy is also saved in `{out_path.parent}`."
+        )
+        self._done.visible = True
+        self.open_button.name = "\u2713 Video downloaded"
+        self.open_button.button_type = "success"
         if pn.state.notifications:
             pn.state.notifications.success(
-                f"Video saved as {out_path.name} in {out_path.parent}",
+                f"Video downloaded: {out_path.name} \u2014 check your "
+                f"browser's Downloads folder. A copy is also saved in "
+                f"{out_path.parent}.",
                 duration=0,
             )
+
+    def _reset_open_button(self):
+        self.open_button.name = "Download Video"
+        self.open_button.button_type = "primary"
