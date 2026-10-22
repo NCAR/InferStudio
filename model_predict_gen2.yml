@@ -18,7 +18,7 @@ data:
         prognostic:
           vars_3D: [U, V, T, Q]
           vars_2D: [SP, t2m, V500, U500, T500, Z500, Q500]
-          path: /glade/derecho/scratch/pearse/gfs_init5/gfs_init_%Y%m%d_%H%M.zarr
+          path: /glade/derecho/scratch/$USER/gfs_init5/gfs_init_%Y%m%d_%H%M.zarr
         dynamic_forcing:
           vars_2D: [tsi]
           path: /glade/campaign/cisl/vast/pearse/save_loc_dynamic_forcing/solar_irradiance_%Y-01-01_0000_*.nc
@@ -97,7 +97,7 @@ predict:
     start_hours: [0]
     duration: 1
     days: 10
-  realtime: {use_gfs_init: true, initial_condition_path: /glade/derecho/scratch/pearse/gfs_init5/}
+  realtime: {use_gfs_init: true, initial_condition_path: /glade/derecho/scratch/$USER/gfs_init5/}
   interp_pressure:
     pressure_levels: [500.0, 700.0, 850.0]
   ua_var_encoding:

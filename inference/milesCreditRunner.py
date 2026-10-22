@@ -14,7 +14,9 @@ class MilesCreditRunner(ModelRunner):
 
     def prepare(self, config) -> dict:
         with open('model_predict_casper.yml', 'r') as f:
-            content = f.read()
+            # The GFS initial conditions go under the user's own scratch
+            # ($USER in the config).
+            content = os.path.expandvars(f.read())
 
         content = content.replace(
             'forecast_start_time: "2025-07-02 00:00:00"',

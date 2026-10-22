@@ -13,6 +13,8 @@ around bugs in it as of miles-credit 2026.2.0 (also on upstream main as of
    and reads their result's "input", but the preblocks take a batch keyed
    data-type-first ({"input": {"ERA5": ...}}) and return the concatenated
    tensor as "x" ("No 'input' tensors found in batch.").
+5. It doesn't expand environment variables in the initial condition path,
+   which the config sets under the user's own scratch ($USER).
 3. After each step it feeds the prediction back in physical units, into an
    input the model expects normalized.
 4. It applies the tracer fixer's thresholds (e.g. Q >= 1e-8 kg/kg) to the
@@ -25,11 +27,14 @@ Takes rollout_realtime_gen2's own arguments:
         --init-time 2026-10-14T00 --steps 6 --save-dir /path/to/output
 """
 
+import os
+
 from credit.applications import rollout_realtime_gen2 as rr
 
 GCS_GFS = "gs://global-forecast-system/"
 
 _build_GFS_init = rr.build_GFS_init
+_run_gfs_init = rr.run_gfs_init
 _apply_preblocks = rr.apply_preblocks
 _update_x = rr.update_x
 _inject_tracer_inds = rr._inject_tracer_inds
@@ -43,6 +48,12 @@ def _build_GFS_init_from_gcs(*args, **kwargs):
     kwargs["gdas_base_path"] = GCS_GFS
     print(f"Reading the GFS analysis from {GCS_GFS}", flush=True)
     return _build_GFS_init(*args, **kwargs)
+
+
+def _run_gfs_init_expanded(conf, *args, **kwargs):
+    rt_conf = conf["predict"]["realtime"]
+    rt_conf["initial_condition_path"] = os.path.expandvars(rt_conf["initial_condition_path"])
+    return _run_gfs_init(conf, *args, **kwargs)
 
 
 def _sample_to_batch(sample):
@@ -80,6 +91,7 @@ def _inject_tracer_inds_normalized(conf):
 
 
 rr.build_GFS_init = _build_GFS_init_from_gcs
+rr.run_gfs_init = _run_gfs_init_expanded
 rr._sample_to_batch = _sample_to_batch
 rr.apply_preblocks = _apply_preblocks_as_input
 rr.update_x = _update_x_normalized

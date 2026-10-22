@@ -29,9 +29,15 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
-class System:
+class Queue:
     queue: str              # queue@server, so it works from either system
     max_hours: int          # the longest wall time the queue allows
+    whole_node: bool = False    # every job gets (and is charged for) a whole node
+
+
+@dataclass(frozen=True)
+class System:
+    queues: dict            # label -> Queue; the first is the default
     gpu_types: dict         # label -> PBS gpu_type
     max_gpus: int           # GPUs per node
     ncpus_per_gpu: int
@@ -43,10 +49,13 @@ class System:
 # that leaves room for its other jobs. The first GPU type listed is the
 # default; on Casper that's the A100 80GB, since AIFS runs out of memory
 # on 40-45 GB cards.
+#
+# Derecho's main queue gives each job whole nodes, however few GPUs it
+# asks for, and the job waits for a node with all 4 free. Its develop
+# queue shares nodes, but allows only 6 hours (NCAR's queue docs).
 SYSTEMS = {
     'Casper': System(
-        queue='casper@casper-pbs',
-        max_hours=24,
+        queues={'casper': Queue('casper@casper-pbs', max_hours=24)},
         gpu_types={
             'NVIDIA A100 (80 GB)': 'a100_80gb',
             'NVIDIA H100 (80 GB)': 'h100_80gb',
@@ -57,8 +66,10 @@ SYSTEMS = {
         mem_gb_per_gpu=100,
     ),
     'Derecho': System(
-        queue='main@desched1',
-        max_hours=12,
+        queues={
+            'develop (shared)': Queue('develop@desched1', max_hours=6),
+            'main (whole node)': Queue('main@desched1', max_hours=12, whole_node=True),
+        },
         gpu_types={
             'NVIDIA A100 (40 GB)': 'a100',
         },
@@ -167,18 +178,46 @@ def assign_lanes(estimates, n_gpus):
     return [lane for lane in lanes if lane]
 
 
-def estimate_walltime(estimates, n_gpus, system, cpu_estimates=()):
+def _longest_lane(estimates, n_gpus):
+    seconds = dict(estimates)
+    lanes = assign_lanes(estimates, max(1, n_gpus))
+    return max((sum(seconds[m] for m in lane) for lane in lanes), default=0)
+
+
+def estimate_walltime(estimates, n_gpus, queue, cpu_estimates=()):
     """Wall time to request, in seconds, and whether the queue's limit cut
     it short. cpu_estimates are runs that need no GPU; they share one lane
     running beside the GPU lanes."""
-    seconds = dict(estimates)
-    lanes = assign_lanes(estimates, max(1, n_gpus))
-    longest = max((sum(seconds[m] for m in lane) for lane in lanes), default=0)
-    longest = max(longest, sum(s for _, s in cpu_estimates))
+    longest = max(_longest_lane(estimates, n_gpus), sum(s for _, s in cpu_estimates))
     wall = (JOB_SETUP_SECONDS + longest) * SAFETY_FACTOR
     wall = max(MIN_WALLTIME, -(-wall // WALLTIME_STEP) * WALLTIME_STEP)
-    limit = SYSTEMS[system].max_hours * 3600
+    limit = queue.max_hours * 3600
     return int(min(wall, limit)), wall > limit
+
+
+# The default GPU count keeps each GPU busy at least this share of the
+# time its longest lane runs: past that, another GPU is mostly paid for
+# sitting idle.
+MIN_GPU_BUSY = 0.75
+
+
+def default_gpu_count(estimates, system, queue, cpu_estimates=()):
+    """GPUs to ask for unless the user picks otherwise.
+
+    On a whole-node queue the project pays for every GPU on the node, so
+    use as many as the models can. Elsewhere, the most GPUs that stay busy
+    (MIN_GPU_BUSY) - or, if that would hit the queue's wall-time limit,
+    the fewest that don't."""
+    most = max(1, min(SYSTEMS[system].max_gpus, len(estimates)))
+    if queue.whole_node:
+        return most
+    work = sum(s for _, s in estimates)
+    busy = [n for n in range(1, most + 1)
+            if work >= MIN_GPU_BUSY * n * _longest_lane(estimates, n)]
+    n = max(busy, default=1)
+    while n < most and estimate_walltime(estimates, n, queue, cpu_estimates)[1]:
+        n += 1
+    return n
 
 
 def format_duration(seconds):
@@ -209,6 +248,7 @@ class ModelRun:
 # System picker says: there it gets a few cores, where on Derecho it would
 # be charged for a whole 128-core node.
 CPU_ONLY_SYSTEM = 'Casper'
+CPU_ONLY_QUEUE = next(iter(SYSTEMS[CPU_ONLY_SYSTEM].queues))
 CPU_ONLY_SELECT = 'select=1:ncpus=2:mem=16GB'
 
 
@@ -226,16 +266,17 @@ class PBSJob:
 
     job_dir: Path
     system: str
+    queue: str              # a key of SYSTEMS[system].queues
     job_id: str = ''
     models: list = field(default_factory=list)
 
     @classmethod
-    def create(cls, name, system):
+    def create(cls, name, system, queue):
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         safe = re.sub(r'[^A-Za-z0-9_.-]', '_', name)[:80]
         job_dir = JOBS_DIR / f"{safe}_{stamp}"
         job_dir.mkdir(parents=True, exist_ok=True)
-        return cls(job_dir=job_dir, system=system)
+        return cls(job_dir=job_dir, system=system, queue=queue)
 
     # --- files the job writes --- #
 
@@ -298,7 +339,7 @@ class PBSJob:
             '#!/bin/bash -l',
             f'#PBS -N {job_name}',
             f'#PBS -A {account}',
-            f'#PBS -q {system.queue}',
+            f'#PBS -q {system.queues[self.queue].queue}',
             f'#PBS -l {select}',
             f'#PBS -l walltime={h:02d}:{rem // 60:02d}:00',
             '#PBS -j oe',
