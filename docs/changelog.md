@@ -13,6 +13,13 @@ for deciding whether to upgrade.
 
 ### Added
 
+- Video export layout: by default simulations are now arranged in whichever
+  grid fills the chosen resolution best (e.g. 2×2 rather than a tall single
+  column), instead of mirroring the screen's one per row; a Layout menu sets
+  1–4 per row by hand. The ▲/▼ arrows beside each simulation set its order in
+  the video, and a preview shows the frame — with any empty space in grey —
+  before exporting.
+
 - DLESyM v0 (ISCCP-ERA5) on the Climate tab, beside CAMulator. The start date
   is now a year and month that every selected model can start from; Z500,
   T850, TCWV and SST can be saved; and a variable a model lacks is skipped

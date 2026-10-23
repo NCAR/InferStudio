@@ -24,6 +24,7 @@ and then handed to the browser as a download.
 from __future__ import annotations
 
 import base64
+import io
 import os
 import shutil
 import subprocess
@@ -63,6 +64,26 @@ RESOLUTIONS = {
     RESOLUTION_SOURCE: None,
 }
 DEFAULT_RESOLUTION = "1080p (1920×1080)"
+
+# How many simulations sit side by side in the video. The screen stacks one
+# per row, which leaves most of a landscape video empty once there are two
+# or more; "best fit" picks whichever count fills the target frame most (see
+# _best_per_row). A simulation's difference card always stays beside it.
+LAYOUT_AUTO = "Best fit (auto)"
+LAYOUTS = {
+    LAYOUT_AUTO: None,
+    "1 simulation per row (as on screen)": 1,
+    "2 simulations per row": 2,
+    "3 simulations per row": 3,
+    "4 simulations per row": 4,
+}
+DEFAULT_LAYOUT = LAYOUT_AUTO
+# What "best fit" aims for when exporting at source resolution, which has no
+# target frame of its own: the shape most players and screens expect.
+_FALLBACK_ASPECT = (16, 9)
+
+_PREVIEW_W = 420
+_PREVIEW_BAND = (222, 222, 222)   # the part of the video left empty
 
 _PAD = 10
 _LABEL_H = 30
@@ -285,12 +306,21 @@ def _header_lines(var, level, level_dim, units, meta, t, total):
     return title, "   \u00b7   ".join(when)
 
 
-def _compose(rows, title, subtitle):
-    """Tile rendered panels into one frame, mirroring the on-screen grid.
+def _arrange(units, per_row):
+    """Regroup per-simulation units into frame rows of `per_row` units.
 
-    `rows` is a list of rows, each a list of (label, PIL.Image) -- one row
-    per model, with its difference card alongside when active. `title` and
-    `subtitle` are centred above the panels (see _header_lines).
+    A unit is one simulation's cards -- its field, plus its difference card
+    when active -- so the two are never split across rows.
+    """
+    return [[card for unit in units[i:i + per_row] for card in unit]
+            for i in range(0, len(units), per_row)]
+
+
+def _layout_dims(rows):
+    """(row_dims, width, height) of the frame _compose would build.
+
+    Needs only each image's size, so a layout can be sized before anything
+    is drawn.
     """
     row_dims = []
     for row in rows:
@@ -303,6 +333,41 @@ def _compose(rows, title, subtitle):
     # libx264 with yuv420p chroma subsampling requires even dimensions.
     width += width % 2
     height += height % 2
+    return row_dims, width, height
+
+
+def _fit_scale(rows, target):
+    """How much a frame laid out as `rows` is scaled to fit `target`."""
+    tw, th = target or _FALLBACK_ASPECT
+    _, w, h = _layout_dims(rows)
+    return min(tw / w, th / h)
+
+
+def _best_per_row(units, target):
+    """The simulations-per-row count that shows the panels largest in
+    `target` -- i.e. leaves the least of the video empty. Ties go to fewer
+    per row, the closer match to the screen."""
+    best, best_scale = 1, 0.0
+    for n in range(1, len(units) + 1):
+        scale = _fit_scale(_arrange(units, n), target)
+        if scale > best_scale * (1 + 1e-6):
+            best, best_scale = n, scale
+    return best
+
+
+def _resolve_per_row(layout, units, target):
+    n = LAYOUTS.get(layout)
+    return min(n, len(units)) if n else _best_per_row(units, target)
+
+
+def _compose(rows, title, subtitle):
+    """Tile rendered panels into one frame.
+
+    `rows` is a list of rows, each a list of (label, PIL.Image) -- see
+    _arrange. Rows are centred, so a short last row sits in the middle.
+    `title` and `subtitle` are centred above the panels (see _header_lines).
+    """
+    row_dims, width, height = _layout_dims(rows)
 
     canvas = Image.new("RGB", (width, height), _BG)
     draw = ImageDraw.Draw(canvas)
@@ -321,6 +386,31 @@ def _compose(rows, title, subtitle):
             x += im.width + _PAD
         y += row_h
     return canvas
+
+
+def _preview(frame, target):
+    """A small picture of the finished video frame, and the share of it
+    the panels fill.
+
+    The letterbox bands are drawn grey rather than the video's white, so
+    the empty space a layout leaves is plain to see.
+    """
+    fw, fh = frame.size
+    if target is None:
+        # Source resolution: the video is exactly the frame, no bands.
+        tw, th, scale = fw, fh, 1.0
+    else:
+        tw, th = target
+        scale = min(tw / fw, th / fh)
+    k = _PREVIEW_W / tw
+    canvas = Image.new("RGB", (_PREVIEW_W, max(1, round(th * k))), _PREVIEW_BAND)
+    cw, ch = max(1, round(fw * scale * k)), max(1, round(fh * scale * k))
+    canvas.paste(frame.resize((cw, ch), Image.LANCZOS),
+                 ((canvas.width - cw) // 2, (canvas.height - ch) // 2))
+    ImageDraw.Draw(canvas).rectangle(
+        (0, 0, canvas.width - 1, canvas.height - 1), outline=_INK_SOFT)
+    fill = (fw * scale) * (fh * scale) / (tw * th)
+    return canvas, fill
 
 
 class BrowserDownload(pn.custom.JSComponent):
@@ -382,8 +472,15 @@ class VideoExportPanel(param.Parameterized):
         objects=list(RESOLUTIONS),
         label="Output resolution",
         doc="Target MP4 resolution. The composited frame is letterboxed to "
-            "fit -- its own aspect ratio depends on the current layout and "
-            "rarely matches the target's.",
+            "fit -- its own aspect ratio depends on the layout and rarely "
+            "matches the target's exactly.",
+    )
+
+    layout = param.Selector(
+        default=DEFAULT_LAYOUT,
+        objects=list(LAYOUTS),
+        label="Layout",
+        doc="How many simulations sit side by side in the video.",
     )
 
     # True while an export runs, for the tab's busy spinner.
@@ -413,12 +510,27 @@ class VideoExportPanel(param.Parameterized):
             self.param.frames_per_second, sizing_mode="stretch_width",
         )
         # One checkbox per simulation (model) on screen, rebuilt each time
-        # the dialog opens - see _build_model_checks.
+        # the dialog opens - see _build_model_checks. _order is the order
+        # they appear in the video; it's kept across opens so a user's
+        # arrangement survives closing the dialog.
         self._model_checks = {}
+        self._order = []
         self._models_box = pn.Column(sizing_mode="stretch_width", margin=0)
         self._resolution = pn.widgets.Select.from_param(
             self.param.resolution, sizing_mode="stretch_width",
         )
+        self._layout = pn.widgets.Select.from_param(
+            self.param.layout, sizing_mode="stretch_width",
+        )
+        # A miniature of the finished frame at the current time step, so
+        # the effect of a layout is visible before committing to an export.
+        # Rendered tiles are cached, so reordering or changing the layout
+        # only recomposes; _preview_gen drops results a newer request has
+        # superseded.
+        self._preview_pane = pn.pane.PNG(None, width=_PREVIEW_W, margin=(0, 10))
+        self._preview_caption = pn.pane.Markdown("", sizing_mode="stretch_width")
+        self._preview_cache = {}
+        self._preview_gen = 0
         self._summary = pn.pane.Markdown("", sizing_mode="stretch_width")
         self._progress = pn.indicators.Progress(
             value=0, max=100, sizing_mode="stretch_width", visible=False,
@@ -450,6 +562,9 @@ class VideoExportPanel(param.Parameterized):
                 self._models_box,
                 self._rps,
                 self._resolution,
+                self._layout,
+                self._preview_pane,
+                self._preview_caption,
                 self._summary,
                 pn.layout.Divider(),
                 pn.Row(self._export_btn, self._cancel_btn),
@@ -457,7 +572,7 @@ class VideoExportPanel(param.Parameterized):
                 self._status,
                 self._done,
                 self._browser_download,
-                width=460,
+                width=480,
                 sizing_mode="stretch_width",
             ),
             name="export_video_modal",
@@ -531,7 +646,7 @@ class VideoExportPanel(param.Parameterized):
         first entry is the model's own field, labelled with the model name.
 
         With `selected_only`, rows for simulations the user unticked in the
-        dialog are dropped.
+        dialog are dropped and the rest are put in the dialog's order.
         """
         plot = self._active_plot_fn()
         if plot is None or not self.controls.var_name:
@@ -545,6 +660,8 @@ class VideoExportPanel(param.Parameterized):
             return None
         if rows and selected_only:
             rows = [r for r in rows if self._model_selected(r[0][0])]
+            rank = {m: i for i, m in enumerate(self._order)}
+            rows.sort(key=lambda r: rank.get(r[0][0], len(rank)))
         return rows or None
 
     def _model_selected(self, model):
@@ -555,20 +672,56 @@ class VideoExportPanel(param.Parameterized):
         """One checkbox per simulation on screen, all ticked.
 
         Rebuilt on every open, since the suite (and so its models) may have
-        changed since the dialog was last shown.
+        changed since the dialog was last shown. The previous order is kept
+        for models still present; new ones join at the end in screen order.
         """
-        rows = self._panel_spec() or []
+        models = [row[0][0] for row in self._panel_spec() or []]
+        self._order = ([m for m in self._order if m in models]
+                       + [m for m in models if m not in self._order])
         self._model_checks = {}
-        for row in rows:
-            model = row[0][0]
-            check = pn.widgets.Checkbox(name=model, value=True, margin=(2, 10))
-            check.param.watch(lambda _e: self._refresh_summary(), "value")
+        for model in models:
+            check = pn.widgets.Checkbox(name=model, value=True,
+                                        margin=(6, 10, 0, 4))
+            check.param.watch(lambda _e: self._options_changed(), "value")
             self._model_checks[model] = check
-        self._models_box.objects = (
-            [pn.pane.Markdown("**Simulations**", margin=(0, 10)),
-             *self._model_checks.values()]
-            if self._model_checks else []
-        )
+        self._render_model_rows()
+
+    def _render_model_rows(self):
+        """Lay out the simulation list: ▲/▼ to reorder, checkbox to include."""
+        if not self._order:
+            self._models_box.objects = []
+            return
+        locked = self._exporting()
+        last = len(self._order) - 1
+        lines = []
+        for i, model in enumerate(self._order):
+            up = pn.widgets.Button(name="▲", button_type="light",
+                                   width=34, margin=(2, 0, 2, 10),
+                                   disabled=locked or i == 0)
+            down = pn.widgets.Button(name="▼", button_type="light",
+                                     width=34, margin=(2, 0),
+                                     disabled=locked or i == last)
+            up.on_click(lambda _e, m=model: self._move(m, -1))
+            down.on_click(lambda _e, m=model: self._move(m, +1))
+            lines.append(pn.Row(up, down, self._model_checks[model], margin=0))
+        self._models_box.objects = [
+            pn.pane.Markdown("**Simulations** — in video order",
+                             margin=(0, 10)),
+            *lines,
+        ]
+
+    def _move(self, model, step):
+        i = self._order.index(model)
+        j = i + step
+        if self._exporting() or not 0 <= j < len(self._order):
+            return
+        self._order[i], self._order[j] = self._order[j], self._order[i]
+        self._render_model_rows()
+        self._refresh_preview()
+
+    def _options_changed(self):
+        self._refresh_summary()
+        self._refresh_preview()
 
     def _boundaries(self):
         """The boundary lines the Visualization tab is drawing, or None.
@@ -600,7 +753,94 @@ class VideoExportPanel(param.Parameterized):
             self._reset_open_button()
             self._build_model_checks()
             self._refresh_summary()
+            self._refresh_preview()
         self.modal.open = True
+
+    @param.depends("resolution", "layout", watch=True)
+    def _refresh_preview(self):
+        """Re-render the preview in the background for the current options."""
+        if self._exporting():
+            return
+        self._preview_gen += 1
+        rows = self._panel_spec(selected_only=True)
+        if rows is None or self.controls.time_slider.disabled:
+            self._preview_pane.object = None
+            self._preview_pane.visible = False
+            self._preview_caption.object = ""
+            return
+        snap = dict(
+            var_name=self.controls.var_name,
+            level=self.controls.level_value,
+            level_dim=self.controls.level_dim,
+            t=int(self.controls.time_slider.value),
+            nframes=self._nframes(),
+            boundaries=self._boundaries(),
+            resolution=RESOLUTIONS[self.resolution],
+            layout=self.layout,
+        )
+        self._preview_caption.object = "_Rendering preview…_"
+        threading.Thread(
+            target=self._preview_worker, args=(self._preview_gen, rows, snap),
+            daemon=True, name="video-preview",
+        ).start()
+
+    def _preview_worker(self, gen, rows, snap):
+        """Compose one frame at the current time step, as the export would."""
+        try:
+            var, level, t = snap["var_name"], snap["level"], snap["t"]
+            if len(self._preview_cache) > 64:
+                self._preview_cache.clear()
+            units = []
+            for row in rows:
+                unit = []
+                for label, path, is_diff, cmap, vmin, vmax in row:
+                    key = (path, var, level, t, cmap, vmin, vmax,
+                           snap["boundaries"])
+                    img = self._preview_cache.get(key)
+                    if img is None:
+                        if gen != self._preview_gen:
+                            return   # superseded; don't render for nothing
+                        tile = _Tile(label, path, is_diff, cmap, vmin, vmax,
+                                     boundaries=snap["boundaries"])
+                        with _RENDER_LOCK:
+                            img = tile.render(var, level, t)
+                        self._preview_cache[key] = img
+                    unit.append((label, img))
+                units.append(unit)
+
+            try:
+                da, meta = load_e2s_field(rows[0][0][1], var, level, t)
+                units_attr = da.attrs.get("units")
+            except Exception:
+                meta, units_attr = None, None
+            title, subtitle = _header_lines(
+                var, level, snap["level_dim"], units_attr, meta, t,
+                snap["nframes"])
+
+            target = snap["resolution"]
+            per_row = _resolve_per_row(snap["layout"], units, target)
+            frame = _compose(_arrange(units, per_row), title, subtitle)
+            img, fill = _preview(frame, target)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+
+            how = (f"Best fit: **{per_row}** per row"
+                   if LAYOUTS[snap["layout"]] is None
+                   else f"**{per_row}** per row")
+            caption = f"{how} — panels fill **{fill:.0%}** of the frame"
+            if target is not None and fill < 0.995:
+                caption += " (grey is empty space)"
+            _ui(self._show_preview, gen, buf.getvalue(), caption)
+        except Exception as exc:
+            _ui(self._show_preview, gen, None,
+                f"_Preview unavailable: {short_error(exc)}_")
+
+    def _show_preview(self, gen, png, caption):
+        if gen != self._preview_gen:
+            return
+        self._preview_pane.object = png
+        self._preview_pane.visible = png is not None
+        self._preview_caption.object = caption
 
     @param.depends("frames_per_second", "resolution", watch=True)
     def _refresh_summary(self):
@@ -661,6 +901,7 @@ class VideoExportPanel(param.Parameterized):
             boundaries=self._boundaries(),
             fps=self.frames_per_second,
             resolution=RESOLUTIONS[self.resolution],
+            layout=self.layout,
             suite_dir=Path(suite_dir),
             out_dir=out_dir,
         )
@@ -680,6 +921,8 @@ class VideoExportPanel(param.Parameterized):
             daemon=True, name="video-export",
         )
         self._thread.start()
+        self._layout.disabled = True
+        self._render_model_rows()   # now _exporting(): arrows disabled
         self.busy = True
 
     # -- worker ------------------------------------------------------------
@@ -725,6 +968,10 @@ class VideoExportPanel(param.Parameterized):
             stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
             out_path = snap["out_dir"] / f"inferstudio_{var}_{stamp}.mp4"
             units = None
+            # Resolved from the first frame's tile sizes, then held: every
+            # tile keeps its first size (see _Tile.render), so the frame
+            # does too, as libx264 requires.
+            per_row = None
 
             with tempfile.TemporaryDirectory(prefix="inferstudio_frames_") as tmp:
                 tmpdir = Path(tmp)
@@ -749,10 +996,14 @@ class VideoExportPanel(param.Parameterized):
                         except Exception:
                             meta = None
 
+                    if per_row is None:
+                        per_row = _resolve_per_row(
+                            snap["layout"], composed, snap["resolution"])
+                        usage["per_row"] = per_row
                     title, subtitle = _header_lines(
                         var, level, snap["level_dim"], units, meta, t, total)
-                    _compose(composed, title, subtitle).save(
-                        tmpdir / f"frame_{t:05d}.png")
+                    _compose(_arrange(composed, per_row), title,
+                             subtitle).save(tmpdir / f"frame_{t:05d}.png")
 
                     _ui(setattr, self._progress, "value",
                         render_base + int(render_span * (t + 1) / total))
@@ -829,7 +1080,7 @@ class VideoExportPanel(param.Parameterized):
                 panels=[label for row in rows for label, *_ in row],
                 differences=sum(is_diff for row in rows for _, _, is_diff, *_ in row),
                 frames=snap["nframes"], fps=snap["fps"],
-                resolution=snap["resolution"],
+                resolution=snap["resolution"], layout=snap["layout"],
                 seconds=round(time.time() - started, 1), **usage)
             _ui(self._finish)
 
@@ -841,6 +1092,8 @@ class VideoExportPanel(param.Parameterized):
         # The thread may not have exited yet, which would make
         # _refresh_summary think the export is still running.
         self._thread = None
+        self._layout.disabled = False
+        self._render_model_rows()
         self._refresh_summary()
 
     def _show_downloaded(self, out_path, frames, mb):
