@@ -180,6 +180,9 @@ SETTINGS_BOX_STYLES = {
 # PBS job states a job can wait in, as shown on the Launcher.
 _STATE_NAMES = {'Q': 'queued', 'H': 'held', 'W': 'waiting'}
 
+# Seconds per turn of the spinner shown under a running model.
+_SPIN_PERIOD = 0.9
+
 
 @dataclass
 class _Run:
@@ -961,13 +964,33 @@ class ModelTab(param.Parameterized):
     def _status_html(self, model: str, state: str, seconds=None) -> str:
         """A model's status icon, with how long it has run (or ran) once it
         has started."""
-        symbol = {"pending": "◷", "running": "⟳", "done": "✓", "error": "✗", "cancelled": "⊘"}[state]
-        color  = {"pending": "#cccccc", "running": "#888888", "done": "#2ecc71", "error": "#e74c3c", "cancelled": "#999999"}[state]
         took = format_duration(seconds) if seconds is not None else "&nbsp;"
+        if state == "running":
+            # A spinning ring, styled like the tab spinners (BUSY_TAB_CSS).
+            # The pane is re-rendered every second to update the run time,
+            # which restarts the animation; a negative delay set from the
+            # wall clock picks the rotation up where it left off instead of
+            # snapping back to the top each second.
+            phase = time.time() % _SPIN_PERIOD
+            icon = (
+                f'<style>@keyframes model-spin{{to{{transform:rotate(360deg);}}}}</style>'
+                f'<span style="display:inline-block;width:18px;height:18px;'
+                f'box-sizing:border-box;'
+                f'border:2.5px solid #c8d2dc;border-top-color:#007bff;border-radius:50%;'
+                f'animation:model-spin {_SPIN_PERIOD}s linear infinite;'
+                f'animation-delay:-{phase:.3f}s"></span>'
+            )
+        else:
+            symbol = {"pending": "◷", "done": "✓", "error": "✗", "cancelled": "⊘"}[state]
+            color  = {"pending": "#cccccc", "done": "#2ecc71", "error": "#e74c3c", "cancelled": "#999999"}[state]
+            icon = f'<span style="font-size:20px;color:{color}">{symbol}</span>'
         return (
             f'<div style="text-align:center;line-height:1.4">'
             f'<span style="font-size:11px;color:#555">{model}</span><br>'
-            f'<span style="font-size:20px;color:{color}">{symbol}</span><br>'
+            # Fixed height, so the run time below doesn't shift as the
+            # icon changes between the ring and the glyphs.
+            f'<div style="height:28px;display:flex;align-items:center;'
+            f'justify-content:center">{icon}</div>'
             f'<span style="font-size:12px;color:#555;font-variant-numeric:tabular-nums">{took}</span>'
             f'</div>'
         )
