@@ -12,8 +12,11 @@ the sticky bit stops them deleting or renaming anyone else's files. Each
 session writes <session type>.<user>.<session job id>.jsonl (e.g.
 dev.pearse.1234567.casper-pbs.jsonl), mode 644 so the owner can read it.
 The session type leads the name, so dev and production files separate
-with a glob. Logging is off if the directory doesn't exist, and with
-INFERSTUDIO_USAGE_LOG=0.
+with a glob. The developers' own sessions (OWN_DIR_USERS: dev, production
+and local alike) go in a subdirectory named for the user instead, e.g.
+pearse/dev.pearse.1234567.casper-pbs.jsonl, so testing doesn't count as
+real use when metrics are gathered from the top level. Logging is off if
+the directory doesn't exist, and with INFERSTUDIO_USAGE_LOG=0.
 
 Every record has: ts (Unix seconds), user, session (the OOD session's PBS
 job id, or "pid<n>" outside PBS), session_type (INFERSTUDIO_SESSION_TYPE,
@@ -48,6 +51,9 @@ from datetime import datetime
 USAGE_DIR = os.environ.get("INFERSTUDIO_USAGE_DIR",
                            "/glade/work/pearse/inferstudio_stats")
 ENABLED = os.environ.get("INFERSTUDIO_USAGE_LOG", "1") != "0"
+# Users whose sessions are logged under USAGE_DIR/<user>/ rather than
+# alongside everyone else's -- see the module docstring.
+OWN_DIR_USERS = {"pearse"}
 
 _lock = threading.Lock()
 _session_logged = False
@@ -65,8 +71,16 @@ def _base():
 
 
 def _path(base):
-    return os.path.join(
-        USAGE_DIR, f"{base['session_type']}.{base['user']}.{base['session']}.jsonl")
+    name = f"{base['session_type']}.{base['user']}.{base['session']}.jsonl"
+    if base["user"] in OWN_DIR_USERS:
+        # Only that user writes here, so an ordinary 755 directory will do;
+        # created on first use. The drop box itself must already exist --
+        # its absence is what turns logging off.
+        own = os.path.join(USAGE_DIR, base["user"])
+        if os.path.isdir(USAGE_DIR):
+            os.makedirs(own, mode=0o755, exist_ok=True)
+        return os.path.join(own, name)
+    return os.path.join(USAGE_DIR, name)
 
 
 def log_event(event, **fields):
