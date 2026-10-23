@@ -2,6 +2,7 @@ import panel as pn
 import param
 import threading
 import os
+import re
 import time
 import traceback
 
@@ -183,6 +184,46 @@ _STATE_NAMES = {'Q': 'queued', 'H': 'held', 'W': 'waiting'}
 # Seconds per turn of the spinner shown under a running model.
 _SPIN_PERIOD = 0.9
 
+# What PyTorch, JAX/XLA and CUDA write when a model doesn't fit in the
+# GPU's memory.
+_GPU_OOM_RE = re.compile(
+    r"CUDA out of memory|OutOfMemoryError|CUDA_ERROR_OUT_OF_MEMORY"
+    r"|cudaErrorMemoryAllocation|CUBLAS_STATUS_ALLOC_FAILED"
+    r"|RESOURCE_EXHAUSTED: Out of memory")
+
+
+def _gpu_gb(label):
+    """Memory in GB from a GPU type's label, e.g. 'NVIDIA L40 (45 GB)'."""
+    found = re.search(r"\((\d+) GB\)", label)
+    return int(found.group(1)) if found else 0
+
+
+def gpu_oom_advice(system, gpu_type):
+    """What to tell the user after a model ran out of GPU memory on
+    `gpu_type` (a PBS gpu_type) on `system`.
+
+    Every model has a GPU to itself (see pbsJob's lanes), so asking for
+    more GPUs doesn't help; only a GPU type with more memory does. That
+    means the largest on offer, on whichever system has it.
+    """
+    types = SYSTEMS[system].gpu_types
+    label = next((l for l, t in types.items() if t == gpu_type), gpu_type)
+    have = _gpu_gb(label)
+    most = max(_gpu_gb(l) for sysdef in SYSTEMS.values() for l in sysdef.gpu_types)
+    if most <= have:
+        return (f"It ran out of memory on the {label}, which is already the "
+                "largest GPU InferStudio can use. Please report it via "
+                "Questions & Feedback.")
+    choices = []
+    for name, sysdef in SYSTEMS.items():
+        biggest = [l for l in sysdef.gpu_types if _gpu_gb(l) == most]
+        if biggest:
+            where = "" if name == system else f"System {name}, "
+            choices.append(f"{where}GPU type {' or '.join(biggest)}")
+    return (f"It ran out of memory on the {label}. Under Compute Settings, "
+            f"choose {'; or '.join(choices)}, and run it again. Asking for "
+            "more GPUs won't help - each model runs on a single GPU.")
+
 
 @dataclass
 class _Run:
@@ -313,6 +354,7 @@ class ModelTab(param.Parameterized):
         self._spinners = {}         # model -> LoadingSpinner
         self._status_widgets = {}   # model -> HTML pane
         self._failed_models = []    # models that errored out this run
+        self._oom_models = []       # ...of which ran out of GPU memory
         self._run = None            # the current _Run
         self._periodic_cb = None
         self._doc = None
@@ -506,6 +548,7 @@ class ModelTab(param.Parameterized):
         self._spinners = {}
         self._status_widgets = {}
         self._failed_models = []
+        self._oom_models = []
         self.outputTabs.objects = []
         self.statusRow.objects = []
 
@@ -612,12 +655,15 @@ class ModelTab(param.Parameterized):
                     # Existing Suite" if a partial result is worth keeping.
                     if pn.state.notifications:
                         plural = "s" if len(self._failed_models) > 1 else ""
-                        pn.state.notifications.error(
+                        message = (
                             f"Inference failed for model{plural}: "
                             f"{', '.join(self._failed_models)}. See that "
-                            "model's log tab for details.",
-                            duration=0,
-                        )
+                            "model's log tab for details.")
+                        if self._oom_models:
+                            message += (
+                                f" {' and '.join(self._oom_models)}: "
+                                + gpu_oom_advice(run.system, run.gpu_type))
+                        pn.state.notifications.error(message, duration=0)
                     return
 
                 try:
@@ -834,6 +880,7 @@ class ModelTab(param.Parameterized):
             model_run_s={r.model: round(run.model_seconds(r.model))
                          for r in runs if r.model in run.model_started},
             walltime_s=walltime,
+            gpu_oom=self._oom_models or None,
         )
 
     # How often to ask PBS about the job; the files it writes are checked
@@ -845,6 +892,7 @@ class ModelTab(param.Parameterized):
 
     def _follow(self, run, job, runs):
         tails = {r.model: LogTail(r.log_path) for r in runs}
+        log_paths = {r.model: Path(r.log_path) for r in runs}
         states = {r.model: "pending" for r in runs}
         last_qstat = 0.0
         all_done_at = None
@@ -873,6 +921,11 @@ class ModelTab(param.Parameterized):
                     self._failed_models.append(m)
                 self._append_log(m, f"\nDone in {took}.\n" if code == 0
                                  else f"\nExited with code {code} after {took}.\n")
+                if code != 0 and self._ran_out_of_gpu_memory(log_paths[m]):
+                    self._oom_models.append(m)
+                    self._append_log(
+                        m, "\nOUT OF GPU MEMORY: "
+                           + gpu_oom_advice(run.system, run.gpu_type) + "\n")
                 self._set_status(m, states[m])
 
         while not run.cancel.is_set():
@@ -952,6 +1005,14 @@ class ModelTab(param.Parameterized):
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _ran_out_of_gpu_memory(log_path):
+        try:
+            return bool(_GPU_OOM_RE.search(
+                log_path.read_text(errors="replace")))
+        except OSError:
+            return False
 
     def _set_single_log(self, message: str):
         """Show a plain error message before tabs have been built."""
