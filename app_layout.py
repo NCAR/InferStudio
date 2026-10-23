@@ -1179,6 +1179,17 @@ def build_app(data_dir):
     )
     tab_names = ["Visualization", "Statistics", "Inference"]
     tabs.param.watch(lambda e: log_event("tab", tab=tab_names[e.new]), "active")
+
+    # A notification belongs to what the user was doing; once they move to
+    # another tab it's stale, and most are shown with duration=0 so they'd
+    # otherwise sit there until closed by hand. A notification raised as
+    # part of a tab switch (e.g. "suite finished" switching to
+    # Visualization) is shown after this runs, so it survives.
+    def _clear_notifications(_event):
+        if pn.state.notifications:
+            pn.state.notifications.clear()
+
+    tabs.param.watch(_clear_notifications, "active")
     _main_tabs["tabs"] = tabs
 
     # Busy spinners on the tab titles.
