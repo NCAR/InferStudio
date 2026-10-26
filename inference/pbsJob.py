@@ -44,7 +44,8 @@ class System:
     mem_gb_per_gpu: int
 
 
-# Casper's L40 nodes have 7 GPUs and its A100/H100 nodes 4; Derecho's GPU
+# Casper's L40 nodes have 7 GPUs, its A100/H100 nodes 4 and its V100 nodes
+# 4 or 8 (jobs are held to 4, like the rest); Derecho's GPU
 # nodes have 4 A100 40GB. CPUs and memory are a per-GPU share of a node
 # that leaves room for its other jobs. The first GPU type listed is the
 # default; on Casper that's the A100 80GB, since AIFS runs out of memory
@@ -60,6 +61,7 @@ SYSTEMS = {
             'NVIDIA A100 (80 GB)': 'a100_80gb',
             'NVIDIA H100 (80 GB)': 'h100_80gb',
             'NVIDIA L40 (45 GB)': 'l40',
+            'NVIDIA V100 (32 GB)': 'v100',
         },
         max_gpus=4,
         ncpus_per_gpu=8,

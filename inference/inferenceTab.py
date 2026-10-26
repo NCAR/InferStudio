@@ -198,6 +198,29 @@ def _gpu_gb(label):
     return int(found.group(1)) if found else 0
 
 
+# Models that need more GPU memory than a small card has: FourCastNet3 and
+# AIFS overflow even a 40 GB A100 without the workarounds in
+# earth2StudioRunner, and Aurora's 0.25 degree model needs about as much.
+LARGE_GPU_MODELS = ('AIFS', 'Aurora', 'FourCastNet3')
+SMALL_GPU_GB = 40
+
+
+def small_gpu_warning(label, models):
+    """Warn that the large models will likely run out of memory on GPU type
+    `label`, or None if it has enough. `models` are the ones selected."""
+    gb = _gpu_gb(label)
+    if gb >= SMALL_GPU_GB:
+        return None
+    text = (f"**Small GPU:** the {label.split(' (')[0]} has only {gb} GB of memory, so large "
+            f"models may fail. {', '.join(LARGE_GPU_MODELS[:-1])} and "
+            f"{LARGE_GPU_MODELS[-1]} are likely to run out of memory on it.")
+    chosen = [m for m in models if m in LARGE_GPU_MODELS]
+    if chosen:
+        text += (f" You've selected {' and '.join(chosen)}: choose a GPU type "
+                 "with more memory for them.")
+    return text
+
+
 def gpu_oom_advice(system, gpu_type):
     """What to tell the user after a model ran out of GPU memory on
     `gpu_type` (a PBS gpu_type) on `system`.
@@ -310,6 +333,8 @@ class ModelTab(param.Parameterized):
         self.walltimeLabel = pn.widgets.StaticText(name="Wall time (estimated)", value="")
         self.nodeWarning = pn.pane.Alert("", alert_type="warning", visible=False,
                                          sizing_mode='stretch_width')
+        self.gpuWarning = pn.pane.Alert("", alert_type="warning", visible=False,
+                                        sizing_mode='stretch_width')
         self._account = project_account()
         self.accountLabel = pn.widgets.StaticText(
             name="Project account",
@@ -322,6 +347,7 @@ class ModelTab(param.Parameterized):
         self.modelPicker.param.watch(self._update_gpu_options, 'value')
         self.timePicker.param.watch(self._update_gpu_options, 'end_date')
         self.gpuCountPicker.param.watch(self._update_walltime, 'value')
+        self.gpuTypePicker.param.watch(self._update_gpu_warning, 'value')
         self._update_queue_options()
 
         self.inferenceButton = pn.widgets.Button(
@@ -403,7 +429,15 @@ class ModelTab(param.Parameterized):
         for w in (self.systemPicker, self.queuePicker, self.gpuTypePicker,
                   self.gpuCountPicker):
             w.disabled = cpu_only
+        self._update_gpu_warning()
         self._update_walltime()
+
+    def _update_gpu_warning(self, event=None):
+        """Warn that large models may not fit on the chosen GPU type."""
+        text = small_gpu_warning(self.gpuTypePicker.value, self._gpu_models())
+        self.gpuWarning.visible = bool(text and self._gpu_models())
+        if text:
+            self.gpuWarning.object = text
 
     def _gpu_models(self):
         return [m for m in self.modelPicker.value if m not in PHYSICAL_MODELS]
@@ -1093,6 +1127,7 @@ class ModelTab(param.Parameterized):
                 self._labelled("GPUs", self.gpuCountPicker),
             ),
             pn.Row(self.walltimeLabel, self.accountLabel),
+            self.gpuWarning,
             self.nodeWarning,
             sizing_mode='stretch_width',
         )
