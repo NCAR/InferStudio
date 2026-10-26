@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from tooltips import below_tooltip
 from inference.earth2StudioRunner import climate_start_times, run_end_limit
+from inference.cesm2leRunner import CESM2LE_MEMBERS
 
 # The climate models all advance 6 hours per step, and every step is saved.
 STEP_HOURS = 6
@@ -17,7 +18,23 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 START_NOTES = {
     'CAMulator': "CAMulator: the CAM states shipped with it, 1 January or 1 July, 1980-2014.",
     'DLESyMv0_ISCCP_ERA5': "DLESyM: ERA5, any month from February 1940 to December 2022.",
+    'CESM2-LE': "CESM2-LE: its historical runs, any month from 1850 to 2014.",
 }
+
+# What ends a model's run at run_end_limit, and how to get round it.
+END_NOTES = {
+    'CAMulator': ("Transient forcing ends at {limit:%Y-%m-%d %H}Z; shorten the "
+                  "run or use cyclic forcing."),
+    'CESM2-LE': ("CESM2-LE's historical runs end at {limit:%Y-%m-%d %H}Z; "
+                 "shorten the run."),
+}
+
+MEMBER_DESCRIPTION = (
+    "Which CESM2-LE member to read. Only these 10 saved U, V, T and Q "
+    "6-hourly. Each starts in 1850 from a different year of a pre-industrial "
+    "control run (the first part of its name), so their weather differs "
+    "but they share one forced climate."
+)
 
 # Button label -> CAMulatorForcing mode.
 FORCING_OPTIONS = {'Cyclic': 'cyclic', 'Transient': 'transient'}
@@ -76,6 +93,11 @@ class ClimateTimePicker(param.Parameterized):
             sizing_mode='stretch_width'
         )
 
+        self.memberPicker = pn.widgets.Select(
+            name="CESM2-LE Member", options=CESM2LE_MEMBERS, value=CESM2LE_MEMBERS[0],
+            description=MEMBER_DESCRIPTION, width=120,
+            margin=(0, 10, 5, 10))
+
         self._summary = pn.pane.Markdown("", margin=(5, 0, 0, 10))
 
         self.startYearPicker.param.watch(self._on_year, 'value')
@@ -94,6 +116,7 @@ class ClimateTimePicker(param.Parameterized):
         self._starts = sorted(set.intersection(
             *(set(climate_start_times(m)) for m in models)))
         self.forcingBox.visible = 'CAMulator' in models
+        self.memberPicker.visible = 'CESM2-LE' in models
         self.startNote.object = "<br>".join(
             START_NOTES[m] for m in models if m in START_NOTES)
         self._set_start(default or self.start_time)
@@ -143,6 +166,10 @@ class ClimateTimePicker(param.Parameterized):
     def forcing_mode(self) -> str:
         return self.forcingButtons.value
 
+    @property
+    def member(self) -> str:
+        return self.memberPicker.value
+
     def _update_end_date(self, event=None):
         start = self.start_time
         if start is None:
@@ -165,11 +192,8 @@ class ClimateTimePicker(param.Parameterized):
         for model in self._models:
             limit = run_end_limit(model, self.forcing_mode)
             if limit is not None and self.end_date > limit:
-                summary += (
-                    "<br><span style='color:#e74c3c'>Transient forcing ends at "
-                    f"{limit:%Y-%m-%d %H}Z; shorten the run or use cyclic "
-                    "forcing.</span>"
-                )
+                summary += ("<br><span style='color:#e74c3c'>"
+                            + END_NOTES[model].format(limit=limit) + "</span>")
         self._summary.object = summary
 
     def panel(self):
@@ -186,6 +210,7 @@ class ClimateTimePicker(param.Parameterized):
                 sizing_mode='stretch_width'
             ),
             self.forcingBox,
+            self.memberPicker,
             self._summary,
             sizing_mode='stretch_width',
         )

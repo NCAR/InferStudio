@@ -13,6 +13,14 @@ for deciding whether to upgrade.
 
 ### Added
 
+- CESM2-LE as a physical model on the Climate tab: one historical member's
+  6-hourly CAM6 output (1850-2014) read from GDEX in CAMulator's layout, to
+  compare with CAMulator and DLESyM. A member picker appears under Time
+  Settings when it's selected.
+
+- Casper's V100 (32 GB) GPUs under Compute Settings, with a warning that AIFS,
+  Aurora and FourCastNet3 are likely to run out of memory on them.
+
 - Video export layout: by default simulations are now arranged in whichever
   grid fills the chosen resolution best (e.g. 2×2 rather than a tall single
   column), instead of mirroring the screen's one per row; a Layout menu sets

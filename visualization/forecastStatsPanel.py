@@ -72,6 +72,11 @@ UNVERIFIABLE_REASONS = {
         "DLESyM is a climate model, run here for months to years from the 1st "
         "of a month; verification against GFS isn't wired up for it."
     ),
+    "CESM2-LE": (
+        "CESM2-LE is a free-running climate simulation from 1850, so it "
+        "doesn't follow the observed weather, and it ends in 2014, before "
+        "GFS's archive."
+    ),
 }
 
 # Shown above the plots when one of these models is in the suite: their

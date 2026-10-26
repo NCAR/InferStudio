@@ -23,7 +23,7 @@ pn.extension(raw_css=[Path("static/styles.css").read_text()])
 # dimension and isn't handled by plot_e2s_field yet — it still needs its
 # own branch here (probably routing back through era5_plot.plot_png).
 EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "CAMulator",
-                              "DLESyMv0_ISCCP_ERA5", "GFS"}
+                              "DLESyMv0_ISCCP_ERA5", "GFS", "CESM2-LE"}
 
 
 def _schedule(fn):

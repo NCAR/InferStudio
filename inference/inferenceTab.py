@@ -22,8 +22,8 @@ from inference.commandRunner import CommandRunner
 
 from inference.milesCreditRunner import MilesCreditRunner, MilesCreditGen2Runner
 from inference.earth2StudioRunner import Earth2StudioRunner
-from inference.forecastSourceRunner import (ForecastSourceRunner, PHYSICAL_MODEL_LIST,
-                                            PHYSICAL_MODELS)
+from inference.forecastSourceRunner import ForecastSourceRunner, PHYSICAL_MODEL_LIST
+from inference.cesm2leRunner import CESM2LERunner, CLIMATE_PHYSICAL_MODEL_LIST
 from inference.pbsJob import (SYSTEMS, CPU_ONLY_QUEUE, CPU_ONLY_SYSTEM, LogTail, ModelRun, PBSJob,
                               default_gpu_count, estimate_walltime, format_duration,
                               model_seconds, project_account)
@@ -39,6 +39,8 @@ CLIMATE_MODEL_LIST = ['CAMulator', 'DLESyMv0_ISCCP_ERA5']
 WEATHER_MODEL_LIST = [m for m in MILES_CREDIT_MODEL_LIST + EARTH2STUDIO_MODEL_LIST
                       if m not in CLIMATE_MODEL_LIST]
 #EARTH2STUDIO_MODELS = {'AIFS', 'Aurora', 'Pangu', 'FourCastNet3', 'GraphCast', 'SFNO'}
+# Fetched or read rather than run, so they need no GPU.
+PHYSICAL_MODELS = frozenset(PHYSICAL_MODEL_LIST + CLIMATE_PHYSICAL_MODEL_LIST)
 
 # Runs in the browser whenever a log box's text changes: keeps it scrolled
 # to the newest output, unless the user has scrolled up to read earlier
@@ -101,6 +103,15 @@ MODEL_DESCRIPTIONS = {
         "Not run here: its published forecast for the same start time is "
         "downloaded from NOAA's archive (2021 on), so it needs no GPU. "
         "Verified against GFS analysis, it starts with no error."
+    ),
+    'CESM2-LE': (
+        "NSF NCAR's CESM2 Large Ensemble: CAM6, the model CAMulator emulates, "
+        "on the same grid and 32 levels. Not run here: one historical "
+        "member's 6-hourly output (1850-2014) is read from GDEX (d651056), "
+        "so it needs no GPU. It's a free-running coupled run, so compare "
+        "its statistics with CAMulator's, not individual days. Has U, V, T, "
+        "Q (vapour only), SP, OLR, Z500 and TCWV; no t2m (saved only "
+        "daily). Its calendar has no 29 February: those steps are blank."
     ),
     'CAMulator': (
         "NSF NCAR's emulator of the CAM6 climate model (1 degree, 6-hourly), "
@@ -482,7 +493,7 @@ class ModelTab(param.Parameterized):
             text += (f" ({self._system()} {self._queue()}'s limit; this run may "
                      "need longer - shorten it, use more GPUs or another queue)")
         if not self._gpu_models():
-            text += f" (downloads only: a CPU job on {CPU_ONLY_SYSTEM})"
+            text += f" (no GPU needed: a CPU job on {CPU_ONLY_SYSTEM})"
         self.walltimeLabel.value = text
 
     def _update_node_warning(self):
@@ -523,6 +534,8 @@ class ModelTab(param.Parameterized):
                 runners.append((model, MilesCreditRunner()))
             elif model in EARTH2STUDIO_MODELS:
                 runners.append((model, Earth2StudioRunner()))
+            elif model in CLIMATE_PHYSICAL_MODEL_LIST:
+                runners.append((model, CESM2LERunner()))
             elif model in PHYSICAL_MODELS:
                 runners.append((model, ForecastSourceRunner()))
         return runners
@@ -1191,6 +1204,7 @@ CLIMATE_SURFACE_VARS = {
 
 class ClimateTab(ModelTab):
     MODELS = CLIMATE_MODEL_LIST
+    PHYSICAL_MODELS = CLIMATE_PHYSICAL_MODEL_LIST
     DEFAULT_MODELS = ['CAMulator']
 
     def _make_output_params(self, start_path):
@@ -1211,6 +1225,7 @@ class ClimateTab(ModelTab):
     def _build_config(self, model: str) -> dict:
         config = super()._build_config(model)
         config["forcing_mode"] = self.timePicker.forcing_mode
+        config["member"] = self.timePicker.member
         return config
 
 

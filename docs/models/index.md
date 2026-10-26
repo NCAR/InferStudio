@@ -109,6 +109,23 @@ Another earth2studio forecast source (`IFS_FX`, `GEFS_FX`, ...) is an entry in
 `FORECAST_SOURCES` in `inference/forecastSourceRunner.py`, plus its date and
 lead-time checks.
 
+**CESM2-LE**, the CESM2 Large Ensemble, is the Climate tab's physical model.
+Its atmosphere is CAM6, the model CAMulator emulates, on the same 1 degree grid
+and 32 hybrid levels, so it compares with CAMulator without interpolation. It
+isn't run: `CESM2LERunner` (`inference/cesm2leRunner.py`) reads one member's
+6-hourly output from GDEX (`/gdex/data/d651056`) for the run's dates and writes
+it in CAMulator's layout and variable names.
+
+- Only the historical runs, 1850-2014, and only the 10 members that saved
+  6-hourly U, V, T and Q (1011.001 to 1191.010), picked under Time Settings.
+- It writes U, V, T and Q on model levels, SP, OLR, Z500 and TCWV. Q is water
+  vapour only, saved as `qtot` to compare with CAMulator's total water. There's
+  no t2m: CESM2-LE saved it only daily.
+- Its calendar has no 29 February; steps on that day are NaN.
+- It's a free-running coupled run, so its weather doesn't follow CAMulator's or
+  the observed weather: compare climatology and variability, not single days.
+- Like GFS it needs no GPU and runs in a CPU lane, or a CPU-only job on Casper.
+
 ## Runner architecture
 
 Both families share an abstract base:
@@ -117,7 +134,8 @@ Both families share an abstract base:
 ModelRunner  (abstract)
 ├── Earth2StudioRunner   — dispatches into per-model uv venvs via MODEL_ENV_MAP
 ├── MilesCreditRunner    — dispatches into the CREDIT environment
-└── ForecastSourceRunner — fetches a physical model's published forecast
+├── ForecastSourceRunner — fetches a physical model's published forecast
+└── CESM2LERunner        — reads CESM2-LE's output from GDEX
 ```
 
 A runner is responsible for:

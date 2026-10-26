@@ -10,7 +10,7 @@ import panel as pn
 # datasetPlot.py's EARTH2STUDIO_FORMAT_MODELS, this is only a UI hint for
 # the directory browser, not the source of truth for what's runnable.
 SUPPORTED_MODEL_DIRS = frozenset({"WXFormer", "WXFormerGen2", "AIFS", "Aurora", "Pangu", "FourCastNet3", "CAMulator",
-                                  "DLESyMv0_ISCCP_ERA5", "GFS"})
+                                  "DLESyMv0_ISCCP_ERA5", "GFS", "CESM2-LE"})
 
 # Banner colours per verdict: (border/title, background). Saturated border
 # and title on a pale fill, so the verdict reads from across the room

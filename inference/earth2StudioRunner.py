@@ -76,6 +76,11 @@ CAMULATOR_START_TIMES = frozenset(
 # forcing at its input time, so a run can end 6 hours after the last record.
 CAMULATOR_TRANSIENT_END = datetime(2015, 1, 1)
 
+# CESM2-LE (read from GDEX, not run - see cesm2leRunner) is offered for its
+# historical runs only, 1850-2014, the years CAMulator's forcing follows.
+CESM2LE_FIRST_START = datetime(1850, 1, 1)
+CESM2LE_END = datetime(2015, 1, 1)
+
 # DLESyM starts from ERA5, reaching back 48 hours, so from 3 January 1940.
 # The Climate tab offers the 1st of each month through 2022.
 DLESYM_FIRST_START = datetime(1940, 1, 3)
@@ -87,6 +92,10 @@ def climate_start_times(model):
     for a model."""
     if model == 'CAMulator':
         return CAMULATOR_START_TIMES
+    if model == 'CESM2-LE':
+        return frozenset(datetime(y, m, 1)
+                         for y in range(CESM2LE_FIRST_START.year, CESM2LE_END.year)
+                         for m in range(1, 13))
     return frozenset(
         datetime(y, m, 1)
         for y in range(DLESYM_FIRST_START.year, DLESYM_LAST_START.year + 1)
@@ -98,6 +107,8 @@ def run_end_limit(model, forcing_mode=None):
     """The latest a run of the model may end, or None."""
     if model == 'CAMulator' and forcing_mode == 'transient':
         return CAMULATOR_TRANSIENT_END
+    if model == 'CESM2-LE':
+        return CESM2LE_END
     return None
 
 
@@ -201,6 +212,17 @@ MODEL_VAR_MAP = {
     'DLESyMv0_ISCCP_ERA5': {
         'U': [], 'V': [], 'T': [], 'Q': [], 'SP': [],
         'mtuwlwrf': ['rlut'],
+    },
+    # CESM2-LE is CAM6 on the same 32 levels and grid as CAMulator, so it
+    # writes CAMulator's names. Its 6-hourly Q is vapour only, written as
+    # qtot to compare with CAMulator's (cloud water is a tiny part of it).
+    'CESM2-LE': {
+        'U':    [f'u{k}k' for k in range(32)],
+        'V':    [f'v{k}k' for k in range(32)],
+        'T':    [f't{k}k' for k in range(32)],
+        'Q':    [f'qtot{k}k' for k in range(32)],
+        'SP':   ['sp'],
+        't2m':  ['t2m'],
     },
     # GFS (fetched, not run - see forecastSourceRunner) has every field
     # the AI models write, so SP gives both sp and msl, to compare with

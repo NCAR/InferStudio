@@ -143,6 +143,7 @@ RUN_TIME = {
     'Aurora':       (300, 8, 6),
     'Pangu':        (180, 3, 6),
     'GFS':          (60, 5, 6),     # a download, ~2 s per lead time measured
+    'CESM2-LE':     (60, 0.5, 6),   # reading files from GDEX, ~0.2 s per step measured
     'FourCastNet3': (180, 8, 6),
     'CAMulator':    (180, 1, 6),
     # A guess: about CAMulator's speed, but it fetches 2 days of ERA5 at
