@@ -16,10 +16,16 @@ MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 # Where each model's start dates come from, shown under the start date.
 START_NOTES = {
-    'CAMulator': "CAMulator: the CAM states shipped with it, 1 January or 1 July, 1980-2014.",
-    'DLESyMv0_ISCCP_ERA5': "DLESyM: ERA5, any month from February 1940 to December 2022.",
-    'CESM2-LE': "CESM2-LE: its historical runs, any month from 1850 to 2014.",
+    'CAMulator': ("**CAMulator** can only start on 1 January or 1 July, 1980 to "
+                  "2014: the dates it comes with starting conditions for."),
+    'DLESyMv0_ISCCP_ERA5': ("**DLESyM** can start in any month from February 1940 "
+                            "to December 2022, the years of the ERA5 data it starts from."),
+    'CESM2-LE': ("**CESM2-LE** can start in any month from 1850 to 2014, the "
+                 "historical part of its simulations."),
 }
+
+# Above the notes when more than one model is selected.
+SHARED_START_NOTE = "Only start dates every selected model can use are offered."
 
 # What ends a model's run at run_end_limit, and how to get round it.
 END_NOTES = {
@@ -117,8 +123,10 @@ class ClimateTimePicker(param.Parameterized):
             *(set(climate_start_times(m)) for m in models)))
         self.forcingBox.visible = 'CAMulator' in models
         self.memberPicker.visible = 'CESM2-LE' in models
-        self.startNote.object = "<br>".join(
-            START_NOTES[m] for m in models if m in START_NOTES)
+        notes = [START_NOTES[m] for m in models if m in START_NOTES]
+        if len(notes) > 1:
+            notes.insert(0, SHARED_START_NOTE)
+        self.startNote.object = "<br>".join(notes)
         self._set_start(default or self.start_time)
 
     def _on_year(self, event):
@@ -200,7 +208,8 @@ class ClimateTimePicker(param.Parameterized):
         return pn.WidgetBox(
             "### Time Settings",
             pn.Row(self.startYearPicker, self.startMonthPicker,
-                   pn.pane.Markdown("00Z on the 1st", margin=(30, 5, 0, 5)),
+                   pn.pane.Markdown("Runs start at 00:00 UTC on the 1st",
+                                    margin=(30, 5, 0, 5)),
                    margin=(0, 0, 0, 0)),
             self.startNote,
             pn.Column(
