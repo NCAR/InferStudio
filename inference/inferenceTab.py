@@ -7,9 +7,10 @@ import time
 import traceback
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from inference.outputParams import OutputParams
 from dimensions import model_file_stem
@@ -259,6 +260,32 @@ def gpu_oom_advice(system, gpu_type):
             "more GPUs won't help - each model runs on a single GPU.")
 
 
+def format_start_estimate(start, tz_name=None, now=None):
+    """PBS's estimated start (Unix seconds) as a clock time in the viewer's
+    time zone (an IANA name from their browser; the server's if unknown),
+    with how long until then."""
+    try:
+        tz = ZoneInfo(tz_name) if tz_name else None
+    except (ValueError, KeyError):
+        tz = None
+    now = time.time() if now is None else now
+    when, today = datetime.fromtimestamp(start, tz), datetime.fromtimestamp(now, tz)
+    if tz is None:
+        when, today = when.astimezone(), today.astimezone()
+    if when.date() == today.date():
+        day = ""
+    elif when.date() == today.date() + timedelta(days=1):
+        day = "tomorrow "
+    else:
+        day = f"{when:%a %d %b} "
+    text = f"{day}{when:%H:%M %Z}"
+    if start > now:
+        text += f" (in {format_duration(start - now)})"
+    else:
+        text += " (overdue: any time now)"
+    return text
+
+
 @dataclass
 class _Run:
     """One press of Run Inference: the GPUs asked for, the PBS job once it's
@@ -275,6 +302,7 @@ class _Run:
     started_at: float = None
     ended_at: float = None
     tick: object = None
+    timezone: str = None    # the viewer's browser's, for times shown
     cancel: threading.Event = field(default_factory=threading.Event)
     model_states: dict = field(default_factory=dict)
     model_started: dict = field(default_factory=dict)
@@ -342,6 +370,9 @@ class ModelTab(param.Parameterized):
         self.gpuTypePicker = pn.widgets.Select(width=220)
         self.gpuCountPicker = pn.widgets.Select(width=80)
         self.walltimeLabel = pn.widgets.StaticText(name="Wall time (estimated)", value="")
+        # PBS's own estimate, shown only while a submitted job waits.
+        self.startLabel = pn.widgets.StaticText(name="Estimated start", value="",
+                                                visible=False)
         self.nodeWarning = pn.pane.Alert("", alert_type="warning", visible=False,
                                          sizing_mode='stretch_width')
         self.gpuWarning = pn.pane.Alert("", alert_type="warning", visible=False,
@@ -631,6 +662,7 @@ class ModelTab(param.Parameterized):
             queue=self._queue(),
             gpu_type=SYSTEMS[self.systemPicker.value].gpu_types[self.gpuTypePicker.value],
             n_gpus=self.gpuCountPicker.value or 1,
+            timezone=getattr(pn.state.browser_info, 'timezone', None),
         )
         self._doc = pn.state.curdoc
 
@@ -833,6 +865,14 @@ class ModelTab(param.Parameterized):
             self.jobLabel.value = text
         self._ui(_update)
 
+    def _set_start_estimate(self, text):
+        """Show PBS's estimated start under Compute Settings, or hide it
+        (text None)."""
+        def _update():
+            self.startLabel.value = text or ""
+            self.startLabel.visible = text is not None
+        self._ui(_update)
+
     def _run_job(self, run, runners):
         """Write each model's command, submit them as one PBS job and follow
         it until it ends. Runs in a background thread."""
@@ -1006,12 +1046,18 @@ class ModelTab(param.Parameterized):
                     why = f" - {status.comment}" if status.comment else ""
                     self._set_job_label(f"{job.job_id} - {_STATE_NAMES.get(status.state, status.state)}"
                                         f" on {run.system}{why}")
+                    self._set_start_estimate(
+                        format_start_estimate(status.estimated_start, run.timezone)
+                        if status.estimated_start else "not estimated yet")
+                elif status.state != '?':
+                    self._set_start_estimate(None)
                 if finished and now - all_done_at > self.EXIT_GRACE:
                     # Every model is done; don't let a straggling process
                     # keep the GPUs.
                     job.delete()
             run.cancel.wait(1)
 
+        self._set_start_estimate(None)
         run.ended_at = run.ended_at or time.time()
         if run.started_at is None and not run.cancel.is_set():
             # Ended without ever starting (deleted from outside, held, ...)
@@ -1140,6 +1186,7 @@ class ModelTab(param.Parameterized):
                 self._labelled("GPUs", self.gpuCountPicker),
             ),
             pn.Row(self.walltimeLabel, self.accountLabel),
+            self.startLabel,
             self.gpuWarning,
             self.nodeWarning,
             sizing_mode='stretch_width',

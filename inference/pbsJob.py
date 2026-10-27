@@ -22,6 +22,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -234,6 +235,16 @@ def format_duration(seconds):
     return f"{s}s"
 
 
+def _pbs_time(text):
+    """Unix seconds from a qstat -f time such as 'Tue Oct 27 16:00:32 2026',
+    which is in the PBS server's time zone (this one's: Casper and Derecho
+    are both in Mountain time), or None."""
+    try:
+        return time.mktime(time.strptime(text, '%a %b %d %H:%M:%S %Y'))
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------- #
 #  The job                                                                 #
 # ---------------------------------------------------------------------- #
@@ -261,6 +272,9 @@ class JobState:
     exec_host: str = ''
     exit_status: int = None
     comment: str = ''
+    # When PBS expects a queued job to start (Unix seconds), if it has
+    # planned it yet.
+    estimated_start: float = None
 
 
 @dataclass
@@ -427,7 +441,7 @@ class PBSJob:
             return JobState('?')
         fields = {}
         for line in result.stdout.splitlines():
-            m = re.match(r'\s+(\w+) = (.*)', line)
+            m = re.match(r'\s+([\w.]+) = (.*)', line)
             if m:
                 fields[m.group(1)] = m.group(2).strip()
         exit_status = fields.get('Exit_status')
@@ -436,6 +450,7 @@ class PBSJob:
             exec_host=fields.get('exec_host', '').split('/')[0],
             exit_status=int(exit_status) if exit_status not in (None, '') else None,
             comment=fields.get('comment', ''),
+            estimated_start=_pbs_time(fields.get('estimated.start_time')),
         )
 
     def delete(self):
