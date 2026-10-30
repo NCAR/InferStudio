@@ -62,6 +62,11 @@ if (el._stick) {
 }
 """
 
+# Models shown but not offered: their button is greyed out. WXFormer gen 1
+# writes output the Visualization tab can't read; gen 2 runs the same
+# weights.
+DISABLED_MODELS = frozenset({'WXFormer'})
+
 # Button labels for models whose name (also their output directory) isn't
 # what the button should say.
 MODEL_LABELS = {
@@ -73,15 +78,17 @@ MODEL_LABELS = {
 # Short, hover-friendly descriptions shown as a tooltip on each model button.
 MODEL_DESCRIPTIONS = {
     'WXFormer': (
-        "NCAR MILES-CREDIT's own transformer-based weather model (1 hour, "
-        "0.25 degree), run through MILES-CREDIT's original gen1 pipeline. "
-        "Writes ERA5-style output with a real vertical-level dimension."
+        "Disabled: use WXFormer (gen 2), the same weights, whose output the "
+        "Visualization tab can show. NCAR MILES-CREDIT's own transformer-based "
+        "weather model (1 hour, 0.25 degree), run through MILES-CREDIT's "
+        "original gen1 pipeline."
     ),
     'WXFormerGen2': (
-        "The same WXFormer weights run through MILES-CREDIT's gen2 realtime "
-        "pipeline (rollout_realtime_gen2), with a config converted by "
-        "`credit convert`. Needs miles-credit 2026.2 or later (the InferStudio "
-        "conda environment). Saves every hourly step."
+        "NCAR MILES-CREDIT's own transformer-based weather model (1 hour, "
+        "0.25 degree), run through MILES-CREDIT's gen2 realtime pipeline "
+        "(rollout_realtime_gen2). Needs miles-credit 2026.2 or later (the "
+        "InferStudio conda environment). Saves wind, temperature, humidity "
+        "and geopotential at 500, 700 and 850 hPa only."
     ),
     'AIFS': (
         "ECMWF's AI Forecasting System, run through Earth2Studio (PyTorch). "
@@ -137,9 +144,11 @@ class ModelPicker(param.Parameterized):
 
     value = param.List(default=[])
 
-    def __init__(self, options, descriptions=None, labels=None, groups=None, **params):
+    def __init__(self, options, descriptions=None, labels=None, groups=None,
+                 disabled=(), **params):
         """groups: optional [(heading, names)] to show the buttons in
-        headed rows; options still sets their order in `value`."""
+        headed rows; options still sets their order in `value`. disabled:
+        names whose buttons are shown but can't be selected."""
         super().__init__(**params)
         descriptions = descriptions or {}
         labels = labels or {}
@@ -152,6 +161,7 @@ class ModelPicker(param.Parameterized):
                 description=(below_tooltip(descriptions[name])
                              if name in descriptions else None),
                 margin=(0, 5, 5, 0),
+                disabled=name in disabled,
             )
             button.on_click(partial(self._on_click, name))
             self._buttons[name] = button
@@ -342,6 +352,7 @@ class ModelTab(param.Parameterized):
             descriptions=MODEL_DESCRIPTIONS,
             labels=MODEL_LABELS,
             groups=groups,
+            disabled=DISABLED_MODELS,
         )
 
         self.outputParams = self._make_output_params(

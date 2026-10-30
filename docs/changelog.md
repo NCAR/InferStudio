@@ -66,6 +66,9 @@ for deciding whether to upgrade.
 
 ### Changed
 
+- WXFormer (gen 1), MILES-CREDIT's original pipeline, is disabled on the
+  Weather tab: its output can't be shown. WXFormer (gen 2) runs the same
+  weights.
 - Plot state consolidated into a single shared controls object driven from the
   sidebar; all plots now update together.
 - Dataset scanner detects the `lead_time` dimension and branches between
@@ -76,6 +79,11 @@ for deciding whether to upgrade.
 - Default output path is `/glade/scratch/$USER`.
 
 ### Fixed
+
+- WXFormer output now shows in the Visualization tab and Statistics: when a run
+  ends, its per-lead-time files are gathered into one file in the other weather
+  models' layout. It has 500, 700 and 850 hPa only, and its first (initial)
+  time step is empty.
 
 - A model run that died part way no longer breaks the plots. Its unwritten
   steps hold netCDF's default fill value (9.97e+36), which was read as data and

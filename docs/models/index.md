@@ -85,9 +85,16 @@ output, with a warning in its log.
 [MILES-CREDIT](https://github.com/NCAR/miles-credit) is NCAR's own AI
 weather-modelling framework.
 
-**WXFormer** is the model exposed through InferStudio. It is driven by a separate
-runner and writes **ERA5-style** output: variables keep their bare names and the
-vertical coordinate is a real dimension.
+**WXFormer** is the model exposed through InferStudio, run through
+MILES-CREDIT's gen2 realtime pipeline (`MilesCreditGen2Runner`; the Weather
+tab's WXFormer (gen 2), output directory `WXFormerGen2`). It starts from a GFS
+analysis it fetches itself. WXFormer (gen 1), the original pipeline
+(`MilesCreditRunner`), is shown but disabled: its output can't be shown.
+It saves one ERA5-style file per lead time, which InferStudio gathers into one
+file in the other weather models' layout when the run ends (see
+{doc}`../reference/output-formats`): wind, temperature, humidity and
+geopotential at 500, 700 and 850 hPa, and SP, MSL and t2m. It doesn't save its
+initial state, so its first time step is empty.
 
 ## Physical models
 
@@ -133,7 +140,8 @@ Both families share an abstract base:
 ```text
 ModelRunner  (abstract)
 ├── Earth2StudioRunner   — dispatches into per-model uv venvs via MODEL_ENV_MAP
-├── MilesCreditRunner    — dispatches into the CREDIT environment
+├── MilesCreditRunner    — WXFormer gen 1 (disabled on the Weather tab)
+├── MilesCreditGen2Runner — WXFormer gen 2, in the InferStudio (CREDIT) environment
 ├── ForecastSourceRunner — fetches a physical model's published forecast
 └── CESM2LERunner        — reads CESM2-LE's output from GDEX
 ```

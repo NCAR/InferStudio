@@ -30,7 +30,7 @@ How these two controls behave depends on the convention of the active dataset:
 * - Earth2Studio (flattened)
   - Lists composite names: `u850`, `t500`, `z500`, `u100`
   - Hidden — the level is part of the variable name
-* - ERA5-style (CREDIT / WXFormer)
+* - ERA5-style (ERA5)
   - Lists bare names: `U`, `T`, `Z`
   - Active, listing the dataset's vertical coordinate values
 :::

@@ -46,9 +46,15 @@ Notes:
   model's variable list rather than assuming.
 - Longitude commonly runs 0–360.
 
-## ERA5-style (MILES-CREDIT / WXFormer)
+## ERA5-style (ERA5, raw WXFormer)
 
-Produced by CREDIT models, and the same shape as ERA5 itself.
+The shape of ERA5 itself, and of what MILES-CREDIT's WXFormer saves: one file
+per lead time, `<init>Z/pred_<init>Z_<FHR>.nc` in its model directory. The
+Visualization tab doesn't read those; when the run ends, InferStudio gathers
+WXFormer's pressure-level and surface fields from them into one
+`<name>_WXFormerGen2_cf.nc`, in the same CF layout and variable names (`u`, `t`,
+`sp`, `msl`, ...) as the other weather models. It saves 500, 700 and 850 hPa
+only, and no initial state: its first time step is NaN.
 
 **Distinguishing feature:** a real vertical coordinate, bare variable names, no
 `lead_time` dimension.

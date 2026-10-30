@@ -36,6 +36,7 @@ is built entirely around lowercase names already.
 """
 
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -375,48 +376,107 @@ def make_cf_compliant(nc_path, suffix="_cf"):
                 da.attrs = dict(da.attrs, **_CF_SURFACE_ATTRS[name])
             new_vars[name] = da
 
-        out_ds = xr.Dataset(new_vars, coords=ds.coords)
-
-        out_ds = _apply_coord_attrs(out_ds)
-
-        # Point each data variable at its auxiliary coordinates. Without
-        # this a CF reader has no way to know forecast_period applies to
-        # these variables rather than being an unrelated array. Dimension
-        # coordinates (time, pressure, lat, lon) are found automatically
-        # and must NOT be listed here.
-        aux = [c for c in ("forecast_reference_time", "forecast_period")
-               if c in out_ds.coords]
-        if aux:
-            for v in out_ds.data_vars:
-                out_ds[v].attrs["coordinates"] = " ".join(aux)
-
-        out_ds.attrs["Conventions"] = "CF-1.11"
-
-        # Write the coordinates first, then one data variable at a time, so
-        # progress can be reported and only one variable is in memory at once.
-        encoding = _build_encoding(out_ds)
-        names = list(out_ds.data_vars)
-        print(f"CF conversion: writing {len(names)} variables to {out_path}", flush=True)
-        coords_only = out_ds.drop_vars(names)
-        coords_only.to_netcdf(
-            out_path, mode="w",
-            encoding={k: v for k, v in encoding.items() if k in coords_only.variables})
-        for i, name in enumerate(names, 1):
-            start = time.monotonic()
-            one = out_ds[[name]]
-            one.to_netcdf(
-                out_path, mode="a",
-                encoding={k: v for k, v in encoding.items() if k in one.variables})
-            print(f"CF conversion: [{i}/{len(names)}] {name} "
-                  f"({time.monotonic() - start:.1f}s)", flush=True)
+        _write_cf(xr.Dataset(new_vars, coords=ds.coords), out_path)
 
     return out_path
 
 
+# WXFormer (MILES-CREDIT gen2) saves one file per lead time,
+# <save_dir>/<init>Z/pred_<init>Z_<FHR:03d>.nc, already in valid time and
+# with a real `pressure` dimension, but under its own names, and with its
+# own model levels besides. These are the fields the other weather models
+# write, and the names they write them under. Its model-level fields (16 of
+# ECMWF's 137 levels, which no other model has) are left in the per-lead
+# files.
+WXFORMER_VARS = {
+    "U_PRES": "u", "V_PRES": "v", "T_PRES": "t", "Q_PRES": "q", "Z_PRES": "z",
+    "SP": "sp", "t2m": "t2m", "mean_sea_level_pressure": "msl",
+}
+
+
+def wxformer_to_cf(save_dir, out_path):
+    """Gather a WXFormer run's per-lead files in `save_dir` into one file at
+    `out_path` in the layout make_cf_compliant writes. Returns out_path."""
+    files = sorted(Path(save_dir).glob("*Z/pred_*Z_*.nc"))
+    inits = {f.parent.name for f in files}
+    if len(inits) != 1:
+        raise ValueError(f"expected the output of one WXFormer run in {save_dir}; "
+                         f"found {len(inits)} initialization(s)")
+    init = pd.Timestamp(datetime.strptime(inits.pop(), "%Y-%m-%dT%HZ")).to_datetime64()
+
+    def keep(ds):
+        return ds[[v for v in WXFORMER_VARS if v in ds.data_vars]]
+
+    with xr.open_mfdataset(files, preprocess=keep, combine="nested", concat_dim="time",
+                           engine="netcdf4") as ds:
+        ds = ds.sortby("time").rename(
+            {k: v for k, v in WXFORMER_VARS.items() if k in ds.data_vars})
+        ds = ds.rename({d: n for d, n in (("latitude", "lat"), ("longitude", "lon"))
+                        if d in ds.dims})
+        # Its pressure-level fields are float64; the other models' are float32.
+        ds = ds.astype("float32")
+        # It doesn't save its initial state, but the Visualization tab steps
+        # through every model's output by index, from lead 0. A NaN step
+        # there keeps its later steps in line with the other models'.
+        if ds["time"].values[0] != init:
+            empty = (ds.isel(time=[0]) * np.nan).assign_coords(time=[init])
+            ds = xr.concat([empty, ds], dim="time")
+        for name in ds.data_vars:
+            ds[name].attrs = dict(_CF_VAR_ATTRS.get(name) or _CF_SURFACE_ATTRS[name],
+                                  short_name=name)
+        ds = ds.assign_coords(
+            forecast_reference_time=init,
+            forecast_period=("time", (ds["time"].values - init) / np.timedelta64(1, "h")),
+        )
+        _write_cf(ds, out_path)
+    return out_path
+
+
+def _write_cf(out_ds, out_path):
+    """Stamp the CF coordinate and global attributes on out_ds and write it
+    to out_path."""
+    out_ds = _apply_coord_attrs(out_ds)
+
+    # Point each data variable at its auxiliary coordinates. Without
+    # this a CF reader has no way to know forecast_period applies to
+    # these variables rather than being an unrelated array. Dimension
+    # coordinates (time, pressure, lat, lon) are found automatically
+    # and must NOT be listed here.
+    aux = [c for c in ("forecast_reference_time", "forecast_period")
+           if c in out_ds.coords]
+    if aux:
+        for v in out_ds.data_vars:
+            out_ds[v].attrs["coordinates"] = " ".join(aux)
+
+    out_ds.attrs["Conventions"] = "CF-1.11"
+
+    # Write the coordinates first, then one data variable at a time, so
+    # progress can be reported and only one variable is in memory at once.
+    encoding = _build_encoding(out_ds)
+    names = list(out_ds.data_vars)
+    print(f"CF conversion: writing {len(names)} variables to {out_path}", flush=True)
+    coords_only = out_ds.drop_vars(names)
+    coords_only.to_netcdf(
+        out_path, mode="w",
+        encoding={k: v for k, v in encoding.items() if k in coords_only.variables})
+    for i, name in enumerate(names, 1):
+        start = time.monotonic()
+        one = out_ds[[name]]
+        one.to_netcdf(
+            out_path, mode="a",
+            encoding={k: v for k, v in encoding.items() if k in one.variables})
+        print(f"CF conversion: [{i}/{len(names)}] {name} "
+              f"({time.monotonic() - start:.1f}s)", flush=True)
+
+
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) != 2:
-        print("Usage: python cf_convert.py <path_to_netcdf>")
+    if len(sys.argv) == 4 and sys.argv[1] == "--wxformer":
+        result = wxformer_to_cf(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 2:
+        result = make_cf_compliant(sys.argv[1])
+    else:
+        print("Usage: python cf_convert.py <path_to_netcdf>\n"
+              "       python cf_convert.py --wxformer <wxformer_save_dir> <output.nc>")
         sys.exit(1)
-    result = make_cf_compliant(sys.argv[1])
     print("Wrote CF-compliant file: " + result)

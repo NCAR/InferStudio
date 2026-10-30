@@ -24,7 +24,7 @@ write plotting code by hand.
 | AIFS | earth2studio | Fully supported (visualization + verification) |
 | Aurora | earth2studio | Fully supported (visualization + verification) |
 | Pangu | earth2studio | Fully supported (visualization + verification) |
-| WXFormer | MILES-CREDIT | Inference supported; visualization not yet wired up (different output format) |
+| WXFormer | MILES-CREDIT | Gen 2: fully supported (visualization + verification), 500, 700 and 850 hPa only. Gen 1: disabled |
 
 ## The two tabs
 
@@ -104,10 +104,8 @@ dependency stacks (different CUDA/PyTorch/library requirements).
 
 ## Known limitations
 
-- WXFormer output uses MILES-CREDIT's ERA5-style format (a true `level`
-  dimension rather than earth2studio's flattened `u850`-style variables) and
-  isn't yet plotted or verified — it currently shows a placeholder in the
-  Visualization tab.
+- WXFormer saves only 500, 700 and 850 hPa, and not its initial state, so
+  its first time step is empty.
 - Only one dataset can be viewed at a time in the Visualization tab.
 - Forecast verification requires network access to fetch GFS analysis data,
   and can take a noticeable amount of time for datasets with many forecast

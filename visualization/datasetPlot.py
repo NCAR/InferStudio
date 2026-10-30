@@ -17,13 +17,11 @@ from visualization.boundaries import (
 
 pn.extension(raw_css=[Path("static/styles.css").read_text()])
 
-# Models whose output uses the earth2studio flattened level-variable
-# convention (u100, u850, ... instead of a real `level` dimension).
-# TODO: WXFormer/MILES-CREDIT output is ERA5-style with a real level
-# dimension and isn't handled by plot_e2s_field yet — it still needs its
-# own branch here (probably routing back through era5_plot.plot_png).
+# Models whose output plot_e2s_field can plot: earth2studio's layout, as
+# cf_convert writes it (WXFormer's is gathered into it by
+# cf_convert.wxformer_to_cf).
 EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "CAMulator",
-                              "DLESyMv0_ISCCP_ERA5", "GFS", "CESM2-LE"}
+                              "DLESyMv0_ISCCP_ERA5", "GFS", "CESM2-LE", "WXFormerGen2"}
 
 
 def _schedule(fn):

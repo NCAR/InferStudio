@@ -72,6 +72,10 @@ WXFORMER_STEP_HOURS = 1     # WXFormer's own time step
 # Runs rollout_realtime_gen2, reading GFS from Google Cloud (see the module).
 GEN2_ROLLOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creditGen2Rollout.py")
 
+# The checkout this runs from, whose cf_convert gathers gen2's output into
+# one file.
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # Both WXFormer rollouts (gen1's rollout_realtime, stepping 1 hour at a time,
 # and rollout_realtime_gen2) save every step, as
 # <save_dir>/<init>Z/pred_<init>Z_<FHR:03d>.nc. This removes the hours that
@@ -93,6 +97,16 @@ def _thin_cmd(config) -> str:
     if every <= WXFORMER_STEP_HOURS:
         return ""
     return f" && python -c {shlex.quote(_THIN)} {shlex.quote(config['output_path'])} {every}"
+
+
+def _cf_cmd(config) -> str:
+    """The command (with a leading " && ") that gathers the saved hours
+    into <file_stem>_cf.nc, the one file per model the Visualization tab
+    reads (see cf_convert.wxformer_to_cf)."""
+    save_dir = config["output_path"]
+    out = os.path.join(save_dir, f"{config['file_stem']}_cf.nc")
+    return (f" && python {shlex.quote(os.path.join(APP_DIR, 'cf_convert.py'))} --wxformer "
+            f"{shlex.quote(save_dir)} {shlex.quote(out)}")
 
 
 class MilesCreditGen2Runner(ModelRunner):
@@ -126,6 +140,7 @@ class MilesCreditGen2Runner(ModelRunner):
             f" --steps {self._steps(config)}"
             f" --save-dir {shlex.quote(save_dir)}"
             + _thin_cmd(config)
+            + _cf_cmd(config)
         )
 
     @staticmethod

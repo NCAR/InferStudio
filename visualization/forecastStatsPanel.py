@@ -57,7 +57,7 @@ from visualization.earth2StudioVars import parse_variable_groups, resolve_var_na
 
 # Models whose output this verification pipeline (and the earth2studio GFS
 # datasource) can currently handle.
-EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "FourCastNet3", "GFS"}
+EARTH2STUDIO_FORMAT_MODELS = {"AIFS", "Aurora", "Pangu", "FourCastNet3", "GFS", "WXFormerGen2"}
 
 # Why a model can't be verified here, for those that never will be. Shown
 # in place of the Compute button's results, so a suite of only these
@@ -263,6 +263,10 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None,
         field = ds[var_name]
         gfs_name = _gfs_name(var_name, field, level)
         if vertical_dim(field) == PRES_NAME:
+            levels = field[PRES_NAME].values
+            if level not in levels:
+                raise ValueError(f"{var_name} has no {level:g} hPa level; it has "
+                                 + ", ".join(f"{l:g}" for l in levels) + " hPa")
             field = field.sel({PRES_NAME: level})
         field = mask_unwritten(field)
 
@@ -317,6 +321,11 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None,
                 prev = done[lead_hours]
                 rows.append({"lead_hours": lead_hours,
                              **{c: prev[c] for c in columns}, "error": None})
+                continue
+
+            # A step the model didn't save (WXFormer's lead 0, see
+            # cf_convert.wxformer_to_cf) has nothing to verify.
+            if bool(model_field.isnull().all()):
                 continue
 
             try:
