@@ -70,7 +70,7 @@ import holoviews as hv
 import xarray as xr
 from holoviews.operation.datashader import rasterize
 from bokeh.models import (
-    ColumnDataSource, CustomJS, CustomJSTickFormatter, FixedTicker,
+    ColumnDataSource, CustomJS, CustomJSTickFormatter, FixedTicker, Label,
     WheelZoomTool)
 
 from dimensions import PRES_NAME, level_text
@@ -210,6 +210,26 @@ def _lon_period(lon):
     if not np.allclose(d, d[0], rtol=1e-4) or d[0] <= 0:
         return None
     return LON_PERIOD if abs(lon.size * d[0] - LON_PERIOD) < 0.5 * d[0] else None
+
+
+# Shown over a panel whose field has no values - a step the model didn't
+# write, such as WXFormer's first (its initial state; see
+# cf_convert.wxformer_to_cf). See _draw_no_data.
+NO_DATA_TEXT = "No Data"
+
+# Keeps the "No Data" label at the centre of the view as it's panned and
+# zoomed: data-unit coordinates, moved whenever either range changes.
+_NO_DATA_CENTER_JS = """
+label.x = (xr.start + xr.end) / 2
+label.y = (yr.start + yr.end) / 2
+"""
+
+
+def _no_data(da):
+    """True if the field has no values at all. Drawn as it is, such a field
+    gives the plot no value range: no colorbar or title, and the panel
+    collapses to a sliver. A placeholder keeps its place in the grid."""
+    return not bool(da.notnull().any())
 
 
 def display_order(models):
@@ -829,6 +849,10 @@ class PlotGrid(param.Parameterized):
         }
         self._boundary_used = set()
         self._boundary_figs = set()
+        # Titles of the panels showing no data right now, and each figure's
+        # "No Data" label - see _draw_no_data.
+        self._no_data_titles = set()
+        self._no_data_labels = {}
         self._boundary_watcher = self.state.param.watch(
             lambda event: self._update_boundaries(), "boundaries")
 
@@ -1064,6 +1088,39 @@ class PlotGrid(param.Parameterized):
         if AUTOSIZE_TAG not in fig.tags:
             fig.tags = [*fig.tags, AUTOSIZE_TAG]
 
+    def _draw_no_data(self, plot, element):
+        """Bokeh hook (see _panel_opts): "No Data" across the middle of a
+        panel whose field has no values, hidden otherwise.
+
+        A Bokeh Label on the figure rather than a HoloViews Text overlay,
+        which would change the panel's structure (see _panel_opts). One
+        label per figure, added once; each render only shows or hides it,
+        by whether the panel's title is one _no_data_placeholder made.
+        """
+        fig = plot.state
+        label = self._no_data_labels.get(id(fig))
+        if label is None:
+            xr, yr = fig.x_range, fig.y_range
+            label = Label(
+                x=(xr.start + xr.end) / 2, y=(yr.start + yr.end) / 2,
+                text=NO_DATA_TEXT, text_align="center", text_baseline="middle",
+                text_font_size="28pt", text_font_style="bold",
+                text_color="#4a5866", background_fill_color="white",
+                background_fill_alpha=0.85, visible=False)
+            fig.add_layout(label)
+            center = CustomJS(args=dict(label=label, xr=xr, yr=yr),
+                              code=_NO_DATA_CENTER_JS)
+            for rng in (xr, yr):
+                rng.js_on_change("start", center)
+                rng.js_on_change("end", center)
+            self._no_data_labels[id(fig)] = label
+        label.visible = fig.title.text in self._no_data_titles
+
+    def _no_data_placeholder(self, title, kind="field"):
+        """A blank panel with "No Data" across it (see _draw_no_data)."""
+        self._no_data_titles.add(title)
+        return self._placeholder(title, kind=kind)
+
     def _draw_boundaries(self, plot, element):
         """Bokeh hook (see _panel_opts): draw the selected Natural Earth
         boundaries over the map.
@@ -1280,7 +1337,7 @@ class PlotGrid(param.Parameterized):
                    self._wire_dblclick_reset,
                    self._sync_colorbar_title, self._tick_colorbar_ends,
                    partial(self._wire_colorbar_drag, kind),
-                   self._draw_boundaries],
+                   self._draw_boundaries, self._draw_no_data],
             **self._sizing_opts(),
         )
 
@@ -1388,6 +1445,9 @@ class PlotGrid(param.Parameterized):
             if label != self.state.header_text:
                 _schedule(partial(setattr, self.state, "header_text", label))
 
+        if _no_data(da):
+            return self._no_data_placeholder(model)
+        self._no_data_titles.discard(model)
         return self._element(da, meta, title=model)
 
     def _diff_cb(self, model, **_):
@@ -1445,8 +1505,11 @@ class PlotGrid(param.Parameterized):
         with self._fields_lock:
             self._fields[("diff", model)] = (da, meta)
 
-        return self._element(da, meta, title=f"{model} minus {other}",
-                             cmap=DIFF_CMAP, kind="diff")
+        title = f"{model} minus {other}"
+        if _no_data(da):
+            return self._no_data_placeholder(title, kind="diff")
+        self._no_data_titles.discard(title)
+        return self._element(da, meta, title=title, cmap=DIFF_CMAP, kind="diff")
 
     # -- cursor readout --------------------------------------------------
 
@@ -2044,6 +2107,26 @@ class PlotGrid(param.Parameterized):
         self.n_steps = max(1, int(n_steps))
         if self.state.time_index > self.n_steps - 1:
             self.state.time_index = self.n_steps - 1
+
+    def first_step(self):
+        """The time step to open the suite on: WXFormer's first with data
+        if it's in the grid (it doesn't write its initial state, so its
+        step 0 is empty), else 0. Checked on the selected variable, a step
+        at a time, and never past the last step."""
+        start = 0
+        for model in self.models:
+            if not model.startswith("WXFormer"):
+                continue
+            for t in range(getattr(self, "n_steps", 1)):
+                try:
+                    da, _ = load_e2s_field(self.model_dirs[model], self.state.variable,
+                                           self.state.level, t)
+                except Exception:
+                    break
+                if not _no_data(da):
+                    start = max(start, t)
+                    break
+        return start
 
     def frame_spec(self):
         """What the video exporter needs to render frames itself.

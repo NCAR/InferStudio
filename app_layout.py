@@ -955,6 +955,10 @@ def build_app(data_dir):
         # ntime already came out of the scan, so the forecast length is set
         # without touching the filesystem again.
         grid.set_time_bounds(entry.get("ntime", 1))
+        # Open on WXFormer's first step with data, not its empty first one.
+        start = grid.first_step()
+        if start and controls.time_index < start:
+            controls.time_slider.value = start
         _active_plot["obj"] = grid
         diff_slot.objects = [grid.diff_selectors()]
         grid.refresh_clims_async()

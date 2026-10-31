@@ -90,6 +90,11 @@ for deciding whether to upgrade.
 
 ### Fixed
 
+- A time step a model didn't write (WXFormer's first, its initial state)
+  showed as a collapsed, empty sliver; it's now a full-size blank panel with
+  "No Data" across it. A suite with WXFormer opens on its first step with
+  data.
+
 - Global maps showed the world three times side by side; they now open on one
   globe, from -180 to 180 whatever longitudes the model wrote, and still pan
   across the dateline.
