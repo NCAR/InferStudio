@@ -212,6 +212,24 @@ def _lon_period(lon):
     return LON_PERIOD if abs(lon.size * d[0] - LON_PERIOD) < 0.5 * d[0] else None
 
 
+def display_order(models):
+    """The models in the order their rows are shown: WXFormer (either
+    generation) first, so it's always the top row, then the rest in the
+    order given."""
+    return sorted(models, key=lambda m: not m.startswith("WXFormer"))
+
+
+def _lon_pm180(da, lon_dim):
+    """A global field written on 0..360 moved onto -180..180, so the map
+    is centred on 0 and its axis reads -180..180, whatever convention the
+    model wrote. A regional field is left alone: a grid that doesn't go
+    all the way round can't be folded."""
+    lon = da[lon_dim].values
+    if _lon_period(lon) is None or lon.max() <= 180:
+        return da
+    return da.assign_coords({lon_dim: (lon + 180) % LON_PERIOD - 180}).sortby(lon_dim)
+
+
 def _tile_lon(da, lon_dim, period):
     """`da` with a copy one period west and one period east of it."""
     return xr.concat(
@@ -681,12 +699,13 @@ class PlotGrid(param.Parameterized):
 
     def __init__(self, models, model_dirs, state=None):
         """
-        models         : list[str] - model names, in display order
+        models         : list[str] - model names, shown in this order
+                         except that WXFormer comes first (display_order)
         model_dirs     : dict[str, Path] - model name -> directory of .nc files
         state          : PlotGridState, or None to create one
         """
         super().__init__()
-        self.models = list(models)
+        self.models = display_order(models)
         self.model_dirs = dict(model_dirs)
         self.state = state if state is not None else PlotGridState()
 
@@ -718,6 +737,7 @@ class PlotGrid(param.Parameterized):
             da, meta = load_e2s_field(
                 self.model_dirs[self.models[0]],
                 self.state.variable, self.state.level, 0)
+            da = _lon_pm180(da, meta.lon_dim)
             lon, lat = da[meta.lon_dim].values, da[meta.lat_dim].values
             self._last_extent = (float(lon.min()), float(lat.min()),
                                  float(lon.max()), float(lat.max()))
@@ -924,6 +944,17 @@ class PlotGrid(param.Parameterized):
             # period at most.
             self._apply_zoom_clamp(fig.x_range, lon0 - period, lon1 + period,
                                    MIN_LON_SPAN, max_span=period)
+            # Start on, and reset to, the middle copy. HoloViews ignores
+            # xlim here and starts the range on all three copies' data,
+            # which showed the globe three times over; max_interval only
+            # limits the zoom tools. Only a view wider than one period is
+            # moved, which no zoom or pan can make, so this hook running on
+            # every re-render never undoes the user's.
+            rng = fig.x_range
+            view = (lon0, lon0 + period)
+            if rng.end - rng.start > period * (1 + 1e-6):
+                rng.start, rng.end = view
+            rng.reset_start, rng.reset_end = view
         else:
             self._apply_zoom_clamp(fig.x_range, lon0, lon1, MIN_LON_SPAN)
         self._apply_zoom_clamp(fig.y_range, lat0, lat1, MIN_LAT_SPAN)
@@ -1240,7 +1271,9 @@ class PlotGrid(param.Parameterized):
             ylabel="latitude",
             # The initial view, and what a double-click resets to: one
             # period, not the three copies a periodic field carries.
-            xlim=(self._last_extent[0], self._last_extent[2]),
+            xlim=(self._last_extent[0],
+                  self._last_extent[0] + self._lon_period if self._lon_period
+                  else self._last_extent[2]),
             hooks=[self._tag_autosize,
                    self._clamp_zoom_pan, self._disable_axis_zoom,
                    self._wire_lon_wrap,
@@ -1344,6 +1377,7 @@ class PlotGrid(param.Parameterized):
                     f"{model} - {exc.short} - change time to retry")
             return self._placeholder(f"{model} - {type(exc).__name__}: {exc}")
 
+        da = _lon_pm180(da, meta.lon_dim)
         with self._fields_lock:
             self._fields[("field", model)] = (da, meta)
 
@@ -1407,6 +1441,7 @@ class PlotGrid(param.Parameterized):
                 f"{model} minus {other} - {type(exc).__name__}: {exc}",
                 kind="diff")
 
+        da = _lon_pm180(da, meta.lon_dim)
         with self._fields_lock:
             self._fields[("diff", model)] = (da, meta)
 
@@ -1927,11 +1962,17 @@ class PlotGrid(param.Parameterized):
             return
 
         key = self._field_clim_key()
+        # Read once: this runs in the background for seconds, and a new
+        # suite's variable can arrive in the shared state part way through,
+        # which this grid's models may not have.
+        variable, level = self.state.variable, self.state.level
         lo, hi = np.inf, -np.inf
         for model in self.models:
+            if self._torn_down:
+                return
             try:
-                a, b = field_range(self.model_dirs[model], self.state.variable,
-                                   self.state.level, sample_steps)
+                a, b = field_range(self.model_dirs[model], variable,
+                                   level, sample_steps)
             except Exception:
                 traceback.print_exc()
                 continue
@@ -1946,14 +1987,18 @@ class PlotGrid(param.Parameterized):
             return
 
         key = self._diff_clim_key()
+        # Read once - see _refresh_field_clim.
+        variable, level = self.state.variable, self.state.level
         m = 0.0
         for a, b in self.state.diff_pairs.items():
+            if self._torn_down:
+                return
             if not b or not self._diff_exists(a, b):
                 continue
             try:
                 lo, hi = symmetric_diff_range(
                     self.model_dirs[a], self.model_dirs[b], a, b,
-                    self.state.variable, self.state.level, sample_steps,
+                    variable, level, sample_steps,
                 )
             except Exception:
                 traceback.print_exc()

@@ -3,7 +3,7 @@
 # cron on cron.hpc.ucar.edu, whose environment is nearly empty, so
 # everything the driver needs is set here. Crontab entry:
 #
-#   0 0 * * * /glade/work/pearse/ProductionInferStudio/scripts/nightlyExamples.sh >> /glade/u/home/pearse/.inferstudio/nightlyExamples.log 2>&1
+#   0 0 * * * /glade/work/pearse/ProductionInferStudio/scripts/nightlyExamples.sh >> /glade/campaign/cisl/vast/pearse/inferStudio/logs/nightly/nightlyExamples.log 2>&1
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 

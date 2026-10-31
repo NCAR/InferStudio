@@ -24,6 +24,7 @@ write plotting code by hand.
 | AIFS | earth2studio | Fully supported (visualization + verification) |
 | Aurora | earth2studio | Fully supported (visualization + verification) |
 | Pangu | earth2studio | Fully supported (visualization + verification) |
+| FourCastNet3 | earth2studio | Fully supported (visualization + verification) |
 | WXFormer | MILES-CREDIT | Gen 2: fully supported (visualization + verification), 500, 700 and 850 hPa only. Gen 1: disabled |
 
 ## The two tabs
@@ -48,9 +49,12 @@ write plotting code by hand.
 - **Metadata** — quick reference for a selected dataset: time range, grid
   size, available variables, number of forecast steps, etc.
 
-An example dataset ships with the app and is selected automatically on
-startup, so the Visualization tab has something to show before you've run
-any inference yourself.
+Two example suites are listed at startup, so the Visualization tab has
+something to show before you've run any inference yourself: WeatherExample,
+an 18-hour forecast from the previous day's analysis by every weather model,
+and ClimateExample, a month of every climate model. Both are rerun every
+night, with all their differences and statistics already computed
+(`scripts/nightlyExamples.py`); WeatherExample is selected automatically.
 
 ### Inference
 

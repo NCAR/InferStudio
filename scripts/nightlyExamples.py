@@ -4,17 +4,19 @@ model in another, each saving every variable the Inference tab offers.
 
 Run nightly from cron (see nightlyExamples.sh). Each suite is submitted as
 one PBS job, built the same way the Inference tab's Run Inference builds it
-(the same runners, GPU count and wall time), into a staging directory. When
-the job ends with every model successful, the staged suite replaces the
-published one; otherwise the published one is left as it was and the staged
-one stays behind to look at:
+(the same runners, GPU count and wall time), into a staging directory. If
+every model succeeds, a second, CPU-only job (post.sh in the same job
+directory) computes every model difference and all the verification
+statistics (scripts/precomputeSuite.py), then makes the staged suite the
+published one. If any model fails, PBS drops that second job: the published
+suite is left as it was and the staged one stays behind to look at:
 
     <EXAMPLES_DIR>/WeatherExample               the published suites
     <EXAMPLES_DIR>/ClimateExample
     <EXAMPLES_DIR>/.staging/<suite>/<suite>     tonight's, while it runs
     <EXAMPLES_DIR>/.staging/<suite>/jobid       its PBS job
 
-A suite whose last job is still queued or running isn't submitted again.
+A suite whose last jobs are still queued or running isn't submitted again.
 
 Usage (from the app directory, in the InferStudio conda environment, with
 INFERSTUDIO_ACCOUNT set):
@@ -28,6 +30,7 @@ import argparse
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -41,20 +44,32 @@ from inference.cesm2leRunner import CESM2LE_MEMBERS, CESM2LERunner
 from inference.earth2StudioRunner import Earth2StudioRunner
 from inference.forecastSourceRunner import ForecastSourceRunner
 from inference.milesCreditRunner import MilesCreditGen2Runner
-from inference.pbsJob import (CPU_ONLY_QUEUE, CPU_ONLY_SYSTEM, JOBS_DIR, SYSTEMS, ModelRun,
-                              PBSJob, default_gpu_count, estimate_walltime, model_seconds,
-                              project_account)
+from inference.pbsJob import (CPU_ONLY_QUEUE, CPU_ONLY_SYSTEM, MODULES, SYSTEMS,
+                              ModelRun, PBSJob, _pbs, conda_env, default_gpu_count,
+                              estimate_walltime, model_seconds, project_account)
 
 EXAMPLES_DIR = Path('/glade/campaign/cisl/vast/pearse/InferStudioExamples')
 
-# Job directories (~/.inferstudio/jobs) of earlier nights are removed after
-# this long.
+# The nightly jobs' directories (one per suite per night, with each
+# model's job script, PBS output and post.out), beside the cron log
+# nightlyExamples.sh appends to. Those of earlier nights are removed after
+# KEEP_JOB_DIRS.
+NIGHTLY_DIR = Path('/glade/campaign/cisl/vast/pearse/inferStudio/logs/nightly')
 KEEP_JOB_DIRS = timedelta(days=14)
 
 # Where the GPU models run: the Inference tab's defaults.
 SYSTEM = 'Derecho'
 QUEUE = next(iter(SYSTEMS[SYSTEM].queues))
 GPU_TYPE = next(iter(SYSTEMS[SYSTEM].gpu_types.values()))
+
+# The job that computes differences and statistics after the models: on
+# Derecho's develop queue too, since PBS only chains jobs on the same
+# server, but with no GPU, as a shared node's share.
+POST_QUEUE = SYSTEMS[SYSTEM].queues[QUEUE].queue
+POST_SELECT = 'select=1:ncpus=8:mem=64GB'
+# Measured: 25 minutes for the weather suite (15 of them statistics, mostly
+# fetching GFS), 4 for the climate one.
+POST_WALLTIME = '01:30:00'
 
 # Every variable each tab's buttons offer (OutputParams' defaults on the
 # Weather tab, inferenceTab.CLIMATE_SURFACE_VARS on the Climate tab; copied,
@@ -152,15 +167,16 @@ def submit_suite(suite, account, dry_run=False):
     if capped:
         log(f"{name}: needs more than {system} {queue}'s wall-time limit; it may be cut short.")
 
-    job = PBSJob.create(name, system, queue)
+    job = PBSJob.create(name, system, queue, jobs_dir=NIGHTLY_DIR)
     script = job.write_script(runs, account, GPU_TYPE, n_gpus, walltime, APP_DIR)
     # Any model failing to set up already means an incomplete suite.
     with open(script, 'a') as f:
-        f.write(promote_lines(name, [r.model for r in runs], ok=not failed))
+        f.write(check_lines(name, [r.model for r in runs], ok=not failed))
+    post = write_post_script(job, name, account)
     log(f"{name}: {', '.join(r.model for r in runs)} on {system} {queue}, "
         f"{n_gpus} GPU(s), {walltime // 60} min; job files in {job.job_dir}")
     if dry_run:
-        log(f"{name}: dry run, not submitted: {script}")
+        log(f"{name}: dry run, not submitted: {script}, then {post}")
         return True
     try:
         job_id = job.submit(script)
@@ -169,29 +185,77 @@ def submit_suite(suite, account, dry_run=False):
         return False
     (stage / 'jobid').write_text(job_id + '\n')
     log(f"{name}: submitted {job_id}")
+    try:
+        post_id = qsub_after(post, job_id, job.job_dir)
+    except RuntimeError as e:
+        log(f"{name}: {e}; the suite won't be published.")
+        return False
+    # The last job of the two: still in PBS while either is.
+    (stage / 'jobid').write_text(post_id + '\n')
+    log(f"{name}: submitted {post_id} to follow it")
     return True
 
 
-def promote_lines(name, models, ok):
-    """Lines for the end of the job script: if every model succeeded, make
-    the staged suite the published one, readable by everyone."""
+def check_lines(name, models, ok):
+    """Lines for the end of the inference job script: fail the job unless
+    every model succeeded, so the job that publishes the suite doesn't
+    run."""
     stage = shlex.quote(str(EXAMPLES_DIR / '.staging' / name / name))
-    published = shlex.quote(str(EXAMPLES_DIR / name))
-    old = shlex.quote(str(EXAMPLES_DIR / f'.{name}.old'))
     checks = ' && '.join(f'[ "$(cat "$JOB_DIR/{m}.exit" 2>/dev/null)" = 0 ]' for m in models)
     return f"""
-# Publish the suite, only if it's complete.
-if {'true' if ok else 'false'} && {checks}; then
-    chmod -R a+rX {stage}
-    rm -rf {old}
-    if [ -e {published} ]; then mv {published} {old}; fi
-    mv {stage} {published} && rm -rf {old}
-    echo "Published {name} to {published}."
-else
+if ! {{ {'true' if ok else 'false'} && {checks}; }}; then
     echo "Not every model succeeded; {name} left as it was. This run: {stage}"
     exit 1
 fi
 """
+
+
+def write_post_script(job, name, account):
+    """The job that follows the models: precompute the staged suite's
+    differences and statistics, then make it the published one, readable
+    by everyone. It's published even if some of those failed; the tabs
+    compute anything missing when asked."""
+    stage = shlex.quote(str(EXAMPLES_DIR / '.staging' / name / name))
+    published = shlex.quote(str(EXAMPLES_DIR / name))
+    old = shlex.quote(str(EXAMPLES_DIR / f'.{name}.old'))
+    script = job.job_dir / 'post.sh'
+    script.write_text(f"""#!/bin/bash -l
+#PBS -N InferStudio-{name}-post
+#PBS -A {account}
+#PBS -q {POST_QUEUE}
+#PBS -l {POST_SELECT}
+#PBS -l walltime={POST_WALLTIME}
+#PBS -j oe
+#PBS -o {job.job_dir / 'post.out'}
+
+echo "InferStudio {name} differences and statistics, job $PBS_JOBID on $(hostname)"
+module load {MODULES}
+eval "$(conda shell.bash hook)"
+conda activate {shlex.quote(conda_env())}
+cd {shlex.quote(str(APP_DIR))}
+export PYTHONUNBUFFERED=1
+python scripts/precomputeSuite.py {stage} || echo "Some weren't computed; publishing anyway."
+
+chmod -R a+rX {stage}
+rm -rf {old}
+if [ -e {published} ]; then mv {published} {old}; fi
+mv {stage} {published} && rm -rf {old}
+echo "Published {name} to {published}."
+""")
+    return script
+
+
+def qsub_after(script, job_id, cwd):
+    """qsub the script to run once job_id has ended successfully; PBS
+    deletes it if job_id fails. Returns its job id."""
+    try:
+        result = subprocess.run([_pbs('qsub'), '-W', f'depend=afterok:{job_id}', str(script)],
+                                capture_output=True, text=True, timeout=120, cwd=cwd)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"qsub failed: {e}") from e
+    if result.returncode != 0:
+        raise RuntimeError("qsub failed: " + (result.stderr or result.stdout).strip())
+    return result.stdout.strip()
 
 
 def still_running(jobid_file):
@@ -207,7 +271,7 @@ def still_running(jobid_file):
 
 def prune_job_dirs():
     cutoff = time.time() - KEEP_JOB_DIRS.total_seconds()
-    for path in JOBS_DIR.glob('*Example_*'):
+    for path in NIGHTLY_DIR.glob('*Example_*'):
         if path.name.split('_')[0] in ('WeatherExample', 'ClimateExample'):
             try:
                 if path.stat().st_mtime < cutoff:

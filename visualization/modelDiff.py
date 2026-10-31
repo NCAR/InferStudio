@@ -176,6 +176,18 @@ def compute_model_difference(model_a_dir, model_b_dir,
                 da_a = ds_a[var]
                 da_b = ds_b[var]
                 try:
+                    # The same grid written with last-digit float
+                    # differences (CAMulator's and CESM2-LE's latitudes
+                    # differ by 1e-14) is the same grid: give B A's values.
+                    # Otherwise the subtraction lines the two up by exact
+                    # value and drops every latitude that doesn't match -
+                    # half of them, with no error.
+                    for dim in (_resolve_dim(da_a, *LAT_NAMES), _resolve_dim(da_a, *LON_NAMES)):
+                        if (dim and dim in da_b.dims
+                                and da_a.sizes[dim] == da_b.sizes[dim]
+                                and np.allclose(da_a[dim].values, da_b[dim].values,
+                                                rtol=0, atol=1e-6)):
+                            da_b = da_b.assign_coords({dim: da_a[dim].values})
                     if da_a.shape != da_b.shape:
                         # Grids don't line up (e.g. AIFS's 721-point latitude
                         # grid vs Aurora's 720-point grid). Interpolate ONLY

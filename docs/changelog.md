@@ -13,6 +13,11 @@ for deciding whether to upgrade.
 
 ### Added
 
+- The examples shown at startup are now WeatherExample (every weather model,
+  from the previous day's analysis) and ClimateExample (every climate model),
+  rerun every night with their model differences and statistics already
+  computed.
+
 - CESM2-LE as a physical model on the Climate tab: one historical member's
   6-hourly CAM6 output (1850-2014) read from GDEX in CAMulator's layout, to
   compare with CAMulator and DLESyM. A member picker appears under Time
@@ -66,6 +71,11 @@ for deciding whether to upgrade.
 
 ### Changed
 
+- WXFormer is always the top row of the Visualization tab.
+
+- Usage logs moved to `/glade/campaign/cisl/vast/pearse/inferStudio/logs`,
+  and the nightly example jobs' logs to its `nightly/` subdirectory.
+
 - WXFormer (gen 1), MILES-CREDIT's original pipeline, is disabled on the
   Weather tab: its output can't be shown. WXFormer (gen 2) runs the same
   weights.
@@ -79,6 +89,22 @@ for deciding whether to upgrade.
 - Default output path is `/glade/scratch/$USER`.
 
 ### Fixed
+
+- Global maps showed the world three times side by side; they now open on one
+  globe, from -180 to 180 whatever longitudes the model wrote, and still pan
+  across the dateline.
+
+- Choosing a dataset shows the loading spinner straight away. Before, the
+  outgoing dataset reloaded all its plots for the new selection's variable
+  first, which could take several seconds with no sign anything was happening.
+
+- Differences between two models on the same grid written with slightly
+  different coordinates (CAMulator and CESM2-LE's latitudes differ in the
+  last digit) covered only about half the grid; the rest was silently left
+  out.
+
+- FourCastNet3 output now shows in the Visualization tab, with differences
+  against the other models; it said plotting "isn't wired up yet".
 
 - WXFormer output now shows in the Visualization tab and Statistics: when a run
   ends, its per-lead-time files are gathered into one file in the other weather

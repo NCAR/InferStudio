@@ -13,7 +13,10 @@ import panel as pn
 
 from app_layout import build_app
 
-DATA_DIR = Path("/glade/derecho/scratch/pearse/CREDIT/RAW_OUTPUT/panelTest/")
+# The example suites shown at startup, rerun every night (see
+# scripts/nightlyExamples.py): WeatherExample, every weather model from
+# yesterday's analysis, and ClimateExample, every climate model.
+DATA_DIR = Path("/glade/campaign/cisl/vast/pearse/InferStudioExamples/")
 
 pn.extension(
     'modal',

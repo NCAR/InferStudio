@@ -203,11 +203,15 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
         "level_dims": level_dims,
     }
 
+def dataset_dirs(data_dir):
+    """The datasets under data_dir: its subdirectories, leaving out hidden
+    ones (the nightly examples' .staging, for one)."""
+    return [d for d in data_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+
+
 def scan_datasets(data_dir):
     metadata = {}
-    for d in data_dir.iterdir():
-        if not d.is_dir():
-            continue
+    for d in dataset_dirs(data_dir):
         subdirs_with_nc = [
             sub for sub in d.iterdir()
             if sub.is_dir() and any(sub.glob("*.nc"))
@@ -632,7 +636,7 @@ def link_controls(controls, state):
 
 def build_app(data_dir):
     dataset_metadata = scan_datasets(data_dir)
-    datasets = sorted(d.name for d in data_dir.iterdir() if d.is_dir())
+    datasets = sorted(d.name for d in dataset_dirs(data_dir))
     browser = DatasetBrowser(datasets=datasets)
     meta_panel = DatasetMetadata(metadata=dataset_metadata)
 
@@ -692,12 +696,10 @@ def build_app(data_dir):
 
     browser.param.watch(sync_active, 'active_dataset')
 
-    def sync_controls(event):
-        controls.update_choices(event.new, dataset_metadata)
+    # The variable/level/time choices follow the selection, but not from a
+    # watcher on it: see _on_checked.
 
-    browser.param.watch(sync_controls, 'checked_items')
-
-    DEFAULT_DATASET = "ExampleDataset"
+    DEFAULT_DATASET = "WeatherExample"
     if DEFAULT_DATASET in dataset_metadata:
         browser.checked_items = [DEFAULT_DATASET]
         browser.active_dataset = DEFAULT_DATASET
@@ -842,18 +844,41 @@ def build_app(data_dir):
     diff_slot = pn.Column(sizing_mode="stretch_width", margin=(0, 10, 0, 0))
 
     shown = _ShownDatasets(datasets=list(browser.checked_items))
+    controls.update_choices(shown.datasets, dataset_metadata)
     # Bumped on every selection change, so a superseded selection's
     # pending build is skipped instead of run and thrown away.
     _load_token = {"n": 0}
 
+    def _show(datasets):
+        """Show `datasets`: detach the grid on screen, then update the
+        controls' choices for the new selection, then build its tabs.
+
+        In that order because the controls are linked to the grid: changing
+        the variable, level or time while the outgoing grid is attached has
+        it reload every one of its fields and recompute its colour limits -
+        seconds of work for a suite nobody is looking at any more.
+        """
+        if datasets == shown.datasets:
+            # Already showing (a selection changed and changed back before
+            # its build ran): nothing would rebuild the grid torn down below.
+            return
+        prev = _active_plot.get("obj")
+        if hasattr(prev, "teardown"):
+            prev.teardown()
+        controls.update_choices(datasets, dataset_metadata)
+        shown.datasets = datasets
+
     def _on_checked(event):
+        # Only the busy overlay is changed here, so it reaches the browser
+        # as soon as this returns; everything slow happens on the next tick
+        # (see _ShownDatasets).
         new = list(event.new)
         _load_token["n"] += 1
         token = _load_token["n"]
         if not new:
             # Nothing to build - the tabs just show a prompt.
             shown.loading = ""
-            shown.datasets = new
+            _show(new)
             return
         shown.loading = new[0]
 
@@ -861,7 +886,7 @@ def build_app(data_dir):
             if token != _load_token["n"]:
                 return
             try:
-                shown.datasets = new
+                _show(new)
             finally:
                 if token == _load_token["n"]:
                     shown.loading = ""
@@ -1282,6 +1307,11 @@ def build_app(data_dir):
     template.header.append(
         pn.pane.PNG(
             str(_STATIC_DIR / "nsf_ncar_logo_padded.png"),
+            # In a new tab, like the Docs and Questions links: following it
+            # in this one would leave the running session.
+            link_url="https://ncar.ucar.edu/",
+            target="_blank",
+            alt_text="NSF NCAR",
             height=45,
             width=534,
             sizing_mode="fixed",

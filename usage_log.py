@@ -4,8 +4,8 @@ tamper with others' files in.
 
 Set the directory up once, as its owner:
 
-    mkdir /glade/work/pearse/inferstudio_stats
-    chmod 1733 /glade/work/pearse/inferstudio_stats
+    mkdir -p /glade/campaign/cisl/vast/pearse/inferStudio/logs
+    chmod 1733 /glade/campaign/cisl/vast/pearse/inferStudio/logs
 
 1733 lets other users create files there but not list the directory, and
 the sticky bit stops them deleting or renaming anyone else's files. Each
@@ -49,7 +49,7 @@ import time
 from datetime import datetime
 
 USAGE_DIR = os.environ.get("INFERSTUDIO_USAGE_DIR",
-                           "/glade/work/pearse/inferstudio_stats")
+                           "/glade/campaign/cisl/vast/pearse/inferStudio/logs")
 ENABLED = os.environ.get("INFERSTUDIO_USAGE_LOG", "1") != "0"
 # Users whose sessions are logged under USAGE_DIR/<user>/ rather than
 # alongside everyone else's -- see the module docstring.
