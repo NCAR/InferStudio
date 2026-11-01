@@ -41,6 +41,7 @@ from PIL import Image, ImageDraw
 
 from cf_convert import variable_long_name
 from dimensions import level_text
+from visualization import vaporColormaps
 from visualization.earth2StudioPlot import load_e2s_field, plot_e2s_field
 from usage_log import log_event, short_error
 
@@ -630,7 +631,8 @@ class VideoExportPanel(param.Parameterized):
         vmax = self.controls.cmap_max_input.value
         return [
             [
-                (label, path, is_diff, "coolwarm", None, None) if is_diff
+                (label, path, is_diff, vaporColormaps.colormap(vaporColormaps.DIFF),
+                 None, None) if is_diff
                 else (label, path, is_diff, cmap, vmin, vmax)
                 for label, path, is_diff in row
             ]

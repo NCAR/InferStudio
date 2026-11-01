@@ -74,6 +74,7 @@ from bokeh.models import (
     WheelZoomTool)
 
 from dimensions import PRES_NAME, level_text
+from visualization import vaporColormaps
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, FieldReadError, CANON_LAT, CANON_LON)
 from visualization.boundaries import (
@@ -120,8 +121,9 @@ COLORBAR_WIDTH = 12
 MAX_PANEL_FRAME_WIDTH = 1600
 AUTOSIZE_TAG = "plotgrid-autosize"
 
-DEFAULT_CMAP = "viridis"
-DIFF_CMAP = "coolwarm"
+DEFAULT_CMAP = vaporColormaps.colormap(vaporColormaps.DEFAULT)
+# Moreland's cool-warm, as VAPOR computes it (see vaporColormaps).
+DIFF_CMAP = vaporColormaps.colormap(vaporColormaps.DIFF)
 
 # Colormaps for panels carrying no data. Grey for "nothing selected", a
 # tinted one for "computing" - the two states must not look alike, or a
@@ -237,6 +239,18 @@ def display_order(models):
     generation) first, so it's always the top row, then the rest in the
     order given."""
     return sorted(models, key=lambda m: not m.startswith("WXFormer"))
+
+
+def _even_grid(da, dims):
+    """da linearly interpolated onto evenly spaced coordinates, as many as
+    it has, along whichever of `dims` aren't evenly spaced already."""
+    targets = {}
+    for dim in dims:
+        c = np.asarray(da[dim].values, dtype=float)
+        step = np.diff(c)
+        if c.size > 2 and not np.allclose(step, step[0], rtol=1e-3, atol=0):
+            targets[dim] = np.linspace(c[0], c[-1], c.size)
+    return da.sortby(list(targets)).interp(targets) if targets else da
 
 
 def _lon_pm180(da, lon_dim):
@@ -619,8 +633,8 @@ class PlotGridState(param.Parameterized):
     level = param.Integer(default=500, allow_None=True)
     level_dim = param.String(default=PRES_NAME)  # which kind of level
 
-    # Either a colormap name or a matplotlib Colormap object - cmocean's
-    # colormaps are not registered globally, so they arrive as objects.
+    # A matplotlib Colormap object: the sidebar's VAPOR colormaps (see
+    # vaporColormaps) aren't registered with matplotlib by name.
     cmap = param.Parameter(default=DEFAULT_CMAP)
     cmap_min = param.Number(default=0.0)
     cmap_max = param.Number(default=0.0)
@@ -1361,16 +1375,22 @@ class PlotGrid(param.Parameterized):
         if self._lon_period:
             da = _tile_lon(da, meta.lon_dim, self._lon_period)
 
-        # hv.Image assumes an evenly spaced grid and will silently misplace
-        # data on, say, a reduced Gaussian latitude axis. QuadMesh handles
-        # irregular spacing correctly, at some rendering cost.
-        #
+        # Every panel is rasterized (see layout()), which makes an Image of
+        # it, and an Image assumes an evenly spaced grid: given a QuadMesh
+        # (the element for an uneven one), rasterize's Image came out
+        # without the panel's options - no title, size, hooks or boundaries,
+        # a sliver of a plot. So a field on an uneven grid (WXFormer's
+        # Gaussian latitudes) is interpolated onto an even one with as many
+        # points first; that shifts nothing by more than the grid spacing,
+        # less than rasterizing to screen pixels does. The cursor readout
+        # still samples the field as loaded.
+        if not meta.regular_grid:
+            da = _even_grid(da, (meta.lon_dim, meta.lat_dim))
+
         # kdims come from meta, which earth2StudioPlot has already
         # canonicalized to latitude/longitude regardless of what a given
         # model called them on disk.
-        cls = hv.Image if meta.regular_grid else hv.QuadMesh
-
-        return cls(da, kdims=[meta.lon_dim, meta.lat_dim]).opts(
+        return hv.Image(da, kdims=[meta.lon_dim, meta.lat_dim]).opts(
             **self._panel_opts(title, cmap, kind))
 
     def _placeholder(self, title, computing=False, kind="field"):
@@ -1721,6 +1741,8 @@ class PlotGrid(param.Parameterized):
             "double-click to reset</div>"
             "<div class='hint-label'>Colorbar:</div>"
             "<div>drag to rescale &middot; double-click to reset</div>"
+            "<div class='hint-label'>Off-map:</div>"
+            "<div>scroll to move up and down the page</div>"
             "</div>"
             "</div>"
             "</div>"

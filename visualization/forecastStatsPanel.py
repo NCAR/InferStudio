@@ -327,6 +327,11 @@ def compute_model_stats(model_dir, base_or_var, level, reuse=None,
             # cf_convert.wxformer_to_cf) has nothing to verify.
             if bool(model_field.isnull().all()):
                 continue
+            # Nor does a step whose valid time hasn't happened yet, with no
+            # analysis to verify it against: most of a 10-day forecast from
+            # yesterday's cycle.
+            if valid_time is not None and np.datetime64(valid_time, "s") > np.datetime64("now"):
+                continue
 
             try:
                 truth_field = _load_gfs_truth(valid_time, gfs_name)

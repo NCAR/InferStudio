@@ -42,45 +42,33 @@ def _schedule(fn):
     fn()
 
 
-import matplotlib.colors as mcolors
+from visualization import vaporColormaps
 
-try:
-    import cmocean
-    _CMOCEAN_AVAILABLE = True
-except ImportError:
-    _CMOCEAN_AVAILABLE = False
-
-
-def _get_available_colormaps():
-    """Return {name: matplotlib Colormap object} for cmocean's colormaps.
-    Falls back to a small set of built-in matplotlib colormaps if cmocean
-    isn't installed, so the app still works (install with `pip install
-    cmocean` in the active env for the full cmocean set)."""
-    if _CMOCEAN_AVAILABLE:
-        names = getattr(cmocean.cm, "cmapnames", None)
-        if names is None:
-            # Fallback: introspect the module for Colormap instances directly
-            names = [
-                n for n in dir(cmocean.cm)
-                if isinstance(getattr(cmocean.cm, n, None), mcolors.Colormap)
-            ]
-        cmaps = {}
-        for name in names:
-            obj = getattr(cmocean.cm, name, None)
-            if isinstance(obj, mcolors.Colormap):
-                cmaps[name] = obj
-        if cmaps:
-            return cmaps
-
-    # cmocean not installed (or nothing found) — fall back to matplotlib builtins
-    import matplotlib.pyplot as plt
-    fallback_names = ["viridis", "plasma", "inferno", "magma", "cividis", "turbo"]
-    return {name: plt.get_cmap(name) for name in fallback_names}
+# The colormap picker in the sidebar. Bokeh's PaletteSelect draws each
+# entry as a swatch with its name to the right; the open list is wider
+# than the sidebar would allow with long swatches, so they're kept short
+# enough for the longest name ("PurpleWhiteOrange") to fit. The CSS
+# leaves the name out of the closed picker (it's shown above it instead)
+# and stretches that one swatch across it; it can't reach the open list,
+# which Bokeh draws in its own shadow root.
+COLORMAP_SWATCH_WIDTH = 60
+_SWATCH_STYLES = (
+    ".bk-value.bk-entry { font-size: 0; }"
+    # The closed picker's swatch is a div in an entry inside .bk-value.
+    ".bk-value.bk-entry > .bk-entry { flex-grow: 1; }"
+    ".bk-value .bk-entry > div { width: 100% !important; }"
+)
+# The list's order: the sequential maps, which suit most fields, first.
+COLORMAP_ORDER = ("Sequential", "Diverging", "Highlighting")
 
 
-def _cmap_to_hex_swatch(cmap, n=32):
-    """Sample a Colormap into a list of hex colors for widget swatch preview."""
-    return [mcolors.to_hex(cmap(i / (n - 1))) for i in range(n)]
+def _swatches(reverse=False):
+    """{name: hex colours} for every colormap, as the swatch widget wants
+    its options; 32 colours each is plenty for a swatch."""
+    suffix = vaporColormaps.REVERSED if reverse else ""
+    return {name: vaporColormaps.colors(name + suffix, 32)
+            for category in COLORMAP_ORDER
+            for name in vaporColormaps.palettes()[category]}
 
 
 def _dropdown_width(options):
@@ -190,41 +178,34 @@ class SharedPlotControls(param.Parameterized):
             margin=(0, 15, 5, 5),
         )
 
-        # Colormap selector — built from cmocean (or a matplotlib fallback
-        # if cmocean isn't installed). self._colormaps maps name -> the
-        # actual Colormap object, used to resolve the selected name back to
-        # a real colormap when plotting (rather than relying on matplotlib
-        # recognizing cmocean's names as globally registered strings).
-        self._colormaps = _get_available_colormaps()
-        swatch_options = {
-            name: _cmap_to_hex_swatch(cmap) for name, cmap in self._colormaps.items()
-        }
-        default_cmap_name = next(iter(swatch_options), "viridis")
-
-        if hasattr(pn.widgets, "ColorMap"):
-            # NOTE: ColorMap's `value` param holds one of the option *values*
-            # (the swatch color list here), not its key/name — the widget
-            # separately reflects the selected key as `value_name`. So we
-            # seed `value` with the actual swatch list, and link on
-            # `value_name` (the string) to drive our shared `colormap` param.
-            self.colormap_selector = pn.widgets.ColorMap(
-                options=swatch_options,
-                value=swatch_options.get(default_cmap_name),
-                ncols=1,
-                swatch_width=150,
-                name="",
-                sizing_mode="stretch_width",
-            )
-            self.colormap_selector.link(self, value_name="colormap")
-        else:
-            # Older Panel version without the ColorMap widget — fall back
-            # to a plain text dropdown (no swatch preview).
-            self.colormap_selector = pn.widgets.Select(
-                options=list(swatch_options.keys()),
-                value=default_cmap_name,
-                sizing_mode="stretch_width",
-            )
-            self.colormap_selector.link(self, value="colormap")
+        # Colormap: VAPOR's built-in colormaps, in one list of swatches,
+        # plus its Reverse Colormap. See visualization/vaporColormaps.py.
+        # self._colormaps maps every name, and "<name>_r" for each
+        # reversed, to its matplotlib colormap, which the plots and the
+        # video export are given.
+        self._colormaps = vaporColormaps.all_colormaps()
+        default_cmap_name = vaporColormaps.DEFAULT
+        swatches = _swatches()
+        self.colormap_selector = pn.widgets.ColorMap(
+            options=swatches,
+            value=swatches[default_cmap_name],
+            ncols=1,
+            swatch_width=COLORMAP_SWATCH_WIDTH,
+            swatch_height=18,
+            name="",
+            sizing_mode="stretch_width",
+            stylesheets=[_SWATCH_STYLES],
+        )
+        self.colormap_reverse = pn.widgets.Checkbox(
+            name="Reverse", value=False, margin=(2, 15, 0, 5), align="end")
+        # The selected colormap's name, above its swatch.
+        self.colormap_name = pn.pane.HTML(
+            default_cmap_name,
+            styles={"font-size": "13px", "color": "#4a5866"},
+            margin=(4, 15, 0, 7),
+        )
+        self.colormap_selector.param.watch(self._on_colormap_choice, "value_name")
+        self.colormap_reverse.param.watch(self._on_colormap_reverse, "value")
         self.colormap = default_cmap_name
 
         # Colormap Min/Max — always display the actual value currently in
@@ -304,11 +285,17 @@ class SharedPlotControls(param.Parameterized):
                 css_classes=["widget-row"],
             ),
             pn.Column(
-                pn.pane.HTML(
-                    "<b>Colormap</b>",
-                    styles={'line-height': '20px', 'font-size': '14px', 'white-space': 'nowrap'},
-                    margin=0,
+                pn.Row(
+                    pn.pane.HTML(
+                        "<b>Colormap</b>",
+                        styles={'line-height': '20px', 'font-size': '14px', 'white-space': 'nowrap'},
+                        margin=0,
+                    ),
+                    pn.HSpacer(),
+                    self.colormap_reverse,
+                    sizing_mode="stretch_width",
                 ),
+                self.colormap_name,
                 self.colormap_selector,
                 sizing_mode="stretch_width",
             ),
@@ -350,6 +337,21 @@ class SharedPlotControls(param.Parameterized):
             ),
             sizing_mode="stretch_width",
         )
+
+    def _on_colormap_reverse(self, event):
+        """Draw the swatches the other way round, keeping the selection."""
+        name = self.colormap_selector.value_name
+        swatches = _swatches(event.new)
+        self.colormap_selector.param.update(options=swatches, value=swatches[name])
+        self._on_colormap_choice()
+
+    def _on_colormap_choice(self, *_):
+        name = self.colormap_selector.value_name
+        if not name:
+            return
+        reverse = self.colormap_reverse.value
+        self.colormap_name.object = f"{name} (reversed)" if reverse else name
+        self.colormap = name + (vaporColormaps.REVERSED if reverse else "")
 
     @staticmethod
     def _describe_variable(var):
@@ -823,7 +825,7 @@ class DatasetPlot2(param.Parameterized):
                 base_or_var=var_name,
                 level=level_value,
                 t=time_index,
-                cmap="coolwarm",
+                cmap=vaporColormaps.colormap(vaporColormaps.DIFF),
                 vmin=None,
                 vmax=None,
             )
@@ -836,7 +838,7 @@ class DatasetPlot2(param.Parameterized):
                 base_or_var=var_name,
                 level=level_value,
                 t=time_index,
-                cmap="coolwarm",
+                cmap=vaporColormaps.colormap(vaporColormaps.DIFF),
                 vmin=-max_abs,
                 vmax=max_abs,
             )

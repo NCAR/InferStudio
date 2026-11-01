@@ -67,9 +67,12 @@ GPU_TYPE = next(iter(SYSTEMS[SYSTEM].gpu_types.values()))
 # server, but with no GPU, as a shared node's share.
 POST_QUEUE = SYSTEMS[SYSTEM].queues[QUEUE].queue
 POST_SELECT = 'select=1:ncpus=8:mem=64GB'
-# Measured: 25 minutes for the weather suite (15 of them statistics, mostly
-# fetching GFS), 4 for the climate one.
-POST_WALLTIME = '01:30:00'
+# Measured with a 1-day weather forecast: 25 minutes for the weather suite
+# (10 of differences, 15 of statistics, mostly fetching GFS), 4 for the
+# climate one. Differences take as long per step, so the 10-day forecast's
+# 41 steps need about 2 hours of them; statistics only cover the steps
+# already past, so they take no longer.
+POST_WALLTIME = '04:00:00'
 
 # Every variable each tab's buttons offer (OutputParams' defaults on the
 # Weather tab, inferenceTab.CLIMATE_SURFACE_VARS on the Climate tab; copied,
@@ -78,13 +81,14 @@ POST_WALLTIME = '01:30:00'
 # runner leaves out the ones it doesn't write, with a warning in its log.
 WEATHER_UA_VARS = ['U', 'V', 'T', 'Q']
 WEATHER_SURFACE_VARS = ['SP', 't2m']
+WEATHER_FORECAST = timedelta(days=10)
 CLIMATE_SURFACE_VARS = ['SP', 't2m', 'skt', 'ws10m', 'mtuwlwrf', 'hcc', 'mcc', 'lcc',
                         'z500', 't850', 'tcwv', 'sst']
 
 
 def weather_suite():
-    # The Weather tab's default forecast: 3 steps of 6 hours, from the
-    # cycle 24 hours ago.
+    # A 10-day forecast in 6-hour steps (the Weather tab's default step),
+    # from the cycle 24 hours ago.
     now = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
     start = now.replace(hour=now.hour // 6 * 6, minute=0, second=0, microsecond=0)
     return dict(
@@ -95,7 +99,7 @@ def weather_suite():
                  ('Pangu', Earth2StudioRunner()),
                  ('FourCastNet3', Earth2StudioRunner()),
                  ('GFS', ForecastSourceRunner())],
-        config=dict(start_time=start, end_time=start + timedelta(hours=18), timestep='6h',
+        config=dict(start_time=start, end_time=start + WEATHER_FORECAST, timestep='6h',
                     ua_vars=WEATHER_UA_VARS, surface_vars=WEATHER_SURFACE_VARS),
     )
 

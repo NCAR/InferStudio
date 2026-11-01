@@ -35,8 +35,14 @@ codebase (parse_variable_groups, resolve_var_name, the Variable dropdown)
 is built entirely around lowercase names already.
 """
 
+import importlib.metadata
+import json
+import os
+import socket
+import subprocess
+import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -340,10 +346,14 @@ def _stack_levels(ds, base, levels_map, dim, dtype):
     return stacked
 
 
-def make_cf_compliant(nc_path, suffix="_cf"):
+def make_cf_compliant(nc_path, suffix="_cf", run_info=None):
     """Read an earth2studio-format NetCDF file at `nc_path` and write a
     CF-compliant version alongside it (same directory, `<stem><suffix>.nc`).
     Returns the path to the new file. The original file is left untouched.
+
+    `run_info` describes the run that made the file (see _write_cf); it
+    goes into the new file's global attributes, along with every change
+    made here.
     """
     nc_path = str(nc_path)
     if nc_path.endswith(".nc"):
@@ -351,9 +361,19 @@ def make_cf_compliant(nc_path, suffix="_cf"):
     else:
         out_path = nc_path + suffix
 
+    steps = []
     with xr.open_dataset(nc_path) as ds:
         # Collapse first - see the module docstring on why the order of
         # these two transformations is not arbitrary.
+        if "lead_time" in ds.dims:
+            init = pd.Timestamp(np.atleast_1d(ds["time"].values)[0])
+            lead_hours = ds["lead_time"].values / np.timedelta64(1, "h")
+            steps.append(
+                f"Folded the size-1 'time' dimension (the initialization, {_iso(init)}) "
+                f"and the 'lead_time' dimension ({len(lead_hours)} steps, "
+                f"{_hours(lead_hours)}) into one 'time' dimension of valid times. The "
+                "initialization is kept as the scalar coordinate forecast_reference_time "
+                "and the lead times as forecast_period(time), in hours.")
         ds = _collapse_lead_time(ds)
 
         model_level_vars, rest = parse_model_level_groups(list(ds.data_vars))
@@ -367,6 +387,12 @@ def make_cf_compliant(nc_path, suffix="_cf"):
                                    (model_level_vars, MODEL_LEV_NAME, "int32")):
             for base, levels_map in groups.items():
                 new_vars[base] = _stack_levels(ds, base, levels_map, dim, dtype)
+                levels = sorted(levels_map)
+                steps.append(
+                    f"Stacked {', '.join(levels_map[l] for l in levels)} into '{base}' "
+                    f"with a '{dim}' dimension ({', '.join(f'{l:g}' for l in levels)}"
+                    f"{' hPa' if dim == PRES_NAME else ''}); values unchanged, and the "
+                    f"variable's attributes replaced with CF ones.")
 
         # Surface/single-level fields pass through unchanged, but get CF
         # attrs stamped on if we recognize the variable name.
@@ -375,8 +401,14 @@ def make_cf_compliant(nc_path, suffix="_cf"):
             if name in _CF_SURFACE_ATTRS:
                 da.attrs = dict(da.attrs, **_CF_SURFACE_ATTRS[name])
             new_vars[name] = da
+        if surface_vars:
+            known = [n for n in surface_vars if n in _CF_SURFACE_ATTRS]
+            steps.append(
+                f"Copied {', '.join(surface_vars)} through unchanged"
+                + (f", adding CF attributes to {', '.join(known)}." if known else "."))
 
-        _write_cf(xr.Dataset(new_vars, coords=ds.coords), out_path)
+        _write_cf(xr.Dataset(new_vars, coords=ds.coords), out_path, steps, run_info,
+                  ds.attrs.get("history"), [nc_path])
 
     return out_path
 
@@ -394,9 +426,10 @@ WXFORMER_VARS = {
 }
 
 
-def wxformer_to_cf(save_dir, out_path):
+def wxformer_to_cf(save_dir, out_path, run_info=None):
     """Gather a WXFormer run's per-lead files in `save_dir` into one file at
-    `out_path` in the layout make_cf_compliant writes. Returns out_path."""
+    `out_path` in the layout make_cf_compliant writes. Returns out_path.
+    `run_info` as for make_cf_compliant."""
     files = sorted(Path(save_dir).glob("*Z/pred_*Z_*.nc"))
     inits = {f.parent.name for f in files}
     if len(inits) != 1:
@@ -407,34 +440,175 @@ def wxformer_to_cf(save_dir, out_path):
     def keep(ds):
         return ds[[v for v in WXFORMER_VARS if v in ds.data_vars]]
 
+    with xr.open_dataset(files[0], engine="netcdf4") as first:
+        dropped = sorted(v for v in first.data_vars if v not in WXFORMER_VARS)
+        history = first.attrs.get("history")
+    steps = [f"Gathered the {len(files)} files {files[0].parent.name}/{files[0].name} to "
+             f"{files[-1].parent.name}/{files[-1].name}, one per lead time, into one "
+             "file along 'time', sorted by time."]
+    if dropped:
+        steps.append(f"Left out {', '.join(dropped)} (WXFormer's model-level and "
+                     "other fields, which no other model writes); they're still in "
+                     "the per-lead-time files.")
+
     with xr.open_mfdataset(files, preprocess=keep, combine="nested", concat_dim="time",
                            engine="netcdf4") as ds:
-        ds = ds.sortby("time").rename(
-            {k: v for k, v in WXFORMER_VARS.items() if k in ds.data_vars})
-        ds = ds.rename({d: n for d, n in (("latitude", "lat"), ("longitude", "lon"))
-                        if d in ds.dims})
+        renames = {k: v for k, v in WXFORMER_VARS.items() if k in ds.data_vars}
+        ds = ds.sortby("time").rename(renames)
+        steps.append("Renamed " + ", ".join(f"{k} to {v}" for k, v in renames.items()
+                                            if k != v)
+                     + ", the names the other models' files use.")
+        dims = {d: n for d, n in (("latitude", "lat"), ("longitude", "lon")) if d in ds.dims}
+        ds = ds.rename(dims)
+        if dims:
+            steps.append("Renamed the dimensions " + ", ".join(f"{k} to {v}" for k, v in dims.items())
+                         + ".")
         # Its pressure-level fields are float64; the other models' are float32.
+        cast = sorted(n for n in ds.data_vars if ds[n].dtype != np.float32)
         ds = ds.astype("float32")
+        if cast:
+            steps.append(f"Cast {', '.join(cast)} from float64 to float32, as the other "
+                         "models write them (about 7 significant digits are kept).")
         # It doesn't save its initial state, but the Visualization tab steps
         # through every model's output by index, from lead 0. A NaN step
         # there keeps its later steps in line with the other models'.
         if ds["time"].values[0] != init:
             empty = (ds.isel(time=[0]) * np.nan).assign_coords(time=[init])
             ds = xr.concat([empty, ds], dim="time")
+            steps.append(f"Added a time step at the initialization, {_iso(init)}, with "
+                         "every value NaN: WXFormer doesn't save its initial state, and "
+                         "this keeps its steps in line with the other models' by index.")
         for name in ds.data_vars:
             ds[name].attrs = dict(_CF_VAR_ATTRS.get(name) or _CF_SURFACE_ATTRS[name],
                                   short_name=name)
+        steps.append("Replaced each variable's attributes with CF ones (standard_name, "
+                     "long_name, units).")
         ds = ds.assign_coords(
             forecast_reference_time=init,
             forecast_period=("time", (ds["time"].values - init) / np.timedelta64(1, "h")),
         )
-        _write_cf(ds, out_path)
+        steps.append(f"Added the scalar coordinate forecast_reference_time ({_iso(init)}) "
+                     "and forecast_period(time), the hours since it.")
+        _write_cf(ds, out_path, steps, run_info, history,
+                  [str(Path(save_dir) / files[0].parent.name)])
     return out_path
 
 
-def _write_cf(out_ds, out_path):
+def _iso(t):
+    return pd.Timestamp(t).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _hours(hours):
+    hours = [float(h) for h in hours]
+    return f"{hours[0]:g} to {hours[-1]:g} h" if len(hours) > 1 else f"{hours[0]:g} h"
+
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _inferstudio_version():
+    """This checkout's commit, with "+local changes" if it has any."""
+    try:
+        commit = subprocess.run(["git", "-C", APP_DIR, "rev-parse", "--short", "HEAD"],
+                                capture_output=True, text=True, timeout=30).stdout.strip()
+        dirty = subprocess.run(["git", "-C", APP_DIR, "status", "--porcelain", "-uno"],
+                               capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if not commit:
+        return "unknown"
+    return f"git {commit}" + (" + local changes" if dirty else "")
+
+
+def _run_defaults(run_info):
+    """run_info with what the job itself can tell filled in where missing:
+    the framework's version, torch's and the GPU's if this process ran the
+    model, and the PBS job."""
+    info = dict(run_info)
+    if info.get("framework") and not info.get("framework_version"):
+        try:
+            info["framework_version"] = importlib.metadata.version(info["framework"])
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        info.setdefault("torch_version", torch.__version__)
+        try:
+            if torch.cuda.is_available():
+                info.setdefault("gpu", torch.cuda.get_device_name(0))
+        except Exception:
+            pass
+    info.setdefault("pbs_job_id", os.environ.get("PBS_JOBID"))
+    return info
+
+
+def _global_attrs(ds, steps, run_info, source_history, inputs):
+    """The converted file's global attributes.
+
+    CF's own (title, institution, source, history, references, comment),
+    then the conversion's (conversion_*: what was changed, from what, by
+    which InferStudio), then the run's (inference_*: model, its version,
+    initial conditions, times, job), from run_info. netCDF attributes are
+    strings or numbers, so lists are written comma-separated, dicts as
+    "key: value; ...", and empty values are left out.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    version = _inferstudio_version()
+    model = run_info.get("model")
+    model_version = run_info.get("model_version")
+    init = ds["forecast_reference_time"].values if "forecast_reference_time" in ds.coords else None
+    title = f"{model or 'Model'} output"
+    if init is not None:
+        title += f" from {_iso(init)}"
+
+    attrs = {
+        "Conventions": "CF-1.11",
+        "title": title + ", made with InferStudio",
+        "institution": "NSF National Center for Atmospheric Research (NSF NCAR)",
+        "source": " ".join(str(x) for x in (model, f"({model_version})" if model_version else None)
+                           if x) or None,
+        "history": "\n".join(h for h in (
+            f"{now} InferStudio cf_convert.py ({version}): converted "
+            + ", ".join(Path(i).name for i in inputs) + " to CF-1.11; see conversion_steps",
+            source_history) if h),
+        "references": "https://inferstudio.readthedocs.io/",
+        "comment": ("Values are the model's own; the conversion only rearranged them, "
+                    "except as conversion_steps says."),
+        "conversion_steps": "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)),
+        "conversion_input": ", ".join(str(i) for i in inputs),
+        "conversion_software": f"InferStudio cf_convert.py, {version}",
+        "conversion_date": now,
+        "conversion_host": socket.gethostname(),
+    }
+    for key, value in _run_defaults(run_info).items():
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        elif isinstance(value, dict):
+            value = "; ".join(f"{k}: {v}" for k, v in value.items())
+        elif isinstance(value, bool):
+            value = str(value)
+        elif isinstance(value, int):
+            value = np.int32(value)     # not int64, which netCDF3 readers lack
+        elif not isinstance(value, (str, float)):
+            value = json.dumps(value, default=str)
+        attrs[f"inference_{key}"] = value
+    return {k: v for k, v in attrs.items() if v is not None}
+
+
+def _write_cf(out_ds, out_path, steps=(), run_info=None, source_history=None,
+              inputs=()):
     """Stamp the CF coordinate and global attributes on out_ds and write it
-    to out_path."""
+    to out_path.
+
+    `steps` are the changes the caller made, in order, to which this adds
+    its own; all of them go into the conversion_steps attribute. `run_info`
+    ({name: value}) describes the run that made the data - see
+    _global_attrs. `source_history` is the input's own history attribute,
+    kept below this conversion's line, and `inputs` the input file(s).
+    """
+    steps = list(steps)
     out_ds = _apply_coord_attrs(out_ds)
 
     # Point each data variable at its auxiliary coordinates. Without
@@ -448,11 +622,26 @@ def _write_cf(out_ds, out_path):
         for v in out_ds.data_vars:
             out_ds[v].attrs["coordinates"] = " ".join(aux)
 
-    out_ds.attrs["Conventions"] = "CF-1.11"
+    steps.append(
+        "Set CF attributes (standard_name, long_name, units, axis) on the coordinates "
+        + ", ".join(c for c in out_ds.coords) + "; longitude's valid_min and valid_max "
+        "give its range.")
+    if aux:
+        steps.append(f"Set each data variable's 'coordinates' attribute to '{' '.join(aux)}'.")
+
+    encoding = _build_encoding(out_ds)
+    if "time" in encoding:
+        steps.append(f"Wrote time as float64 '{encoding['time']['units']}' "
+                     "(proleptic_gregorian calendar).")
+    dtypes = sorted({str(out_ds[v].dtype) for v in out_ds.data_vars})
+    steps.append("Wrote the data variables uncompressed, as " + "/".join(dtypes)
+                 + ", with no _FillValue (none on the coordinates either); no data "
+                 "value was changed except as listed above.")
+
+    out_ds.attrs = _global_attrs(out_ds, steps, run_info or {}, source_history, inputs)
 
     # Write the coordinates first, then one data variable at a time, so
     # progress can be reported and only one variable is in memory at once.
-    encoding = _build_encoding(out_ds)
     names = list(out_ds.data_vars)
     print(f"CF conversion: writing {len(names)} variables to {out_path}", flush=True)
     coords_only = out_ds.drop_vars(names)
@@ -470,13 +659,20 @@ def _write_cf(out_ds, out_path):
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) == 4 and sys.argv[1] == "--wxformer":
-        result = wxformer_to_cf(sys.argv[2], sys.argv[3])
-    elif len(sys.argv) == 2:
-        result = make_cf_compliant(sys.argv[1])
+    args = sys.argv[1:]
+    # --run-info '<JSON>': the run's details, for the global attributes.
+    run_info = None
+    if "--run-info" in args:
+        i = args.index("--run-info")
+        run_info = json.loads(args[i + 1])
+        del args[i:i + 2]
+    if len(args) == 3 and args[0] == "--wxformer":
+        result = wxformer_to_cf(args[1], args[2], run_info)
+    elif len(args) == 1:
+        result = make_cf_compliant(args[0], run_info=run_info)
     else:
-        print("Usage: python cf_convert.py <path_to_netcdf>\n"
-              "       python cf_convert.py --wxformer <wxformer_save_dir> <output.nc>")
+        print("Usage: python cf_convert.py <path_to_netcdf> [--run-info JSON]\n"
+              "       python cf_convert.py --wxformer <wxformer_save_dir> <output.nc> "
+              "[--run-info JSON]")
         sys.exit(1)
     print("Wrote CF-compliant file: " + result)

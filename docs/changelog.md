@@ -13,6 +13,12 @@ for deciding whether to upgrade.
 
 ### Added
 
+- Each converted model file (`*_cf.nc`) records, in its global attributes,
+  every change the conversion made to the data (`conversion_steps`) and the
+  run that produced it: the model and its version, the framework and its
+  version, initial conditions, times, GPU and PBS job (`inference_*`), plus
+  CF's `title`, `source` and `history`.
+
 - The examples shown at startup are now WeatherExample (every weather model,
   from the previous day's analysis) and ClimateExample (every climate model),
   rerun every night with their model differences and statistics already
@@ -71,6 +77,23 @@ for deciding whether to upgrade.
 
 ### Changed
 
+- WeatherExample is now a 10-day forecast (41 steps of 6 hours), not 18
+  hours. Its statistics cover the steps whose valid time has passed; the
+  Statistics tab likewise skips steps still in the future, which have no
+  analysis to verify against.
+
+- The Metadata section's "Forecasts" row is now "NumTS", under Ts End, as
+  the Time section labels it.
+
+- The colormaps are VAPOR's 34 built-in ones, computed as VAPOR computes them
+  (Moreland's interpolation for the diverging ones), in one list of swatches
+  with the sequential ones first, and with Reverse. Kindlmann,
+  KindlmannExtended and BlackBody use Kenneth Moreland's published tables
+  instead of VAPOR's control points, which showed bands. Before,
+  only six matplotlib maps were offered, since cmocean wasn't installed. The
+  selected map's name is shown above its swatch, where it no longer runs out
+  of the sidebar. Differences use VAPOR's CoolWarm.
+
 - WXFormer is always the top row of the Visualization tab.
 
 - Usage logs moved to `/glade/campaign/cisl/vast/pearse/inferStudio/logs`,
@@ -94,6 +117,11 @@ for deciding whether to upgrade.
   showed as a collapsed, empty sliver; it's now a full-size blank panel with
   "No Data" across it. A suite with WXFormer opens on its first step with
   data.
+
+- WXFormer's panel drew as a narrow sliver with no title or coastlines even
+  where it had data: its uneven (Gaussian) latitudes made it a QuadMesh,
+  which lost its plot options when rasterized. It's now interpolated onto an
+  even grid of as many latitudes first.
 
 - Global maps showed the world three times side by side; they now open on one
   globe, from -180 to 180 whatever longitudes the model wrote, and still pan

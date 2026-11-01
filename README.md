@@ -51,7 +51,7 @@ write plotting code by hand.
 
 Two example suites are listed at startup, so the Visualization tab has
 something to show before you've run any inference yourself: WeatherExample,
-an 18-hour forecast from the previous day's analysis by every weather model,
+a 10-day forecast from the previous day's analysis by every weather model,
 and ClimateExample, a month of every climate model. Both are rerun every
 night, with all their differences and statistics already computed
 (`scripts/nightlyExamples.py`); WeatherExample is selected automatically.

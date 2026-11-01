@@ -606,8 +606,8 @@ def link_controls(controls, state):
             except (TypeError, ValueError):
                 return 0
         if dst == "cmap":
-            # cmocean's colormaps are not registered with matplotlib
-            # globally, so a bare name string can fail downstream. Resolve
+            # The sidebar's VAPOR colormaps aren't registered with
+            # matplotlib, so a bare name would fail downstream. Resolve
             # through the controls' own name->Colormap dict, which is what
             # DatasetPlot2 does too.
             cm = getattr(controls, "_colormaps", {}).get(value)

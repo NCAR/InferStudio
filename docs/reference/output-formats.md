@@ -142,3 +142,18 @@ If you need compliance, post-process. The transformation is mechanical: attach
 attributes to the coordinates, and set the global `Conventions` attribute. A
 utility for this has been drafted; ask the maintainers for its current state
 rather than writing a third copy.
+
+## Provenance in the converted files
+
+Each model's `<file_stem>_cf.nc`, the file InferStudio converts its output to,
+says in its global attributes what was done to the data and how it was made:
+
+| Attribute | What it holds |
+|---|---|
+| `title`, `institution`, `source`, `history`, `references`, `comment` | CF's own. `source` is the model and its version; `history` has the conversion, with the time and InferStudio's commit, above the input file's own history. |
+| `conversion_steps` | A numbered list of every change the conversion made, in order: dimensions folded or renamed, which variables were stacked onto which levels, renames, type casts, steps added (WXFormer's empty initial step), attributes set and how the file was encoded. |
+| `conversion_input`, `conversion_software`, `conversion_date`, `conversion_host` | The file(s) converted, the InferStudio commit that did it (with "+ local changes" if the checkout had any), and when and where. |
+| `inference_*` | The run: `model`, `model_version` (where the weights come from, with their revision where it's pinned), `framework` and `framework_version` (earth2studio or miles-credit), `initial_conditions` or `data_source`, `initialization_time`, `forecast_length_hours`, `output_interval_hours`, `steps`, `forcing` (CAMulator), `variables`, `variables_not_written`, `run_changes` (how InferStudio's run differs from a plain one, e.g. FourCastNet3's chunked convolutions), `simulation_name`, `run_started`, `torch_version`, `gpu` and `pbs_job_id`. Only those that apply are written. |
+
+Read them with `ncdump -h <file>` or `xarray.open_dataset(<file>).attrs`.
+

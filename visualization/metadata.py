@@ -74,11 +74,11 @@ class DatasetMetadata(param.Parameterized):
             <div class="meta-path">{path}</div>
             <div class="meta-row"><span class="meta-label">Ts Start:</span><span class="meta-value">{data.get('stime', 'N/A')}</span></div>
             <div class="meta-row"><span class="meta-label">Ts End:</span><span class="meta-value">{data.get('etime', 'N/A')}</span></div>
+            <div class="meta-row"><span class="meta-label">NumTS:</span><span class="meta-value">{data.get('ntime', 'N/A')}</span></div>
             <div class="meta-row"><span class="meta-label">Latitudes:</span><span class="meta-value">{data.get('nlat', 'N/A')}</span></div>
             <div class="meta-row"><span class="meta-label">Longitudes:</span><span class="meta-value">{data.get('nlon', 'N/A')}</span></div>
             <div class="meta-row"><span class="meta-label">Levels:</span><span class="meta-value">{data.get('nlev', 'N/A')}</span></div>
             <div class="meta-row"><span class="meta-label">P-Levels:</span><span class="meta-value">{data.get('nplev', 'N/A')}</span></div>
-            <div class="meta-row"><span class="meta-label">Forecasts:</span><span class="meta-value">{data.get('ntime', 'N/A')}</span></div>
             
             <div class="var-section">
                 <div class="var-row"><span class="meta-label">Vars 2D:</span><span class="var-list">{v2d}</span></div>

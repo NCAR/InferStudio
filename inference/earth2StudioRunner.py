@@ -37,6 +37,20 @@ MODEL_MAP = {
     'SFNO':         'earth2studio.models.px.SFNO',
 }
 
+# How InferStudio's runs of a model differ from a plain earth2studio run,
+# recorded in its CF file (run_info's run_changes).
+RUN_CHANGES = {
+    'FourCastNet3': ("FCN3's DISCO convolutions contract their weights in 4 latitude "
+                     "chunks (inference/fcn3ChunkedDisco.py) to fit a 40 GB A100; the "
+                     "output is the same as unchunked."),
+    'AIFS': ("anemoi splits the graph transformer's edges into 16 chunks "
+             "(ANEMOI_INFERENCE_NUM_CHUNKS) to fit a 40 GB A100; the chunks are summed, "
+             "so the output is unchanged."),
+    'DLESyMv0_ISCCP_ERA5': ("Run through earth2studio's lat/lon wrapper, which regrids "
+                            "from and to the model's HEALPix grid; output is on a 1 degree "
+                            "grid."),
+}
+
 # Initial-condition source per model. GFS lacks fields some models need
 # (e.g. AIFS's skt, tcw, stl1/2, swvl1/2), and earth2studio silently fills
 # missing variables with zeros, so those models blow up when started from GFS.
@@ -376,6 +390,35 @@ class Earth2StudioRunner(ModelRunner):
 
         output_nc  = f"{output_path}/{file_stem}.nc"
 
+        if data_source == 'IFS':
+            initial_conditions = ("IFS (earth2studio.data), from the first of these that "
+                                  f"worked: {', '.join(IFS_MIRRORS)}")
+        elif data_source in LOCAL_DATA_SOURCES:
+            initial_conditions = (f"{data_source} "
+                                  f"(inference/{LOCAL_DATA_SOURCES[data_source]}.py)")
+        else:
+            initial_conditions = f"{data_source} (earth2studio.data)"
+
+        # The run's details, for the CF file's global attributes (see
+        # cf_convert._global_attrs). The script adds what only the job
+        # knows: the weights loaded (the model's version) and when it ran.
+        run_info = {
+            "model": model_name,
+            "model_class": MODEL_MAP[model_name],
+            "framework": "earth2studio",
+            "simulation_name": config["simulation_name"],
+            "initialization_time": f"{start:%Y-%m-%dT%H:%M:%SZ}",
+            "forecast_length_hours": n_steps * hours,
+            "output_interval_hours": hours,
+            "steps": n_steps,
+            "initial_conditions": initial_conditions,
+            "forcing": config.get("forcing_mode") if model_name == 'CAMulator' else None,
+            "variables": all_vars,
+            "variables_not_written": missing,
+            "run_changes": RUN_CHANGES.get(model_name),
+            "python": python_bin,
+        }
+
         # CAMulator is driven by the forcing (cyclic or transient) chosen
         # on the Climate tab.
         if model_name == 'CAMulator':
@@ -418,7 +461,7 @@ import torch
 import importlib
 import numpy as np
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from earth2studio.io import NetCDF4Backend
 from earth2studio.run import deterministic
 {data_source_import}
@@ -431,6 +474,9 @@ logging.basicConfig(
     force=True
 )
 
+run_info = {run_info!r}
+run_info["run_started"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 print("Loading model {model_name}...", flush=True)
 model_module, model_class = "{MODEL_MAP[model_name]}".rsplit(".", 1)
 mod = importlib.import_module(model_module)
@@ -439,6 +485,8 @@ ModelClass = getattr(mod, model_class)
 print("Downloading/loading weights...", flush=True)
 package = ModelClass.load_default_package()
 model = ModelClass.load_model(package, {model_kwargs})
+# Where the weights come from, with their revision where it's pinned.
+run_info["model_version"] = getattr(package, "root", None)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Running on: {{device}}", flush=True)
@@ -480,7 +528,7 @@ print("Converting to CF-compliant format...", flush=True)
 try:
     sys.path.insert(0, {APP_DIR!r})
     from cf_convert import make_cf_compliant
-    cf_path = make_cf_compliant("{output_nc}")
+    cf_path = make_cf_compliant("{output_nc}", run_info=run_info)
     print(f"CF-compliant file written: {{cf_path}}", flush=True)
 except Exception as e:
     print(f"WARNING: CF conversion failed, raw output is still available: {{e}}", flush=True)

@@ -97,6 +97,34 @@ class CESM2LERunner(ModelRunner):
         sources = {v: OUTPUT_VARS[v] for v in variables}
         output_nc = f"{config['output_path']}/{config['file_stem']}.nc"
         script_path = os.path.join(config["output_dir"], f"{config['file_stem']}_run.py")
+        # The run's details, for the CF file's global attributes (see
+        # cf_convert._global_attrs).
+        case = CESM2LE_CASE.format(member=member)
+        scaled = [f"{v} ({src[0]} x {src[2]:g})" for v, src in sources.items() if src[2] != 1.0]
+        by_source = {}
+        for v, (cesm, _, _) in sources.items():
+            by_source.setdefault(cesm, []).append(v)
+        run_info = {
+            "model": MODEL,
+            "model_version": f"CESM2 Large Ensemble, case {case} (member {member})",
+            "data_source": f"{CESM2LE_DIR} (GDEX d651056), 6-hourly CAM6 time series",
+            "simulation_name": config["simulation_name"],
+            "initialization_time": f"{start:%Y-%m-%dT%H:%M:%SZ}",
+            "forecast_length_hours": n_steps * hours,
+            "output_interval_hours": hours,
+            "steps": n_steps,
+            # CESM variable: what it's written as, e.g. "U: u0k to u31k".
+            "variables": {cesm: names[0] if len(names) == 1 else f"{names[0]} to {names[-1]}"
+                          for cesm, names in by_source.items()},
+            "run_changes": (
+                "Not run by InferStudio: CESM2-LE's own output, read and written in "
+                "CAMulator's layout. Latitudes reversed to run north to south"
+                + (f"; scaled {', '.join(scaled)}, geopotential height to geopotential"
+                   if scaled else "")
+                + "; steps on 29 February, which CESM's no-leap calendar lacks, are NaN; "
+                "Q is written as qtot, to match CAMulator, with its long_name saying it's "
+                "vapour only."),
+        }
         missing_warning = (f"print('WARNING: {MODEL} has no {', '.join(missing)}; "
                            "not saved.', flush=True)" if missing else "")
 
@@ -210,7 +238,7 @@ print("Converting to CF-compliant format...", flush=True)
 try:
     sys.path.insert(0, {APP_DIR!r})
     from cf_convert import make_cf_compliant
-    cf_path = make_cf_compliant("{output_nc}")
+    cf_path = make_cf_compliant("{output_nc}", run_info={run_info!r})
     # Its Q is vapour only, though it's called qtot to match CAMulator's.
     with netCDF4.Dataset(cf_path, "a") as nc:
         if "qtot" in nc.variables:
