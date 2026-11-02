@@ -96,8 +96,10 @@ for deciding whether to upgrade.
 
 - WXFormer is always the top row of the Visualization tab.
 
-- Usage logs moved to `/glade/campaign/cisl/vast/pearse/inferStudio/logs`,
-  and the nightly example jobs' logs to its `nightly/` subdirectory.
+- Shared files moved under `/glade/campaign/cisl/vast/pearse/inferStudio`:
+  model weights to `cache/` (the old `InferStudioCache` is now a link to it)
+  and usage logs to `logs/`. The nightly example jobs' logs are in
+  `logs/nightly/`.
 
 - WXFormer (gen 1), MILES-CREDIT's original pipeline, is disabled on the
   Weather tab: its output can't be shown. WXFormer (gen 2) runs the same

@@ -5,6 +5,75 @@ from datetime import datetime
 
 from tooltips import below_tooltip
 
+SAVED_TIP = "Selected variables are saved to disk"
+
+
+class VariablePicker(param.Parameterized):
+    """Multi-select button group of output variables, where a variable some
+    selected model doesn't write can be disabled. A disabled variable drops
+    out of `value` but stays wanted, so it's back once it's enabled again.
+
+    options: a list of variable names, or a dict of button label -> name."""
+
+    value = param.List(default=[])
+
+    def __init__(self, options, value=(), **params):
+        super().__init__(**params)
+        self._labels = (dict(options) if isinstance(options, dict)
+                        else {name: name for name in options})
+        self._labels_by_name = {name: label for label, name in self._labels.items()}
+        self._wanted = set(value)
+        self._unavailable = {}      # name -> why
+        self._tips = {}             # name -> the tooltip its button shows
+        self._buttons = {}
+        for label, name in self._labels.items():
+            button = pn.widgets.Button(name=label, button_type='primary',
+                                       margin=(0, 5, 5, 0))
+            button.on_click(lambda e, n=name: self._toggle(n))
+            self._buttons[name] = button
+        self._refresh()
+
+    @property
+    def names(self):
+        return list(self._buttons)
+
+    def set_unavailable(self, unavailable):
+        """Disable the variables in unavailable, a dict of name -> the
+        selected models that don't write it, and enable the rest."""
+        self._unavailable = {
+            name: self._disabled_tip(self._labels_by_name[name], models)
+            for name, models in unavailable.items()}
+        self._refresh()
+
+    @staticmethod
+    def _disabled_tip(label, models):
+        who = (models[0] if len(models) == 1
+               else f"{', '.join(models[:-1])} and {models[-1]}")
+        verb = "doesn't" if len(models) == 1 else "don't"
+        return (f"Disabled: {who} {verb} output {label}. A variable can only be "
+                "saved when every selected model outputs it.")
+
+    def _toggle(self, name):
+        self._wanted ^= {name}
+        self._refresh()
+
+    def _refresh(self):
+        for name, button in self._buttons.items():
+            why = self._unavailable.get(name)
+            button.disabled = why is not None
+            if self._tips.get(name) != (why or SAVED_TIP):
+                self._tips[name] = why or SAVED_TIP
+                button.description = below_tooltip(self._tips[name])
+            button.button_style = ('solid' if name in self._wanted and why is None
+                                   else 'outline')
+        self.value = [n for n in self._buttons
+                      if n in self._wanted and n not in self._unavailable]
+
+    def panel(self):
+        return pn.FlexBox(*self._buttons.values(), flex_wrap='wrap',
+                          sizing_mode='stretch_width')
+
+
 class OutputParams:
     # Each options argument is a list of variable names, or a dict of
     # button label -> variable name.
@@ -31,34 +100,16 @@ class OutputParams:
         self.modal = pn.Modal(self.dialog, name="Select output directory", margin=0)
         self.browse_button = self.modal.create_button("toggle", name="Output Directory", button_type="primary")
 
-        self.surfaceVars = pn.widgets.CheckButtonGroup(
-            name="2D Variables",
-            #value=['SP'],
-            value=list(surface_default),
-            options=surface_options if isinstance(surface_options, dict) else list(surface_options),
-            button_type='primary',
-            button_style='outline',
-            description=below_tooltip("Selected variables are saved to disk"),
-            #disabled=True
-        )
+        self.surfaceVars = VariablePicker(surface_options, value=surface_default)
         self.surfaceVarsGroup = pn.Row(
             pn.pane.Markdown("2D Variables"),
-            self.surfaceVars
+            self.surfaceVars.panel()
         )
 
-        self.UAVars = pn.widgets.CheckButtonGroup(
-            name="3D Variables",
-            #value=['U'],
-            value=list(ua_default),
-            options=ua_options if isinstance(ua_options, dict) else list(ua_options),
-            button_type='primary',
-            button_style='outline',
-            description=below_tooltip("Selected variables are saved to disk"),
-            #disabled=True
-        )
+        self.UAVars = VariablePicker(ua_options, value=ua_default)
         self.UAVarsGroup = pn.Row(
             pn.pane.Markdown("3D Variables"),
-            self.UAVars
+            self.UAVars.panel()
         )
 
     def set_default_simulation_name(self, models):

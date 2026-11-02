@@ -22,9 +22,10 @@ from inference.climateTimePicker import ClimateTimePicker
 from inference.commandRunner import CommandRunner
 
 from inference.milesCreditRunner import MilesCreditRunner, MilesCreditGen2Runner
-from inference.earth2StudioRunner import Earth2StudioRunner
+from inference.earth2StudioRunner import Earth2StudioRunner, MODEL_OUTPUT_VARS, MODEL_VAR_MAP
 from inference.forecastSourceRunner import ForecastSourceRunner, PHYSICAL_MODEL_LIST
-from inference.cesm2leRunner import CESM2LERunner, CLIMATE_PHYSICAL_MODEL_LIST
+from inference.cesm2leRunner import (CESM2LERunner, CLIMATE_PHYSICAL_MODEL_LIST,
+                                     OUTPUT_VARS as CESM2LE_OUTPUT_VARS)
 from inference.pbsJob import (SYSTEMS, CPU_ONLY_QUEUE, CPU_ONLY_SYSTEM, LogTail, ModelRun, PBSJob,
                               default_gpu_count, estimate_walltime, format_duration,
                               model_seconds, project_account)
@@ -136,6 +137,28 @@ MODEL_DESCRIPTIONS = {
         "Z500, T850, TCWV and SST (updated every 48 hours, held in between)."
     ),
 }
+
+
+def model_writes(model, name):
+    """Whether the model writes anything for a variable button's name.
+    Models with no list of what they write (the MILES-CREDIT models, the
+    weather models through Earth2Studio, GFS) write all they're offered."""
+    names = MODEL_VAR_MAP.get(model, {}).get(name, [name.lower()])
+    have = CESM2LE_OUTPUT_VARS if model == 'CESM2-LE' else MODEL_OUTPUT_VARS.get(model)
+    if have is None:
+        return bool(names)
+    return any(n in have for n in names)
+
+
+def unwritten_variables(models, names):
+    """The variable names some of the models don't write: name -> the
+    labels of those models."""
+    unwritten = {}
+    for name in names:
+        lacking = [MODEL_LABELS.get(m, m) for m in models if not model_writes(m, name)]
+        if lacking:
+            unwritten[name] = lacking
+    return unwritten
 
 
 class ModelPicker(param.Parameterized):
@@ -270,25 +293,34 @@ def gpu_oom_advice(system, gpu_type):
             "more GPUs won't help - each model runs on a single GPU.")
 
 
-def format_start_estimate(start, tz_name=None, now=None):
-    """PBS's estimated start (Unix seconds) as a clock time in the viewer's
-    time zone (an IANA name from their browser; the server's if unknown),
-    with how long until then."""
+def format_clock_time(t, tz_name=None, now=None):
+    """A time (Unix seconds) as a clock time in the viewer's time zone (an
+    IANA name from their browser; the server's if unknown), with the day
+    when it isn't today."""
     try:
         tz = ZoneInfo(tz_name) if tz_name else None
     except (ValueError, KeyError):
         tz = None
     now = time.time() if now is None else now
-    when, today = datetime.fromtimestamp(start, tz), datetime.fromtimestamp(now, tz)
+    when, today = datetime.fromtimestamp(t, tz), datetime.fromtimestamp(now, tz)
     if tz is None:
         when, today = when.astimezone(), today.astimezone()
     if when.date() == today.date():
         day = ""
     elif when.date() == today.date() + timedelta(days=1):
         day = "tomorrow "
+    elif when.date() == today.date() - timedelta(days=1):
+        day = "yesterday "
     else:
         day = f"{when:%a %d %b} "
-    text = f"{day}{when:%H:%M %Z}"
+    return f"{day}{when:%H:%M %Z}"
+
+
+def format_start_estimate(start, tz_name=None, now=None):
+    """PBS's estimated start (Unix seconds) as a clock time in the viewer's
+    time zone, with how long until then."""
+    now = time.time() if now is None else now
+    text = format_clock_time(start, tz_name, now)
     if start > now:
         text += f" (in {format_duration(start - now)})"
     else:
@@ -363,6 +395,8 @@ class ModelTab(param.Parameterized):
         )
         self.modelPicker.param.watch(self._update_default_sim_name, 'value')
         self._update_default_sim_name()
+        self.modelPicker.param.watch(self._update_variables, 'value')
+        self._update_variables()
 
         self.timePicker = self._make_time_picker()
 
@@ -443,6 +477,11 @@ class ModelTab(param.Parameterized):
 
     def _make_output_params(self, start_path):
         return OutputParams(start_path=start_path)
+
+    def _update_variables(self, event=None):
+        """Disable the variables any selected model doesn't write."""
+        for picker in (self.outputParams.surfaceVars, self.outputParams.UAVars):
+            picker.set_unavailable(unwritten_variables(self.modelPicker.value, picker.names))
 
     def _make_time_picker(self):
         return TimePicker()
@@ -1037,6 +1076,13 @@ class ModelTab(param.Parameterized):
                               exec_host=last.exec_host if last and last.exec_host else None)
                     host = last.exec_host if last and last.exec_host else run.system
                     self._set_job_label(f"{job.job_id} - running on {host}")
+                    for r in runs:
+                        self._append_log(
+                            r.model,
+                            f"Job started on {host} at "
+                            f"{format_clock_time(run.started_at, run.timezone)}, after "
+                            f"{format_duration(run.started_at - run.submitted_at)} "
+                            "in the queue.\n")
 
             for r in runs:
                 check(r.model)

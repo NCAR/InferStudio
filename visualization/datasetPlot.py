@@ -9,6 +9,7 @@ from bokeh.models import CustomJSTickFormatter
 
 from dimensions import VAR_NAME, TIME_NAME, LEV_NAME, PRES_NAME, MODEL_LEV_NAME, LAT_NAME, LON_NAME
 from cf_convert import variable_long_name
+from tooltips import below_tooltip
 from visualization.era5_plot import plot_png, NETCDF_FILE
 from visualization.earth2StudioPlot import parse_variable_groups, available_levels, plot_e2s_field
 from visualization.modelDiff import compute_model_difference
@@ -132,12 +133,36 @@ class SharedPlotControls(param.Parameterized):
         )
         self.time_slider.link(self, value="time_index")
 
-        self._time_display = pn.pane.HTML(
-            pn.bind(lambda v: f"<b>Time:</b> {v}", self.time_slider.param.value),
-            styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
-            width=90,
-            margin=0,
+        # VCR controls under the slider. Playback is a server-side periodic
+        # callback rather than Panel's Player, which steps on a browser
+        # timer: every step is drawn on the Bokeh server thread, so the
+        # next tick can't fire until the last step's plots are done, and a
+        # slow render slows playback down instead of queueing up steps.
+        self._play_direction = 0        # -1 backward, 1 forward, 0 paused
+        self._play_callback = None
+        self._play_backward_button = self._vcr_button(
+            "player-play", "Play backward", partial(self._play, -1), mirrored=True)
+        self._step_back_button = self._vcr_button(
+            "player-skip-back", "Step back", partial(self._step, -1))
+        self._pause_button = self._vcr_button("player-pause", "Pause", self._pause)
+        self._step_forward_button = self._vcr_button(
+            "player-skip-forward", "Step forward", partial(self._step, 1))
+        self._play_forward_button = self._vcr_button(
+            "player-play", "Play forward", partial(self._play, 1))
+        self._vcr_buttons = [self._play_backward_button, self._step_back_button,
+                             self._pause_button, self._step_forward_button,
+                             self._play_forward_button]
+
+        # Jump straight to a step by its valid time. Options are
+        # label -> step index, set in update_choices.
+        self.time_select = pn.widgets.Select(
+            name="",
+            options={"": 0},
+            value=0,
+            disabled=True,
+            sizing_mode="stretch_width",
         )
+        self.time_slider.link(self.time_select, value="value", bidirectional=True)
 
         # level_selector is created before var_selector/var_name is ever
         # assigned, since _update_level_options (watched on var_name) fires
@@ -251,26 +276,16 @@ class SharedPlotControls(param.Parameterized):
         )
         self.boundaries_selector.link(self, value="boundaries")
 
-        self._row = pn.Column(
-            pn.Row(
-                self._time_display,
-                self.time_slider,
-                align="start",
-                sizing_mode="stretch_width",
-                css_classes=["widget-row"],
-            ),
-            pn.Row(
-                pn.pane.HTML(
-                    "<b>Variable</b>",
-                    styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
-                    width=90,
-                    margin=0,
-                ),
-                self.var_selector,
-                align="start",
-                sizing_mode="stretch_width",
-                css_classes=["widget-row"],
-            ),
+        # Laid out by the sidebar in two sections, Time and Variable.
+        self._time_controls = pn.Column(
+            self.time_slider,
+            pn.FlexBox(*self._vcr_buttons, justify_content="center",
+                       sizing_mode="stretch_width"),
+            self.time_select,
+            sizing_mode="stretch_width",
+        )
+        self._variable_controls = pn.Column(
+            self.var_selector,
             self._var_description,
             pn.Row(
                 pn.pane.HTML(
@@ -300,32 +315,10 @@ class SharedPlotControls(param.Parameterized):
                 sizing_mode="stretch_width",
             ),
             pn.Row(
-                pn.pane.HTML(
-                    "<b>Colormap Min</b>",
-                    styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
-                    width=90,
-                    margin=0,
-                ),
-                self.cmap_min_input,
-                align="start",
+                self._labelled("Min", self.cmap_min_input),
+                self._labelled("Max", self.cmap_max_input),
                 sizing_mode="stretch_width",
-                css_classes=["widget-row"],
             ),
-            pn.Row(
-                pn.pane.HTML(
-                    "<b>Colormap Max</b>",
-                    styles={'line-height': '30px', 'font-size': '14px', 'white-space': 'nowrap'},
-                    width=90,
-                    margin=0,
-                ),
-                self.cmap_max_input,
-                align="start",
-                sizing_mode="stretch_width",
-                css_classes=["widget-row"],
-            ),
-            # Margins line both edges up with the Colormap Min/Max rows
-            # above: label at their labels' left edge, dropdown spanning
-            # from there to their inputs' right edge.
             pn.Column(
                 pn.pane.HTML(
                     "<b>Boundaries</b>",
@@ -336,6 +329,20 @@ class SharedPlotControls(param.Parameterized):
                 sizing_mode="stretch_width",
             ),
             sizing_mode="stretch_width",
+        )
+
+    @staticmethod
+    def _labelled(text, widget):
+        """widget with a bold label above it, lined up with its left edge."""
+        return pn.Column(
+            pn.pane.HTML(
+                f"<b>{text}</b>",
+                styles={'line-height': '20px', 'font-size': '14px', 'white-space': 'nowrap'},
+                margin=(0, 0, 0, 10),
+            ),
+            widget,
+            sizing_mode="stretch_width",
+            margin=0,
         )
 
     def _on_colormap_reverse(self, event):
@@ -426,6 +433,19 @@ class SharedPlotControls(param.Parameterized):
         if self.time_index > end:
             self.time_slider.value = 0
             self.time_index = 0
+        # Labels must be unique to be Select options; a repeat (or a step
+        # past the end of `times`) falls back to its index.
+        options = {}
+        for i in range(end + 1):
+            label = times[i] if i < len(times) else ""
+            options[label if label and label not in options else f"Step {i}"] = i
+        self.time_select.options = options
+        self.time_select.value = self.time_slider.value
+        self.time_select.disabled = self.time_slider.disabled
+        if self.time_slider.disabled:
+            self._pause()
+        for button in self._vcr_buttons:
+            button.disabled = self.time_slider.disabled
 
         self.level_vars, self.surface_vars = parse_variable_groups(sorted(all_vars))
 
@@ -495,13 +515,90 @@ class SharedPlotControls(param.Parameterized):
             self.level_selector.value = 0
             self.level_value = 0
 
+    # Milliseconds between steps while playing, when the plots draw faster
+    # than that.
+    PLAY_INTERVAL_MS = 500
+
+    @staticmethod
+    def _vcr_button(icon, tip, action, mirrored=False):
+        """A playback button. mirrored flips its icon left to right, which
+        makes Play backward out of the play triangle."""
+        button = pn.widgets.Button(
+            name="", icon=icon, icon_size="1.1em",
+            button_type="primary", button_style="outline",
+            description=below_tooltip(tip),
+            width=38, margin=(0, 2, 5, 2), disabled=True,
+            stylesheets=[".bk-TablerIcon { transform: scaleX(-1); }"] if mirrored else [],
+        )
+        button.on_click(lambda event: action())
+        return button
+
+    def _play(self, direction):
+        """Step through the times in direction (1 forward, -1 backward)
+        until the last (or first) one. Played from the end it's already
+        at, it starts over from the other end."""
+        start, end = self.time_slider.start, self.time_slider.end
+        if self.time_slider.value == (end if direction > 0 else start):
+            self.time_slider.value = start if direction > 0 else end
+        self._play_direction = direction
+        if self._play_callback is None:
+            self._play_callback = pn.state.add_periodic_callback(
+                self._advance, period=self.PLAY_INTERVAL_MS)
+        self._show_playing()
+
+    def _advance(self):
+        start, end = self.time_slider.start, self.time_slider.end
+        value = min(max(self.time_slider.value + self._play_direction, start), end)
+        self.time_slider.value = value
+        if value in (start, end):
+            self._pause()
+
+    def _pause(self):
+        if self._play_callback is not None:
+            self._play_callback.stop()
+            self._play_callback = None
+        self._play_direction = 0
+        self._show_playing()
+
+    def _step(self, direction):
+        self._pause()
+        self.time_slider.value = min(max(self.time_slider.value + direction,
+                                         self.time_slider.start), self.time_slider.end)
+
+    def _show_playing(self):
+        """Fill in the play button for the direction playing, if any."""
+        for button, direction in ((self._play_backward_button, -1),
+                                  (self._play_forward_button, 1)):
+            button.button_style = "solid" if self._play_direction == direction else "outline"
+
     @staticmethod
     def _level_label(level_dim):
         text = "Model level" if level_dim == MODEL_LEV_NAME else "Level (hPa)"
         return f"<b>{text}</b>"
 
-    def panel(self):
-        return self._row
+    def time_panel(self):
+        """The time slider, playback buttons and timestamp dropdown."""
+        return self._time_controls
+
+    @staticmethod
+    def _step_count_html(end, disabled):
+        # A disabled slider's end is a placeholder (see update_choices).
+        count = 0 if disabled else end + 1
+        return f"NumTS: {count}"
+
+    def time_count(self):
+        """How many time steps the slider spans, for the Time section's
+        header."""
+        return pn.pane.HTML(
+            pn.bind(self._step_count_html, self.time_slider.param.end,
+                    self.time_slider.param.disabled),
+            styles={'font-size': '13px', 'color': '#555', 'white-space': 'nowrap'},
+            margin=(5, 8, 0, 5),
+        )
+
+    def variable_panel(self):
+        """Variable, level, colormap and boundaries."""
+        return self._variable_controls
 
     def _mirror_select(self, src):
         """A second Select kept in step with `src`, both ways.
@@ -541,7 +638,8 @@ class SharedPlotControls(param.Parameterized):
 
     def stats_panel(self):
         """The Variable and Level controls for the Statistics tab's
-        sidebar, mirroring the Visualization tab's (see _mirror_select)."""
+        Variable section, mirroring the Visualization tab's (see
+        _mirror_select)."""
         def label(text):
             # text is a string, or a bound function that returns the HTML.
             return pn.pane.HTML(
@@ -554,8 +652,7 @@ class SharedPlotControls(param.Parameterized):
         var_selector = self._mirror_select(self.var_selector)
         level_selector = self._mirror_select(self.level_selector)
         return pn.Column(
-            pn.Row(label("Variable"), var_selector, align="start",
-                   sizing_mode="stretch_width", css_classes=["widget-row"]),
+            var_selector,
             pn.pane.HTML(
                 pn.bind(self._describe_variable, self.var_selector.param.value),
                 sizing_mode="stretch_width",

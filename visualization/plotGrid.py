@@ -1931,7 +1931,8 @@ class PlotGrid(param.Parameterized):
         sync()
 
         self._diff_widgets = widgets
-        return pn.Column("### Differences", *widgets.values())
+        # No heading: the sidebar's Differences section has it.
+        return pn.Column(*widgets.values())
 
     # -- background computation -----------------------------------------
 

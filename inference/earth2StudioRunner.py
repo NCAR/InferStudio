@@ -24,6 +24,46 @@ MODEL_ENV_MAP = {
     'SFNO':         f"/glade/work/pearse/E2S/envs/sfno/bin/python",
 }
 
+# Model weights, and other files that come with a model (CAMulator's
+# forcing), shared by every user: downloaded by whoever first runs a model
+# and read by everyone after. Only group nvst0001 can write here, so a new
+# model has to be run once by a group member before others can run it.
+MODEL_CACHE = "/glade/campaign/cisl/vast/pearse/inferStudio/cache"
+
+
+def cache_setup(run_cache):
+    """Lines for a job script, after it imports os and sys and before
+    anything imports earth2studio. Weights come from MODEL_CACHE; everything
+    else the run downloads (initial conditions, HuggingFace and kernel
+    caches) goes in run_cache instead of the user's ~/.cache, and is removed
+    when the script exits."""
+    return f"""
+import atexit
+import shutil
+import signal
+os.environ["EARTH2STUDIO_MODEL_CACHE"] = {MODEL_CACHE!r}
+os.environ["EARTH2STUDIO_DATA_CACHE"] = os.path.join({run_cache!r}, "earth2studio")
+os.environ["XDG_CACHE_HOME"] = {run_cache!r}
+
+def end_run():
+    # fsspec writes each model's index file ("cache") readable by its owner
+    # only; open up whatever this run downloaded so other users can read it.
+    for root, dirs, files in os.walk({MODEL_CACHE!r}):
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                st = os.lstat(path)
+                if st.st_uid == os.getuid() and st.st_mode & 0o064 != 0o064:
+                    os.chmod(path, st.st_mode | 0o064)
+            except OSError:
+                pass
+    shutil.rmtree({run_cache!r}, ignore_errors=True)
+
+atexit.register(end_run)
+# PBS stops a job with SIGTERM, which skips atexit unless it's made an exit.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+"""
+
 MODEL_MAP = {
     'AIFS':         'earth2studio.models.px.AIFS',
     'CAMulator':    'earth2studio.models.px.CAMulator',
@@ -46,6 +86,7 @@ RUN_CHANGES = {
     'AIFS': ("anemoi splits the graph transformer's edges into 16 chunks "
              "(ANEMOI_INFERENCE_NUM_CHUNKS) to fit a 40 GB A100; the chunks are summed, "
              "so the output is unchanged."),
+    'CAMulator': "Forcing read from InferStudio's shared copy of CAMulator's forcing files.",
     'DLESyMv0_ISCCP_ERA5': ("Run through earth2studio's lat/lon wrapper, which regrids "
                             "from and to the model's HEALPix grid; output is on a 1 degree "
                             "grid."),
@@ -422,9 +463,22 @@ class Earth2StudioRunner(ModelRunner):
         # CAMulator is driven by the forcing (cyclic or transient) chosen
         # on the Climate tab.
         if model_name == 'CAMulator':
-            forcing_import = "from earth2studio.data import CAMulatorForcing"
+            forcing_import = '''from earth2studio.data import CAMulatorForcing
+
+class SharedCAMulatorForcing(CAMulatorForcing):
+    # The forcing files (21 GB) are kept with the weights in the shared
+    # cache, not downloaded again for every run.
+    @property
+    def cache(self):
+        return os.path.join(os.environ["EARTH2STUDIO_MODEL_CACHE"], "camulator")
+
+    def _fetch_file(self, filename):
+        # huggingface_hub takes a lock even on a file it already has, which
+        # users who can't write to the shared cache can't do.
+        path = os.path.join(self.cache, filename)
+        return path if os.path.isfile(path) else super()._fetch_file(filename)'''
             model_kwargs = (
-                "forcing_data_source=CAMulatorForcing("
+                "forcing_data_source=SharedCAMulatorForcing("
                 f"mode={config.get('forcing_mode', 'cyclic')!r}, verbose=False)")
         else:
             forcing_import = model_kwargs = ""
@@ -455,6 +509,7 @@ os.environ["TQDM_DISABLE"] = "1"
 os.environ["PYTHONUNBUFFERED"] = "1"
 os.environ["JAX_PLATFORMS"] = "cuda"
 {alloc_env}
+{cache_setup(os.path.join(config["output_dir"], f"{file_stem}_cache"))}
 
 import logging
 import torch

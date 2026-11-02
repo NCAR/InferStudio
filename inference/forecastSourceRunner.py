@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 from inference.modelRunner import ModelRunner
 from inference.earth2StudioRunner import (
-    MODEL_ENV_MAP, MODEL_VAR_MAP, APP_DIR, step_hours)
+    MODEL_ENV_MAP, MODEL_VAR_MAP, APP_DIR, cache_setup, step_hours)
 
 # model name -> earth2studio.data forecast source class
 FORECAST_SOURCES = {
@@ -111,6 +111,7 @@ import os
 import sys
 import time
 os.environ["TQDM_DISABLE"] = "1"
+{cache_setup(os.path.join(config["output_dir"], f"{config['file_stem']}_cache"))}
 
 from collections import OrderedDict
 from datetime import datetime, timedelta
