@@ -70,10 +70,11 @@ import holoviews as hv
 import xarray as xr
 from holoviews.operation.datashader import rasterize
 from bokeh.models import (
-    ColumnDataSource, CustomJS, CustomJSTickFormatter, FixedTicker,
+    ColumnDataSource, CustomJS, CustomJSTickFormatter, FixedTicker, Label,
     WheelZoomTool)
 
 from dimensions import PRES_NAME, level_text
+from visualization import vaporColormaps
 from visualization.earth2StudioPlot import (
     load_e2s_field, field_range, FieldReadError, CANON_LAT, CANON_LON)
 from visualization.boundaries import (
@@ -120,8 +121,9 @@ COLORBAR_WIDTH = 12
 MAX_PANEL_FRAME_WIDTH = 1600
 AUTOSIZE_TAG = "plotgrid-autosize"
 
-DEFAULT_CMAP = "viridis"
-DIFF_CMAP = "coolwarm"
+DEFAULT_CMAP = vaporColormaps.colormap(vaporColormaps.DEFAULT)
+# Moreland's cool-warm, as VAPOR computes it (see vaporColormaps).
+DIFF_CMAP = vaporColormaps.colormap(vaporColormaps.DIFF)
 
 # Colormaps for panels carrying no data. Grey for "nothing selected", a
 # tinted one for "computing" - the two states must not look alike, or a
@@ -210,6 +212,56 @@ def _lon_period(lon):
     if not np.allclose(d, d[0], rtol=1e-4) or d[0] <= 0:
         return None
     return LON_PERIOD if abs(lon.size * d[0] - LON_PERIOD) < 0.5 * d[0] else None
+
+
+# Shown over a panel whose field has no values - a step the model didn't
+# write, such as WXFormer's first (its initial state; see
+# cf_convert.wxformer_to_cf). See _draw_no_data.
+NO_DATA_TEXT = "No Data"
+
+# Keeps the "No Data" label at the centre of the view as it's panned and
+# zoomed: data-unit coordinates, moved whenever either range changes.
+_NO_DATA_CENTER_JS = """
+label.x = (xr.start + xr.end) / 2
+label.y = (yr.start + yr.end) / 2
+"""
+
+
+def _no_data(da):
+    """True if the field has no values at all. Drawn as it is, such a field
+    gives the plot no value range: no colorbar or title, and the panel
+    collapses to a sliver. A placeholder keeps its place in the grid."""
+    return not bool(da.notnull().any())
+
+
+def display_order(models):
+    """The models in the order their rows are shown: WXFormer (either
+    generation) first, so it's always the top row, then the rest in the
+    order given."""
+    return sorted(models, key=lambda m: not m.startswith("WXFormer"))
+
+
+def _even_grid(da, dims):
+    """da linearly interpolated onto evenly spaced coordinates, as many as
+    it has, along whichever of `dims` aren't evenly spaced already."""
+    targets = {}
+    for dim in dims:
+        c = np.asarray(da[dim].values, dtype=float)
+        step = np.diff(c)
+        if c.size > 2 and not np.allclose(step, step[0], rtol=1e-3, atol=0):
+            targets[dim] = np.linspace(c[0], c[-1], c.size)
+    return da.sortby(list(targets)).interp(targets) if targets else da
+
+
+def _lon_pm180(da, lon_dim):
+    """A global field written on 0..360 moved onto -180..180, so the map
+    is centred on 0 and its axis reads -180..180, whatever convention the
+    model wrote. A regional field is left alone: a grid that doesn't go
+    all the way round can't be folded."""
+    lon = da[lon_dim].values
+    if _lon_period(lon) is None or lon.max() <= 180:
+        return da
+    return da.assign_coords({lon_dim: (lon + 180) % LON_PERIOD - 180}).sortby(lon_dim)
 
 
 def _tile_lon(da, lon_dim, period):
@@ -581,8 +633,8 @@ class PlotGridState(param.Parameterized):
     level = param.Integer(default=500, allow_None=True)
     level_dim = param.String(default=PRES_NAME)  # which kind of level
 
-    # Either a colormap name or a matplotlib Colormap object - cmocean's
-    # colormaps are not registered globally, so they arrive as objects.
+    # A matplotlib Colormap object: the sidebar's VAPOR colormaps (see
+    # vaporColormaps) aren't registered with matplotlib by name.
     cmap = param.Parameter(default=DEFAULT_CMAP)
     cmap_min = param.Number(default=0.0)
     cmap_max = param.Number(default=0.0)
@@ -681,12 +733,13 @@ class PlotGrid(param.Parameterized):
 
     def __init__(self, models, model_dirs, state=None):
         """
-        models         : list[str] - model names, in display order
+        models         : list[str] - model names, shown in this order
+                         except that WXFormer comes first (display_order)
         model_dirs     : dict[str, Path] - model name -> directory of .nc files
         state          : PlotGridState, or None to create one
         """
         super().__init__()
-        self.models = list(models)
+        self.models = display_order(models)
         self.model_dirs = dict(model_dirs)
         self.state = state if state is not None else PlotGridState()
 
@@ -718,6 +771,7 @@ class PlotGrid(param.Parameterized):
             da, meta = load_e2s_field(
                 self.model_dirs[self.models[0]],
                 self.state.variable, self.state.level, 0)
+            da = _lon_pm180(da, meta.lon_dim)
             lon, lat = da[meta.lon_dim].values, da[meta.lat_dim].values
             self._last_extent = (float(lon.min()), float(lat.min()),
                                  float(lon.max()), float(lat.max()))
@@ -809,6 +863,10 @@ class PlotGrid(param.Parameterized):
         }
         self._boundary_used = set()
         self._boundary_figs = set()
+        # Titles of the panels showing no data right now, and each figure's
+        # "No Data" label - see _draw_no_data.
+        self._no_data_titles = set()
+        self._no_data_labels = {}
         self._boundary_watcher = self.state.param.watch(
             lambda event: self._update_boundaries(), "boundaries")
 
@@ -924,6 +982,17 @@ class PlotGrid(param.Parameterized):
             # period at most.
             self._apply_zoom_clamp(fig.x_range, lon0 - period, lon1 + period,
                                    MIN_LON_SPAN, max_span=period)
+            # Start on, and reset to, the middle copy. HoloViews ignores
+            # xlim here and starts the range on all three copies' data,
+            # which showed the globe three times over; max_interval only
+            # limits the zoom tools. Only a view wider than one period is
+            # moved, which no zoom or pan can make, so this hook running on
+            # every re-render never undoes the user's.
+            rng = fig.x_range
+            view = (lon0, lon0 + period)
+            if rng.end - rng.start > period * (1 + 1e-6):
+                rng.start, rng.end = view
+            rng.reset_start, rng.reset_end = view
         else:
             self._apply_zoom_clamp(fig.x_range, lon0, lon1, MIN_LON_SPAN)
         self._apply_zoom_clamp(fig.y_range, lat0, lat1, MIN_LAT_SPAN)
@@ -1032,6 +1101,39 @@ class PlotGrid(param.Parameterized):
         fig = plot.state
         if AUTOSIZE_TAG not in fig.tags:
             fig.tags = [*fig.tags, AUTOSIZE_TAG]
+
+    def _draw_no_data(self, plot, element):
+        """Bokeh hook (see _panel_opts): "No Data" across the middle of a
+        panel whose field has no values, hidden otherwise.
+
+        A Bokeh Label on the figure rather than a HoloViews Text overlay,
+        which would change the panel's structure (see _panel_opts). One
+        label per figure, added once; each render only shows or hides it,
+        by whether the panel's title is one _no_data_placeholder made.
+        """
+        fig = plot.state
+        label = self._no_data_labels.get(id(fig))
+        if label is None:
+            xr, yr = fig.x_range, fig.y_range
+            label = Label(
+                x=(xr.start + xr.end) / 2, y=(yr.start + yr.end) / 2,
+                text=NO_DATA_TEXT, text_align="center", text_baseline="middle",
+                text_font_size="28pt", text_font_style="bold",
+                text_color="#4a5866", background_fill_color="white",
+                background_fill_alpha=0.85, visible=False)
+            fig.add_layout(label)
+            center = CustomJS(args=dict(label=label, xr=xr, yr=yr),
+                              code=_NO_DATA_CENTER_JS)
+            for rng in (xr, yr):
+                rng.js_on_change("start", center)
+                rng.js_on_change("end", center)
+            self._no_data_labels[id(fig)] = label
+        label.visible = fig.title.text in self._no_data_titles
+
+    def _no_data_placeholder(self, title, kind="field"):
+        """A blank panel with "No Data" across it (see _draw_no_data)."""
+        self._no_data_titles.add(title)
+        return self._placeholder(title, kind=kind)
 
     def _draw_boundaries(self, plot, element):
         """Bokeh hook (see _panel_opts): draw the selected Natural Earth
@@ -1240,14 +1342,16 @@ class PlotGrid(param.Parameterized):
             ylabel="latitude",
             # The initial view, and what a double-click resets to: one
             # period, not the three copies a periodic field carries.
-            xlim=(self._last_extent[0], self._last_extent[2]),
+            xlim=(self._last_extent[0],
+                  self._last_extent[0] + self._lon_period if self._lon_period
+                  else self._last_extent[2]),
             hooks=[self._tag_autosize,
                    self._clamp_zoom_pan, self._disable_axis_zoom,
                    self._wire_lon_wrap,
                    self._wire_dblclick_reset,
                    self._sync_colorbar_title, self._tick_colorbar_ends,
                    partial(self._wire_colorbar_drag, kind),
-                   self._draw_boundaries],
+                   self._draw_boundaries, self._draw_no_data],
             **self._sizing_opts(),
         )
 
@@ -1271,16 +1375,22 @@ class PlotGrid(param.Parameterized):
         if self._lon_period:
             da = _tile_lon(da, meta.lon_dim, self._lon_period)
 
-        # hv.Image assumes an evenly spaced grid and will silently misplace
-        # data on, say, a reduced Gaussian latitude axis. QuadMesh handles
-        # irregular spacing correctly, at some rendering cost.
-        #
+        # Every panel is rasterized (see layout()), which makes an Image of
+        # it, and an Image assumes an evenly spaced grid: given a QuadMesh
+        # (the element for an uneven one), rasterize's Image came out
+        # without the panel's options - no title, size, hooks or boundaries,
+        # a sliver of a plot. So a field on an uneven grid (WXFormer's
+        # Gaussian latitudes) is interpolated onto an even one with as many
+        # points first; that shifts nothing by more than the grid spacing,
+        # less than rasterizing to screen pixels does. The cursor readout
+        # still samples the field as loaded.
+        if not meta.regular_grid:
+            da = _even_grid(da, (meta.lon_dim, meta.lat_dim))
+
         # kdims come from meta, which earth2StudioPlot has already
         # canonicalized to latitude/longitude regardless of what a given
         # model called them on disk.
-        cls = hv.Image if meta.regular_grid else hv.QuadMesh
-
-        return cls(da, kdims=[meta.lon_dim, meta.lat_dim]).opts(
+        return hv.Image(da, kdims=[meta.lon_dim, meta.lat_dim]).opts(
             **self._panel_opts(title, cmap, kind))
 
     def _placeholder(self, title, computing=False, kind="field"):
@@ -1344,6 +1454,7 @@ class PlotGrid(param.Parameterized):
                     f"{model} - {exc.short} - change time to retry")
             return self._placeholder(f"{model} - {type(exc).__name__}: {exc}")
 
+        da = _lon_pm180(da, meta.lon_dim)
         with self._fields_lock:
             self._fields[("field", model)] = (da, meta)
 
@@ -1354,6 +1465,9 @@ class PlotGrid(param.Parameterized):
             if label != self.state.header_text:
                 _schedule(partial(setattr, self.state, "header_text", label))
 
+        if _no_data(da):
+            return self._no_data_placeholder(model)
+        self._no_data_titles.discard(model)
         return self._element(da, meta, title=model)
 
     def _diff_cb(self, model, **_):
@@ -1407,11 +1521,15 @@ class PlotGrid(param.Parameterized):
                 f"{model} minus {other} - {type(exc).__name__}: {exc}",
                 kind="diff")
 
+        da = _lon_pm180(da, meta.lon_dim)
         with self._fields_lock:
             self._fields[("diff", model)] = (da, meta)
 
-        return self._element(da, meta, title=f"{model} minus {other}",
-                             cmap=DIFF_CMAP, kind="diff")
+        title = f"{model} minus {other}"
+        if _no_data(da):
+            return self._no_data_placeholder(title, kind="diff")
+        self._no_data_titles.discard(title)
+        return self._element(da, meta, title=title, cmap=DIFF_CMAP, kind="diff")
 
     # -- cursor readout --------------------------------------------------
 
@@ -1623,6 +1741,8 @@ class PlotGrid(param.Parameterized):
             "double-click to reset</div>"
             "<div class='hint-label'>Colorbar:</div>"
             "<div>drag to rescale &middot; double-click to reset</div>"
+            "<div class='hint-label'>Off-map:</div>"
+            "<div>scroll to move up and down the page</div>"
             "</div>"
             "</div>"
             "</div>"
@@ -1811,7 +1931,8 @@ class PlotGrid(param.Parameterized):
         sync()
 
         self._diff_widgets = widgets
-        return pn.Column("### Differences", *widgets.values())
+        # No heading: the sidebar's Differences section has it.
+        return pn.Column(*widgets.values())
 
     # -- background computation -----------------------------------------
 
@@ -1927,11 +2048,17 @@ class PlotGrid(param.Parameterized):
             return
 
         key = self._field_clim_key()
+        # Read once: this runs in the background for seconds, and a new
+        # suite's variable can arrive in the shared state part way through,
+        # which this grid's models may not have.
+        variable, level = self.state.variable, self.state.level
         lo, hi = np.inf, -np.inf
         for model in self.models:
+            if self._torn_down:
+                return
             try:
-                a, b = field_range(self.model_dirs[model], self.state.variable,
-                                   self.state.level, sample_steps)
+                a, b = field_range(self.model_dirs[model], variable,
+                                   level, sample_steps)
             except Exception:
                 traceback.print_exc()
                 continue
@@ -1946,14 +2073,18 @@ class PlotGrid(param.Parameterized):
             return
 
         key = self._diff_clim_key()
+        # Read once - see _refresh_field_clim.
+        variable, level = self.state.variable, self.state.level
         m = 0.0
         for a, b in self.state.diff_pairs.items():
+            if self._torn_down:
+                return
             if not b or not self._diff_exists(a, b):
                 continue
             try:
                 lo, hi = symmetric_diff_range(
                     self.model_dirs[a], self.model_dirs[b], a, b,
-                    self.state.variable, self.state.level, sample_steps,
+                    variable, level, sample_steps,
                 )
             except Exception:
                 traceback.print_exc()
@@ -1999,6 +2130,26 @@ class PlotGrid(param.Parameterized):
         self.n_steps = max(1, int(n_steps))
         if self.state.time_index > self.n_steps - 1:
             self.state.time_index = self.n_steps - 1
+
+    def first_step(self):
+        """The time step to open the suite on: WXFormer's first with data
+        if it's in the grid (it doesn't write its initial state, so its
+        step 0 is empty), else 0. Checked on the selected variable, a step
+        at a time, and never past the last step."""
+        start = 0
+        for model in self.models:
+            if not model.startswith("WXFormer"):
+                continue
+            for t in range(getattr(self, "n_steps", 1)):
+                try:
+                    da, _ = load_e2s_field(self.model_dirs[model], self.state.variable,
+                                           self.state.level, t)
+                except Exception:
+                    break
+                if not _no_data(da):
+                    start = max(start, t)
+                    break
+        return start
 
     def frame_spec(self):
         """What the video exporter needs to render frames itself.

@@ -203,11 +203,15 @@ def scan_simulation_suite(sim_dir: Path) -> dict:
         "level_dims": level_dims,
     }
 
+def dataset_dirs(data_dir):
+    """The datasets under data_dir: its subdirectories, leaving out hidden
+    ones (the nightly examples' .staging, for one)."""
+    return [d for d in data_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+
+
 def scan_datasets(data_dir):
     metadata = {}
-    for d in data_dir.iterdir():
-        if not d.is_dir():
-            continue
+    for d in dataset_dirs(data_dir):
         subdirs_with_nc = [
             sub for sub in d.iterdir()
             if sub.is_dir() and any(sub.glob("*.nc"))
@@ -281,6 +285,33 @@ pn.theme.Bootstrap.modifiers[_ButtonBase] = {
 # overlay pads its content by the same amount so its spinner lands in the
 # middle of the plot card rather than the middle of the whole tab.
 _SIDEBAR_WIDTH = 250
+
+# Outline and accent edge for each section of the Visualization and
+# Statistics sidebars, as on the Inference tab's settings boxes.
+_SECTION_STYLES = {
+    'border': '1px solid #cfd6de',
+    'border-top': '4px solid #007bff',
+    'border-radius': '6px',
+}
+
+
+def _sidebar_section(title, *objects, aside=None):
+    """A titled, outlined group of sidebar controls. `aside`, if given,
+    sits at the right-hand end of the title line."""
+    heading = pn.pane.HTML(
+        f"<h2 style='margin: 0; font-size: 14px; font-weight: bold;'>{title}</h2>",
+        margin=(5, 5, 0, 5))
+    if aside is not None:
+        heading = pn.Row(heading, pn.HSpacer(), aside,
+                         sizing_mode="stretch_width", margin=0)
+    return pn.Column(
+        heading,
+        *objects,
+        sizing_mode="stretch_width",
+        margin=(10, 10, 0, 0),
+        styles=_SECTION_STYLES,
+    )
+
 
 def _diff_busy_lines(diff_status, diff_pairs):
     """One "Computing difference between A and B..." line per pair in
@@ -457,6 +488,76 @@ class WheelScrollPassthrough(pn.custom.JSComponent):
     }
     """
 
+class SliderTooltipClamp(pn.custom.JSComponent):
+    """Keeps a slider's drag tooltip inside the area that shows it.
+
+    Bokeh centres the tooltip over the handle, so near either end of the
+    sidebar's time slider a long timestamp ran off the sidebar's edge and
+    was clipped - off the screen, at the left end. While a slider is being
+    dragged this shifts its tooltip sideways, every frame, just enough to
+    sit inside the nearest clipping ancestor (and the window).
+
+    One window-level capture listener, installed once per page, so it
+    covers every slider, including ones created later. The shift uses the
+    CSS `translate` property, which adds to the tooltip's own centring
+    transform rather than replacing it.
+    """
+
+    _esm = """
+    const PAD = 2;   // px kept clear of the clipping edge
+
+    // Left and right edges of the visible area around el: the window,
+    // narrowed by every ancestor that clips horizontally. Walks out
+    // through Bokeh's shadow roots via their hosts.
+    function clipEdges(el) {
+      let left = 0, right = window.innerWidth;
+      for (let n = el.parentNode || el.host; n != null; n = n.parentNode || n.host) {
+        if (!(n instanceof Element)) { continue; }
+        if (getComputedStyle(n).overflowX === "visible") { continue; }
+        const r = n.getBoundingClientRect();
+        left = Math.max(left, r.left + n.clientLeft);
+        right = Math.min(right, r.left + n.clientLeft + n.clientWidth);
+      }
+      return [left, right];
+    }
+
+    function clamp(slider, edges) {
+      for (const tip of slider.querySelectorAll(".noUi-tooltip")) {
+        tip.style.translate = "";
+        const r = tip.getBoundingClientRect();
+        if (r.width === 0) { continue; }
+        const [left, right] = edges;
+        let dx = 0;
+        if (r.left < left + PAD) { dx = left + PAD - r.left; }
+        else if (r.right > right - PAD) { dx = right - PAD - r.right; }
+        if (dx !== 0) { tip.style.translate = `${dx}px 0`; }
+      }
+    }
+
+    export function render() {
+      if (window.__inferstudioSliderTooltipClamp) { return; }
+      window.__inferstudioSliderTooltipClamp = true;
+      let dragging = false;
+      window.addEventListener("pointerdown", (e) => {
+        const slider = e.composedPath().find(
+          (n) => n.classList != null && n.classList.contains("noUi-target"));
+        if (slider == null) { return; }
+        const edges = clipEdges(slider);
+        dragging = true;
+        // Bokeh shows the tooltip on the slider's own pointerdown, after
+        // this capture listener, so the first clamp waits a frame.
+        const tick = () => {
+          clamp(slider, edges);
+          if (dragging) { requestAnimationFrame(tick); }
+        };
+        requestAnimationFrame(tick);
+      }, { capture: true, passive: true });
+      const stop = () => { dragging = false; };
+      window.addEventListener("pointerup", stop, { capture: true, passive: true });
+      window.addEventListener("pointercancel", stop, { capture: true, passive: true });
+    }
+    """
+
 class PlotGridAutoSize(pn.custom.JSComponent):
     """Grows the plot grid's maps to fill the window's width.
 
@@ -602,8 +703,8 @@ def link_controls(controls, state):
             except (TypeError, ValueError):
                 return 0
         if dst == "cmap":
-            # cmocean's colormaps are not registered with matplotlib
-            # globally, so a bare name string can fail downstream. Resolve
+            # The sidebar's VAPOR colormaps aren't registered with
+            # matplotlib, so a bare name would fail downstream. Resolve
             # through the controls' own name->Colormap dict, which is what
             # DatasetPlot2 does too.
             cm = getattr(controls, "_colormaps", {}).get(value)
@@ -632,7 +733,7 @@ def link_controls(controls, state):
 
 def build_app(data_dir):
     dataset_metadata = scan_datasets(data_dir)
-    datasets = sorted(d.name for d in data_dir.iterdir() if d.is_dir())
+    datasets = sorted(d.name for d in dataset_dirs(data_dir))
     browser = DatasetBrowser(datasets=datasets)
     meta_panel = DatasetMetadata(metadata=dataset_metadata)
 
@@ -692,12 +793,10 @@ def build_app(data_dir):
 
     browser.param.watch(sync_active, 'active_dataset')
 
-    def sync_controls(event):
-        controls.update_choices(event.new, dataset_metadata)
+    # The variable/level/time choices follow the selection, but not from a
+    # watcher on it: see _on_checked.
 
-    browser.param.watch(sync_controls, 'checked_items')
-
-    DEFAULT_DATASET = "ExampleDataset"
+    DEFAULT_DATASET = "WeatherExample"
     if DEFAULT_DATASET in dataset_metadata:
         browser.checked_items = [DEFAULT_DATASET]
         browser.active_dataset = DEFAULT_DATASET
@@ -839,21 +938,49 @@ def build_app(data_dir):
     # sit under each model's plot card; hv.Layout can't host Panel widgets
     # between its panels, so they live here alongside the other field
     # controls. Repopulated by plot_grid on every dataset change.
-    diff_slot = pn.Column(sizing_mode="stretch_width", margin=(0, 10, 0, 0))
+    # Shown in the Differences section until a suite with models to
+    # difference is loaded.
+    diff_hint = pn.pane.HTML(
+        "<div style='padding:10px; font-family: sans-serif;'>"
+        "<i>Load a suite with two or more models</i></div>")
+    diff_slot = pn.Column(diff_hint, sizing_mode="stretch_width", margin=(0, 10, 0, 0))
 
     shown = _ShownDatasets(datasets=list(browser.checked_items))
+    controls.update_choices(shown.datasets, dataset_metadata)
     # Bumped on every selection change, so a superseded selection's
     # pending build is skipped instead of run and thrown away.
     _load_token = {"n": 0}
 
+    def _show(datasets):
+        """Show `datasets`: detach the grid on screen, then update the
+        controls' choices for the new selection, then build its tabs.
+
+        In that order because the controls are linked to the grid: changing
+        the variable, level or time while the outgoing grid is attached has
+        it reload every one of its fields and recompute its colour limits -
+        seconds of work for a suite nobody is looking at any more.
+        """
+        if datasets == shown.datasets:
+            # Already showing (a selection changed and changed back before
+            # its build ran): nothing would rebuild the grid torn down below.
+            return
+        prev = _active_plot.get("obj")
+        if hasattr(prev, "teardown"):
+            prev.teardown()
+        controls.update_choices(datasets, dataset_metadata)
+        shown.datasets = datasets
+
     def _on_checked(event):
+        # Only the busy overlay is changed here, so it reaches the browser
+        # as soon as this returns; everything slow happens on the next tick
+        # (see _ShownDatasets).
         new = list(event.new)
         _load_token["n"] += 1
         token = _load_token["n"]
         if not new:
             # Nothing to build - the tabs just show a prompt.
             shown.loading = ""
-            shown.datasets = new
+            _show(new)
             return
         shown.loading = new[0]
 
@@ -861,7 +988,7 @@ def build_app(data_dir):
             if token != _load_token["n"]:
                 return
             try:
-                shown.datasets = new
+                _show(new)
             finally:
                 if token == _load_token["n"]:
                     shown.loading = ""
@@ -906,7 +1033,7 @@ def build_app(data_dir):
 
         if not datasets:
             _active_plot["obj"] = None
-            diff_slot.objects = []
+            diff_slot.objects = [diff_hint]
             return pn.pane.Markdown("### Select one or more datasets")
 
         ds = datasets[0]
@@ -919,7 +1046,7 @@ def build_app(data_dir):
             # original single-plot path.
             plot = DatasetPlot2(controls=controls, dataset=ds, metadata=dataset_metadata)
             _active_plot["obj"] = plot
-            diff_slot.objects = []
+            diff_slot.objects = [diff_hint]
             return plot.panel()
 
         grid = PlotGrid(
@@ -930,6 +1057,10 @@ def build_app(data_dir):
         # ntime already came out of the scan, so the forecast length is set
         # without touching the filesystem again.
         grid.set_time_bounds(entry.get("ntime", 1))
+        # Open on WXFormer's first step with data, not its empty first one.
+        start = grid.first_step()
+        if start and controls.time_index < start:
+            controls.time_slider.value = start
         _active_plot["obj"] = grid
         diff_slot.objects = [grid.diff_selectors()]
         grid.refresh_clims_async()
@@ -1000,16 +1131,15 @@ def build_app(data_dir):
         controls, lambda: _active_plot["obj"], _suite_dir)
 
     sidebar = pn.Column(
-        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
-        browser.panel,
-        load_suite_dialog.open_button,
-        load_suite_dialog.modal,
-        controls.panel(),
-        diff_slot,
         video_export.open_button,
         video_export.modal,
-        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
-        meta_panel.panel,
+        _sidebar_section("Datasets", browser.panel,
+                         load_suite_dialog.open_button, load_suite_dialog.modal),
+        _sidebar_section("Time", controls.time_panel(),
+                         aside=controls.time_count()),
+        _sidebar_section("Variable", controls.variable_panel()),
+        _sidebar_section("Differences", diff_slot),
+        _sidebar_section("Metadata", meta_panel.panel),
         width=_SIDEBAR_WIDTH,
         # Its own bounded scrollbar too - same reasoning as vis/main below:
         # sizing_mode stays default (Bokeh doesn't fight the height here
@@ -1017,8 +1147,11 @@ def build_app(data_dir):
         # against vis's real box, and this is what keeps a long dataset
         # list from pushing vis's own content past its box (which vis's
         # overflow:hidden would otherwise just clip invisibly instead of
-        # making reachable via a scrollbar).
-        styles={"height": "100%", "overflow-y": "auto"},
+        # making reachable via a scrollbar). overflow-x is hidden because
+        # overflow-y:auto would otherwise turn it to auto as well, and the
+        # controls are laid out to fit the width, so a few pixels of
+        # overhang only added a useless horizontal scrollbar.
+        styles={"height": "100%", "overflow-y": "auto", "overflow-x": "hidden"},
     )
     main = pn.Column(
         pn.panel(plot_grid, sizing_mode="stretch_width"),
@@ -1120,6 +1253,7 @@ def build_app(data_dir):
     vis = pn.Column(
         vis_content, diff_busy_overlay,
         WheelScrollPassthrough(width=0, height=0, margin=0),
+        SliderTooltipClamp(width=0, height=0, margin=0),
         PlotGridAutoSize(width=0, height=0, margin=0),
         sizing_mode="stretch_width",
         styles={"height": "100%", "overflow": "hidden",
@@ -1132,15 +1266,12 @@ def build_app(data_dir):
     )
 
     statistics_sidebar = pn.Column(
-        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Datasets</h2>"),
-        stats_browser.panel,
-        stats_load_suite_dialog.open_button,
-        stats_load_suite_dialog.modal,
-        controls.stats_panel(),
-        pn.pane.HTML("<h2 style='margin: 5px 0; font-size: 14px; font-weight: bold;'>Metadata</h2>"),
-        meta_panel.panel,
+        _sidebar_section("Datasets", stats_browser.panel,
+                         stats_load_suite_dialog.open_button, stats_load_suite_dialog.modal),
+        _sidebar_section("Variable", controls.stats_panel()),
+        _sidebar_section("Metadata", meta_panel.panel),
         width=_SIDEBAR_WIDTH,
-        styles={"height": "100%", "overflow-y": "auto"},
+        styles={"height": "100%", "overflow-y": "auto", "overflow-x": "hidden"},
     )
     statistics_main = pn.Column(
         pn.panel(stats_reactive, sizing_mode="stretch_width"),
@@ -1282,6 +1413,11 @@ def build_app(data_dir):
     template.header.append(
         pn.pane.PNG(
             str(_STATIC_DIR / "nsf_ncar_logo_padded.png"),
+            # In a new tab, like the Docs and Questions links: following it
+            # in this one would leave the running session.
+            link_url="https://ncar.ucar.edu/",
+            target="_blank",
+            alt_text="NSF NCAR",
             height=45,
             width=534,
             sizing_mode="fixed",

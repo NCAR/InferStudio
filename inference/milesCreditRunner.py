@@ -1,6 +1,9 @@
 import importlib.util
+import json
 import os
 import shlex
+
+import yaml
 
 from inference.modelRunner import ModelRunner
 from pathlib import Path
@@ -72,6 +75,10 @@ WXFORMER_STEP_HOURS = 1     # WXFormer's own time step
 # Runs rollout_realtime_gen2, reading GFS from Google Cloud (see the module).
 GEN2_ROLLOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creditGen2Rollout.py")
 
+# The checkout this runs from, whose cf_convert gathers gen2's output into
+# one file.
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # Both WXFormer rollouts (gen1's rollout_realtime, stepping 1 hour at a time,
 # and rollout_realtime_gen2) save every step, as
 # <save_dir>/<init>Z/pred_<init>Z_<FHR:03d>.nc. This removes the hours that
@@ -93,6 +100,27 @@ def _thin_cmd(config) -> str:
     if every <= WXFORMER_STEP_HOURS:
         return ""
     return f" && python -c {shlex.quote(_THIN)} {shlex.quote(config['output_path'])} {every}"
+
+
+def _cf_cmd(config, run_info) -> str:
+    """The command (with a leading " && ") that gathers the saved hours
+    into <file_stem>_cf.nc, the one file per model the Visualization tab
+    reads (see cf_convert.wxformer_to_cf), with run_info, the run's
+    details, in its global attributes."""
+    save_dir = config["output_path"]
+    out = os.path.join(save_dir, f"{config['file_stem']}_cf.nc")
+    return (f" && python {shlex.quote(os.path.join(APP_DIR, 'cf_convert.py'))} --wxformer "
+            f"{shlex.quote(save_dir)} {shlex.quote(out)} "
+            f"--run-info {shlex.quote(json.dumps(run_info))}")
+
+
+def _weights(config_path):
+    """The weights directory (save_loc) a CREDIT config loads."""
+    try:
+        with open(config_path) as f:
+            return (yaml.safe_load(f) or {}).get("save_loc")
+    except (OSError, yaml.YAMLError):
+        return None
 
 
 class MilesCreditGen2Runner(ModelRunner):
@@ -120,12 +148,38 @@ class MilesCreditGen2Runner(ModelRunner):
 
     def build_cmd(self, config) -> str:
         save_dir = config["output_path"]
+        every = int(config["timestep"].rstrip("h"))
+        start = config["start_time"]
+        # The run's details, for the CF file's global attributes (see
+        # cf_convert._global_attrs).
+        run_info = {
+            "model": "WXFormer (gen 2)",
+            "model_version": f"weights {_weights(GEN2_CONFIG)}, config {GEN2_CONFIG}",
+            "framework": "miles-credit",
+            "simulation_name": config["simulation_name"],
+            "initialization_time": f"{start:%Y-%m-%dT%H:%M:%SZ}",
+            "initial_conditions": "GFS/GDAS analysis, from the gs://global-forecast-system bucket",
+            "forecast_length_hours": self._steps(config) * WXFORMER_STEP_HOURS,
+            "model_time_step_hours": WXFORMER_STEP_HOURS,
+            "output_interval_hours": every,
+            "steps": self._steps(config),
+            "run_changes": (
+                "Run with credit.applications.rollout_realtime_gen2 through "
+                "inference/creditGen2Rollout.py, which fixes rollout_realtime_gen2's bugs as "
+                "of miles-credit 2026.2.0: reads recent analyses from Google Cloud, not "
+                "NOMADS; batches keyed as the preblocks expect; each step's prediction fed "
+                "back normalized; the tracer fixer's thresholds converted to normalized "
+                "units; environment variables expanded in the initial-condition path."
+                + (f" Saved hours that aren't a multiple of {every} were deleted." if every >
+                   WXFORMER_STEP_HOURS else "")),
+        }
         return (
             f"python {shlex.quote(GEN2_ROLLOUT)} -c {shlex.quote(GEN2_CONFIG)}"
-            f" --init-time {config['start_time']:%Y-%m-%dT%H}"
+            f" --init-time {start:%Y-%m-%dT%H}"
             f" --steps {self._steps(config)}"
             f" --save-dir {shlex.quote(save_dir)}"
             + _thin_cmd(config)
+            + _cf_cmd(config, run_info)
         )
 
     @staticmethod

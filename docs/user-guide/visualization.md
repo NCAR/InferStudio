@@ -30,7 +30,7 @@ How these two controls behave depends on the convention of the active dataset:
 * - Earth2Studio (flattened)
   - Lists composite names: `u850`, `t500`, `z500`, `u100`
   - Hidden — the level is part of the variable name
-* - ERA5-style (CREDIT / WXFormer)
+* - ERA5-style (ERA5)
   - Lists bare names: `U`, `T`, `Z`
   - Active, listing the dataset's vertical coordinate values
 :::
@@ -52,7 +52,17 @@ stepping may trigger a file read; expect a brief pause on the first pass through
 
 ## Colormaps and scaling
 
-The colormap applies globally. Two rules of thumb:
+The colormap applies globally. The choices are VAPOR's built-in colormaps,
+in one list of swatches: the sequential ones first, then the diverging ones,
+then the two highlighting ones (oxy and topo). **Reverse** flips the map. The
+diverging maps are computed with Kenneth Moreland's interpolation, as in VAPOR
+and ParaView ([his colour advice](https://www.kennethmoreland.com/color-advice/)),
+and the lowercase ones are VAPOR's versions of cmocean's. Kindlmann,
+KindlmannExtended and BlackBody are Moreland's own published tables, which
+rise evenly in lightness; VAPOR's few control points for them show bands. New
+sessions start on CoolWarm, which difference panels always use.
+
+Two rules of thumb:
 
 - Use a **diverging** map centred on zero for anomaly and difference fields, and
   a **sequential** map for absolute fields. A sequential map on a difference

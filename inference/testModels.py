@@ -60,6 +60,8 @@ CHILD_ENV = {
     "TQDM_DISABLE": "1",
     "PYTHONUNBUFFERED": "1",
     "JAX_PLATFORMS": "cuda",
+    # InferStudio's shared weights (earth2StudioRunner.MODEL_CACHE).
+    "EARTH2STUDIO_MODEL_CACHE": "/glade/campaign/cisl/vast/pearse/inferStudio/cache",
 }
 PROBE_VARS = ["t2m", "z500", "t500", "u500", "v500"]
 

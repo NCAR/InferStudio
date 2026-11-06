@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 from inference.modelRunner import ModelRunner
 from inference.earth2StudioRunner import (
-    MODEL_ENV_MAP, MODEL_VAR_MAP, APP_DIR, step_hours)
+    MODEL_ENV_MAP, MODEL_VAR_MAP, APP_DIR, cache_setup, step_hours)
 
 # model name -> earth2studio.data forecast source class
 FORECAST_SOURCES = {
@@ -86,6 +86,23 @@ class ForecastSourceRunner(ModelRunner):
         output_nc = f"{config['output_path']}/{config['file_stem']}.nc"
         script_path = os.path.join(config["output_dir"], f"{config['file_stem']}_run.py")
         source = FORECAST_SOURCES[model]
+        # The run's details, for the CF file's global attributes (see
+        # cf_convert._global_attrs).
+        run_info = {
+            "model": model,
+            "model_version": (f"NOAA NCEP's operational {model} forecast, the "
+                              f"{start:%Y-%m-%d %H}Z cycle, from NOAA's AWS archive"),
+            "framework": "earth2studio",
+            "data_source": f"{source} (earth2studio.data)",
+            "simulation_name": config["simulation_name"],
+            "initialization_time": f"{start:%Y-%m-%dT%H:%M:%SZ}",
+            "forecast_length_hours": n_steps * hours,
+            "output_interval_hours": hours,
+            "steps": n_steps,
+            "variables": variables,
+            "run_changes": ("Not run by InferStudio: the published forecast, downloaded "
+                            "and written in the AI models' layout."),
+        }
 
         script = f"""
 # Fetch the {model} forecast from {start.isoformat()} in InferStudio's model
@@ -94,6 +111,7 @@ import os
 import sys
 import time
 os.environ["TQDM_DISABLE"] = "1"
+{cache_setup(os.path.join(config["output_dir"], f"{config['file_stem']}_cache"))}
 
 from collections import OrderedDict
 from datetime import datetime, timedelta
@@ -153,7 +171,7 @@ print("Converting to CF-compliant format...", flush=True)
 try:
     sys.path.insert(0, {APP_DIR!r})
     from cf_convert import make_cf_compliant
-    cf_path = make_cf_compliant("{output_nc}")
+    cf_path = make_cf_compliant("{output_nc}", run_info={run_info!r})
     print(f"CF-compliant file written: {{cf_path}}", flush=True)
 except Exception as e:
     print(f"WARNING: CF conversion failed, raw output is still available: {{e}}", flush=True)

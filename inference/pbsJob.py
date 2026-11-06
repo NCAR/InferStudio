@@ -288,10 +288,10 @@ class PBSJob:
     models: list = field(default_factory=list)
 
     @classmethod
-    def create(cls, name, system, queue):
+    def create(cls, name, system, queue, jobs_dir=JOBS_DIR):
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         safe = re.sub(r'[^A-Za-z0-9_.-]', '_', name)[:80]
-        job_dir = JOBS_DIR / f"{safe}_{stamp}"
+        job_dir = Path(jobs_dir) / f"{safe}_{stamp}"
         job_dir.mkdir(parents=True, exist_ok=True)
         return cls(job_dir=job_dir, system=system, queue=queue)
 
